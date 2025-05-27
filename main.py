@@ -35,10 +35,17 @@ def state_callback():
     button = hd.get_buttons()
     device_state.button = True if button==1 else False
 
+@wp.struct
+class TriPointsConnector:
+    particle_id: wp.int32
+    rest_dist: wp.float32
+    tri_ids: wp.vec3i
+    tri_bar: wp.vec3f
+
 @wp.kernel
 def set_body_position(body_q: wp.array(dtype=wp.transformf), 
                       body_qd: wp.array(dtype=wp.spatial_vectorf),
-                      body_id: int, posParameter: wp.array(dtype=wp.vec3)):
+                      body_id: int, posParameter: wp.array(dtype=wp.vec3f)):
     t = body_q[body_id]
     pos = posParameter[0]
 
@@ -46,44 +53,144 @@ def set_body_position(body_q: wp.array(dtype=wp.transformf),
     body_q[body_id] = wp.transform(pos * 0.01, wp.quat(t[3], t[4], t[5], t[6]))
     #body_qd[body_id] = wp.spatial_vector() # reset velocity to zero
 
+@wp.kernel
+def apply_tri_points_constraints(positions: wp.array(dtype=wp.vec3f),
+                                 connectors: wp.array(dtype=TriPointsConnector)):
+    i = wp.tid()
+    conn = connectors[i]
+
+    tri_pos = positions[conn.tri_ids[0]] * conn.tri_bar[0] + \
+              positions[conn.tri_ids[1]] * conn.tri_bar[1] + \
+              positions[conn.tri_ids[2]] * conn.tri_bar[2]
+    
+    dir = positions[conn.particle_id] - tri_pos
+    length = wp.length(dir)
+    if length < 0.00001:
+        return
+    
+    kS = 0.15
+    invMassP = 0.75
+    invMassT = 1.0 - invMassP
+
+    C = length - conn.rest_dist * 0.1
+    s = invMassP + invMassT * conn.tri_bar[0] * conn.tri_bar[0] + invMassT * conn.tri_bar[1] * conn.tri_bar[1] + invMassT * conn.tri_bar[2] * conn.tri_bar[2]
+    dP = (C / s) * (dir / length) * kS
+
+    wp.atomic_add(positions, conn.particle_id, -dP * invMassP)
+    wp.atomic_add(positions, conn.tri_ids[0], dP * conn.tri_bar[0] * invMassT)
+    wp.atomic_add(positions, conn.tri_ids[1], dP * conn.tri_bar[1] * invMassT) 
+    wp.atomic_add(positions, conn.tri_ids[2], dP * conn.tri_bar[2] * invMassT)
 
 
+def parse_connector_file(filepath, particle_id_offset=0, tri_id_offset=0):
+    connectors = []
+    with open(filepath, 'r') as f:
+        for line in f:
+            if not line.strip():
+                continue
+
+            parts = line.strip().split()
+            if len(parts) != 8:
+                raise ValueError(f"Line does not have 8 elements: {line}")
+            
+            connector = TriPointsConnector()
+            connector.particle_id = int(parts[0]) + particle_id_offset
+            connector.rest_dist = float(parts[1])
+            connector.tri_ids = wp.vec3i(int(parts[2]) + tri_id_offset, int(parts[3]) + tri_id_offset, int(parts[4]) + tri_id_offset)
+            connector.tri_bar = wp.vec3f(float(parts[5]), float(parts[6]), float(parts[7]))
+            
+            connectors.append(connector)
+    return connectors
 
 def load_mesh_and_build_model(builder: wp.sim.ModelBuilder, vertical_offset=0.0):
     positions = []
     indices = []
     edges = []
 
+    # Liver
+    liver_particle_offset = len(positions)
+    curr_offset = 0
+
     with open('meshes/liver.vertices', 'r') as f:
         lines = f.readlines()
         for line in lines:
             pos = [float(x) for x in line.split()]
-            pos[1] += vertical_offset
             positions.append(pos)
 
     with open('meshes/liver.indices', 'r') as f:
         lines = f.readlines()
         for line in lines:
-            indices.extend([int(x) for x in line.split()])
+            indices.extend([int(x) + curr_offset for x in line.split()])
 
     with open('meshes/liver.edges', 'r') as f:
         lines = f.readlines()
         for line in lines:
-            edges.extend([int(x) for x in line.split()])
+            edges.extend([int(x) + curr_offset for x in line.split()])
+
+    # Fat
+    fat_particle_offset = len(positions)
+    curr_offset = fat_particle_offset
+
+    with open('meshes/fat.vertices', 'r') as f:
+        lines = f.readlines()
+        for line in lines:
+            pos = [float(x) for x in line.split()]
+            positions.append(pos)
+
+    with open('meshes/fat.indices', 'r') as f:
+        lines = f.readlines()
+        for line in lines:
+            indices.extend([int(x) + curr_offset for x in line.split()])
+
+    with open('meshes/fat.edges', 'r') as f:
+        lines = f.readlines()
+        for line in lines:
+            edges.extend([int(x) + curr_offset for x in line.split()])
+
+    # Gallbladder
+    gallbladder_particle_offset = len(positions)
+    curr_offset = gallbladder_particle_offset
+
+    with open('meshes/gallbladder.vertices', 'r') as f:
+        lines = f.readlines()
+        for line in lines:
+            pos = [float(x) for x in line.split()]
+            positions.append(pos)
+
+    with open('meshes/gallbladder.indices', 'r') as f:
+        lines = f.readlines()
+        for line in lines:
+            indices.extend([int(x) + curr_offset for x in line.split()])
+
+    with open('meshes/gallbladder.edges', 'r') as f:
+        lines = f.readlines()
+        for line in lines:
+            edges.extend([int(x) + curr_offset for x in line.split()])
+
+    # Fat liver connector
+    connectors = parse_connector_file('meshes/fat-liver.connector', fat_particle_offset, liver_particle_offset)
+
+    # Gallbladder fat connector
+    gallbladder_fat_connectors = parse_connector_file('meshes/gallbladder-fat.connector', gallbladder_particle_offset, fat_particle_offset)
+    connectors.extend(gallbladder_fat_connectors)
 
     mass_total = 10.0
     mass = mass_total / len(positions)
 
+    # Add to warp model
     for i in range(0, len(positions)):
         position = wp.vec3(positions[i])
         position[1] += vertical_offset
-        builder.add_particle(position, wp.vec3(0,0,0), mass=mass, radius=0.05)
+        builder.add_particle(position, wp.vec3(0,0,0), mass=mass, radius=0.02)
 
     for i in range(0, len(edges), 2):
         builder.add_spring(edges[i], edges[i + 1], 1.0e3, 0.0, 0)
 
     for i in range(0, len(indices), 4):
         builder.add_tetrahedron(indices[i+0], indices[i + 1], indices[i + 2], indices[i + 3])
+    
+    return wp.array(connectors, dtype=TriPointsConnector, device=wp.get_device())
+
 
 class WarpSim:
     def __init__(self, stage_path="output.usd", num_frames=300, use_opengl=True):
@@ -98,7 +205,7 @@ class WarpSim:
         builder = wp.sim.ModelBuilder()
 
         # Import the mesh
-        load_mesh_and_build_model(builder, vertical_offset=-5.5)
+        self.tri_points_connectors = load_mesh_and_build_model(builder, vertical_offset=-3.0)
 
         # Add haptic device collision
         self.haptic_body_id = builder.add_body(origin=wp.transform([0.0, 0.0, 0.0], wp.quat_identity()),
@@ -151,6 +258,17 @@ class WarpSim:
                 inputs=[self.state_0.body_q, self.state_0.body_qd, self.haptic_body_id, self.dev_pos_buffer],
                 device=self.state_0.body_q.device,
             )
+
+            wp.launch(
+                apply_tri_points_constraints,
+                dim =len(self.tri_points_connectors),
+                inputs=[
+                    self.state_0.particle_q,
+                    self.tri_points_connectors
+                ],
+                device=self.state_0.particle_q.device,
+            )
+
             wp.sim.collide(self.model, self.state_0)
             self.integrator.simulate(self.model, self.state_0, self.state_1, self.sim_dt)
         
@@ -213,11 +331,11 @@ if __name__ == "__main__":
         pre_dev_pos = wp.vec3(device_state.position[0], device_state.position[1], device_state.position[2]) * haptic_scale
 
         if args.usd:
-            while sim.renderer.is_running():
+            for _ in range(args.num_frames):
                 sim.step()
                 sim.render()
         else:
-            for _ in range(args.num_frames):
+            while sim.renderer.is_running():
                 dev_pos = wp.vec3(device_state.position[0], device_state.position[1], device_state.position[2]) * haptic_scale
                 sim.update_haptic_position(dev_pos)
 
