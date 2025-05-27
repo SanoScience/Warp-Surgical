@@ -1,0 +1,13 @@
+[project]
+name = "ff-srl2"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "matplotlib>=3.9.4",
+    "pyglet>=2.1.6",
+    "pyopenhaptics>=1.0.1",
+    "usd-core>=25.5.1",
+    "warp-lang>=1.7.1",
+]
