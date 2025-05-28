@@ -31,10 +31,10 @@ def apply_tri_points_constraints_jacobian(positions: wp.array(dtype=wp.vec3f),
     
     dir = positions[conn.particle_id] - tri_pos
     length = wp.length(dir)
-    if length < 0.00001:
+    if length < 1e-7:
         return
     
-    kS = 0.8
+    kS = 1.0
     invMassP = 0.75
     invMassT = 1.0 - invMassP
 

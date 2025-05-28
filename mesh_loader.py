@@ -29,11 +29,12 @@ def parse_connector_file(filepath, particle_id_offset=0, tri_id_offset=0):
             connectors.append(connector)
     return connectors
 
-def load_mesh_component(vertices_file, indices_file, edges_file, offset=0):
+def load_mesh_component(vertices_file, indices_file, edges_file, surface_indices_file, offset=0):
     """Load a single mesh component and return positions, indices, and edges."""
     positions = []
     indices = []
     edges = []
+    tri_surface_indices = []
     
     # Load vertices
     with open(vertices_file, 'r') as f:
@@ -50,39 +51,50 @@ def load_mesh_component(vertices_file, indices_file, edges_file, offset=0):
     with open(edges_file, 'r') as f:
         for line in f:
             edges.extend([int(x) + offset for x in line.split()])
+
+    # Load surface triangle indices
+    with open(surface_indices_file, 'r') as f:
+        for line in f:
+            tri_surface_indices.extend([int(x) + offset for x in line.split()])
     
-    return positions, indices, edges
+    return positions, indices, edges, tri_surface_indices
 
 def load_mesh_and_build_model(builder: wp.sim.ModelBuilder, vertical_offset=0.0):
     """Load all mesh components and build the simulation model."""
     all_positions = []
     all_indices = []
     all_edges = []
+    all_tri_surface_indices = []
     all_connectors = []
     
     # Liver
-    liver_positions, liver_indices, liver_edges = load_mesh_component(
-        'meshes/liver.vertices', 'meshes/liver.indices', 'meshes/liver.edges', 0)
+    liver_positions, liver_indices, liver_edges, liver_tris  = load_mesh_component(
+        'meshes/liver.vertices', 'meshes/liver.indices', 'meshes/liver.edges', 'meshes/liver.tris', 0)
     liver_particle_offset = 0
     all_positions.extend(liver_positions)
     all_indices.extend(liver_indices)
     all_edges.extend(liver_edges)
+    all_tri_surface_indices.extend(liver_tris)
     
     # Fat
     fat_particle_offset = len(all_positions)
-    fat_positions, fat_indices, fat_edges = load_mesh_component(
-        'meshes/fat.vertices', 'meshes/fat.indices', 'meshes/fat.edges', fat_particle_offset)
+    fat_positions, fat_indices, fat_edges, fat_tris = load_mesh_component(
+        'meshes/fat.vertices', 'meshes/fat.indices', 'meshes/fat.edges', 'meshes/fat.tris', fat_particle_offset)
     all_positions.extend(fat_positions)
     all_indices.extend(fat_indices)
     all_edges.extend(fat_edges)
+    all_tri_surface_indices.extend(fat_tris)
+
     
     # Gallbladder
     gallbladder_particle_offset = len(all_positions)
-    gallbladder_positions, gallbladder_indices, gallbladder_edges = load_mesh_component(
-        'meshes/gallbladder.vertices', 'meshes/gallbladder.indices', 'meshes/gallbladder.edges', gallbladder_particle_offset)
+    gallbladder_positions, gallbladder_indices, gallbladder_edges, gallbladder_tris = load_mesh_component(
+        'meshes/gallbladder.vertices', 'meshes/gallbladder.indices', 'meshes/gallbladder.edges', 'meshes/gallbladder.tris', gallbladder_particle_offset)
     all_positions.extend(gallbladder_positions)
     all_indices.extend(gallbladder_indices)
     all_edges.extend(gallbladder_edges)
+    all_tri_surface_indices.extend(gallbladder_tris)
+
     
     # Load connectors
     fat_liver_connectors = parse_connector_file('meshes/fat-liver.connector', fat_particle_offset, liver_particle_offset)
@@ -107,4 +119,4 @@ def load_mesh_and_build_model(builder: wp.sim.ModelBuilder, vertical_offset=0.0)
     for i in range(0, len(all_indices), 4):
         builder.add_tetrahedron(all_indices[i], all_indices[i + 1], all_indices[i + 2], all_indices[i + 3])
     
-    return wp.array(all_connectors, dtype=TriPointsConnector, device=wp.get_device())
+    return wp.array(all_connectors, dtype=TriPointsConnector, device=wp.get_device()), all_tri_surface_indices

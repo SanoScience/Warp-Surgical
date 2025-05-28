@@ -2,6 +2,7 @@ import warp as wp
 import warp.sim
 import warp.sim.render
 from warp.sim.render import SimRendererOpenGL
+from warp.render import OpenGLRenderer
 
 from mesh_loader import load_mesh_and_build_model
 from simulation_kernels import (
@@ -20,6 +21,7 @@ class WarpSim:
         self.frame_dt = 1.0 / fps
         self.sim_dt = self.frame_dt / self.sim_substeps
         self.sim_time = 0.0
+        self.sim_constraint_iterations = 5
 
         # Initialize model
         self._build_model()
@@ -38,7 +40,7 @@ class WarpSim:
         builder = wp.sim.ModelBuilder()
         
         # Import the mesh
-        self.tri_points_connectors = load_mesh_and_build_model(builder, vertical_offset=-3.0)
+        self.tri_points_connectors, self.surface_tris = load_mesh_and_build_model(builder, vertical_offset=-3.0)
         
         # Add haptic device collision body
         self.haptic_body_id = builder.add_body(
@@ -78,7 +80,8 @@ class WarpSim:
         self.use_opengl = use_opengl
         
         if self.use_opengl:
-            self.renderer = SimRendererOpenGL(self.model, "Warp Surgical Simulation", scaling=1.0)
+            #self.renderer = SimRendererOpenGL(self.model, "Warp Surgical Simulation", scaling=1.0)
+            self.renderer = wp.render.OpenGLRenderer("Warp Surgical Simulation", scaling=1.0, camera_pos=(0.0, 1.0, -1.0))
         elif stage_path:
             self.renderer = wp.sim.render.SimRenderer(self.model, stage_path, scaling=20.0)
         else:
@@ -106,34 +109,35 @@ class WarpSim:
                 device=self.state_0.body_q.device,
             )
 
-            # Clear Jacobian accumulators
-            wp.launch(
-                clear_jacobian_accumulator,
-                dim=self.model.particle_count,
-                inputs=[self.delta_accumulator, self.count_accumulator],
-                device=self.state_0.particle_q.device,
-            )
+            for _ in range(self.sim_constraint_iterations):
+                # Clear Jacobian accumulators
+                wp.launch(
+                    clear_jacobian_accumulator,
+                    dim=self.model.particle_count,
+                    inputs=[self.delta_accumulator, self.count_accumulator],
+                    device=self.state_0.particle_q.device,
+                )
 
-            # Apply constraints
-            wp.launch(
-                apply_tri_points_constraints_jacobian,
-                dim=len(self.tri_points_connectors),
-                inputs=[
-                    self.state_0.particle_q,
-                    self.tri_points_connectors,
-                    self.delta_accumulator,
-                    self.count_accumulator
-                ],
-                device=self.state_0.particle_q.device,
-            )
+                # Apply constraints
+                wp.launch(
+                    apply_tri_points_constraints_jacobian,
+                    dim=len(self.tri_points_connectors),
+                    inputs=[
+                        self.state_0.particle_q,
+                        self.tri_points_connectors,
+                        self.delta_accumulator,
+                        self.count_accumulator
+                    ],
+                    device=self.state_0.particle_q.device,
+                )
 
-            # Apply accumulated deltas
-            wp.launch(
-                apply_jacobian_deltas,
-                dim=self.model.particle_count,
-                inputs=[self.state_0.particle_q, self.delta_accumulator, self.count_accumulator],
-                device=self.state_0.particle_q.device,
-            )
+                # Apply accumulated deltas
+                wp.launch(
+                    apply_jacobian_deltas,
+                    dim=self.model.particle_count,
+                    inputs=[self.state_0.particle_q, self.delta_accumulator, self.count_accumulator],
+                    device=self.state_0.particle_q.device,
+                )
 
             # Run collision detection and integration
             wp.sim.collide(self.model, self.state_0)
@@ -160,7 +164,23 @@ class WarpSim:
         with wp.ScopedTimer("render"):
             if self.use_opengl:
                 self.renderer.begin_frame()
-                self.renderer.render(self.state_0)
+                
+                particle_positions = self.state_0.particle_q.numpy()
+                #for i, pos in enumerate(particle_positions):
+                #    self.renderer.render_sphere(
+                #        name=f"particle_{i}",
+                #        pos=pos,
+                #        rot=(0.0, 0.0, 0.0, 1.0),  # Identity quaternion
+                #        radius=0.05,  # Adjust sphere size as needed
+                #        color=(1.0, 0.0, 0.0)  # Red color, adjust as needed
+                #    )
+                self.renderer.render_mesh(
+                    name="body_mesh",
+                    points=particle_positions,
+                    indices=self.surface_tris
+                )
+
+                #self.renderer.render(self.state_0)
                 self.renderer.end_frame()
             else:
                 self.renderer.begin_frame(self.sim_time)
