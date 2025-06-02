@@ -1,10 +1,9 @@
 import warp as wp
 import warp.sim
 import warp.sim.render
-from warp.sim.render import SimRendererOpenGL
-from warp.render import OpenGLRenderer
 
 from mesh_loader import load_mesh_and_build_model
+from render_opengl import CustomOpenGLRenderer
 from simulation_kernels import (
     clear_jacobian_accumulator,
     apply_jacobian_deltas,
@@ -14,11 +13,11 @@ from simulation_kernels import (
 
 class WarpSim:
     def __init__(self, stage_path="output.usd", num_frames=300, use_opengl=True):
-        self.sim_substeps = 64
+        self.sim_substeps = 32
         self.num_frames = num_frames
-        fps = 60
+        self.fps = 120
 
-        self.frame_dt = 1.0 / fps
+        self.frame_dt = 1.0 / self.fps
         self.sim_dt = self.frame_dt / self.sim_substeps
         self.sim_time = 0.0
         self.sim_constraint_iterations = 5
@@ -41,7 +40,8 @@ class WarpSim:
         
         # Import the mesh
         self.tri_points_connectors, self.surface_tris = load_mesh_and_build_model(builder, vertical_offset=-3.0)
-        
+        self.surface_tris_wp = wp.array(self.surface_tris, dtype=wp.int32, device=wp.get_device())
+
         # Add haptic device collision body
         self.haptic_body_id = builder.add_body(
             origin=wp.transform([0.0, 0.0, 0.0], wp.quat_identity()),
@@ -81,7 +81,7 @@ class WarpSim:
         
         if self.use_opengl:
             #self.renderer = SimRendererOpenGL(self.model, "Warp Surgical Simulation", scaling=1.0)
-            self.renderer = wp.render.OpenGLRenderer("Warp Surgical Simulation", scaling=1.0, camera_pos=(0.0, 1.0, -1.0))
+            self.renderer = CustomOpenGLRenderer("Warp Surgical Simulation", scaling=1.0, camera_pos=(0.0, 1.0, -1.0), vsync=False, fps=self.fps)
         elif stage_path:
             self.renderer = wp.sim.render.SimRenderer(self.model, stage_path, scaling=20.0)
         else:
@@ -165,21 +165,26 @@ class WarpSim:
             if self.use_opengl:
                 self.renderer.begin_frame()
                 
-                particle_positions = self.state_0.particle_q.numpy()
-                #for i, pos in enumerate(particle_positions):
-                #    self.renderer.render_sphere(
-                #        name=f"particle_{i}",
-                #        pos=pos,
-                #        rot=(0.0, 0.0, 0.0, 1.0),  # Identity quaternion
-                #        radius=0.05,  # Adjust sphere size as needed
-                #        color=(1.0, 0.0, 0.0)  # Red color, adjust as needed
-                #    )
-                self.renderer.render_mesh(
-                    name="body_mesh",
-                    points=particle_positions,
-                    indices=self.surface_tris
-                )
+                #particle_positions = self.state_0.particle_q.numpy()
 
+                #self.renderer.render_mesh(
+                #    name="body_mesh",
+                #    points=particle_positions,
+                #    indices=self.surface_tris
+                #)
+                #self.renderer.render_mesh_warp(
+                #    name="body_mesh", 
+                #    points=self.state_0.particle_q,  # wp.array directly
+                #    indices=self.surface_tris_wp,     # wp.array version of surface_tris
+                #    update_topology=False
+                #)
+
+                self.renderer.render_mesh_warp_optimized(
+                    name="body_mesh", 
+                    points=self.state_0.particle_q,
+                    indices=self.surface_tris_wp,
+                    update_topology=False
+                )
                 #self.renderer.render(self.state_0)
                 self.renderer.end_frame()
             else:
