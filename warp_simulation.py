@@ -30,7 +30,20 @@ class WarpSim:
         
         # Initialize rendering
         self._setup_renderer(stage_path, use_opengl)
+
+        # Init component metadata
+        #self.mesh_ranges = {
+        #    'liver': {'vertex_start': 0, 'vertex_count': 0, 'index_start': 0, 'index_count': 0},
+        #    'fat': {'vertex_start': 0, 'vertex_count': 0, 'index_start': 0, 'index_count': 0},
+        #    'gallbladder': {'vertex_start': 0, 'vertex_count': 0, 'index_start': 0, 'index_count': 0}
+        #}
         
+        # Load textures
+        if self.use_opengl and self.renderer:
+            self.liver_texture = self.renderer.load_texture("textures/liver-base.png")
+            self.fat_texture = self.renderer.load_texture("textures/fat-base.png") 
+            self.gallbladder_texture = self.renderer.load_texture("textures/gallbladder-base.png")
+
         # Setup CUDA graph if available
         self._setup_cuda_graph()
 
@@ -39,8 +52,9 @@ class WarpSim:
         builder = wp.sim.ModelBuilder()
         
         # Import the mesh
-        self.tri_points_connectors, self.surface_tris = load_mesh_and_build_model(builder, vertical_offset=-3.0)
+        self.tri_points_connectors, self.surface_tris, uvs, self.mesh_ranges = load_mesh_and_build_model(builder, vertical_offset=-3.0)
         self.surface_tris_wp = wp.array(self.surface_tris, dtype=wp.int32, device=wp.get_device())
+        self.uvs_wp = wp.array(uvs, dtype=wp.vec2f, device=wp.get_device())
 
         # Add haptic device collision body
         self.haptic_body_id = builder.add_body(
@@ -165,27 +179,45 @@ class WarpSim:
             if self.use_opengl:
                 self.renderer.begin_frame()
                 
-                #particle_positions = self.state_0.particle_q.numpy()
-
-                #self.renderer.render_mesh(
-                #    name="body_mesh",
-                #    points=particle_positions,
-                #    indices=self.surface_tris
-                #)
-                #self.renderer.render_mesh_warp(
-                #    name="body_mesh", 
-                #    points=self.state_0.particle_q,  # wp.array directly
-                #    indices=self.surface_tris_wp,     # wp.array version of surface_tris
-                #    update_topology=False
-                #)
-
-                self.renderer.render_mesh_warp_optimized(
-                    name="body_mesh", 
-                    points=self.state_0.particle_q,
-                    indices=self.surface_tris_wp,
-                    update_topology=False
-                )
-                #self.renderer.render(self.state_0)
+                # Render liver mesh
+                if self.mesh_ranges['liver']['index_count'] > 0:
+                    self.renderer.render_mesh_warp_range(
+                        name="liver_mesh",
+                        points=self.state_0.particle_q,
+                        indices=self.surface_tris_wp,
+                        texture_coords=self.uvs_wp,
+                        texture=self.liver_texture,
+                        index_start=self.mesh_ranges['liver']['index_start'],
+                        index_count=self.mesh_ranges['liver']['index_count'],
+                        update_topology=False
+                    )
+                
+                # Render fat mesh
+                if self.mesh_ranges['fat']['index_count'] > 0:
+                    self.renderer.render_mesh_warp_range(
+                        name="fat_mesh",
+                        points=self.state_0.particle_q,
+                        indices=self.surface_tris_wp,
+                        texture_coords=self.uvs_wp,
+                        texture=self.fat_texture,
+                        index_start=self.mesh_ranges['fat']['index_start'],
+                        index_count=self.mesh_ranges['fat']['index_count'],
+                        update_topology=False
+                    )
+                
+                # Render gallbladder mesh
+                if self.mesh_ranges['gallbladder']['index_count'] > 0:
+                    self.renderer.render_mesh_warp_range(
+                        name="gallbladder_mesh",
+                        points=self.state_0.particle_q,
+                        indices=self.surface_tris_wp,
+                        texture_coords=self.uvs_wp,
+                        texture=self.gallbladder_texture,
+                        index_start=self.mesh_ranges['gallbladder']['index_start'],
+                        index_count=self.mesh_ranges['gallbladder']['index_count'],
+                        update_topology=False
+                    )
+                
                 self.renderer.end_frame()
             else:
                 self.renderer.begin_frame(self.sim_time)

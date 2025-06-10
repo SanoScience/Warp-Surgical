@@ -84,6 +84,7 @@ in vec3 ObjectColor2;
 uniform vec3 viewPos;
 uniform vec3 lightColor;
 uniform vec3 sunDirection;
+uniform sampler2D textureSampler;
 
 void main()
 {
@@ -109,20 +110,9 @@ void main()
     spec = pow(max(dot(viewDir, reflectDir), 0.0), 64);
     specular += specularStrength * spec * lightColor * 0.3;
 
-    // checkerboard pattern
-    float u = TexCoord.x;
-    float v = TexCoord.y;
-    // blend the checkerboard pattern dependent on the gradient of the texture coordinates
-    // to void Moire patterns
-    vec2 grad = abs(dFdx(TexCoord)) + abs(dFdy(TexCoord));
-    float blendRange = 1.5;
-    float blendFactor = max(grad.x, grad.y) * blendRange;
-    float scale = 2.0;
-    float checker = mod(floor(u * scale) + floor(v * scale), 2.0);
-    checker = mix(checker, 0.5, smoothstep(0.0, 1.0, blendFactor));
-    vec3 checkerColor = mix(ObjectColor1, ObjectColor2, checker);
+    vec3 baseColor = texture(textureSampler, TexCoord).rgb;
 
-    vec3 result = (ambient + diffuse + specular) * checkerColor;
+    vec3 result = (ambient + diffuse + specular) * baseColor;
     FragColor = vec4(result, 1.0);
 }
 """
@@ -480,6 +470,125 @@ def assemble_gfx_vertices(
     gfx_vertices[tid, 4] = n[1]
     gfx_vertices[tid, 5] = n[2]
 
+@wp.kernel
+def assemble_gfx_vertices_textured(
+    vertices: wp.array(dtype=wp.vec3),
+    normals: wp.array(dtype=wp.vec3),
+    faces_per_vertex: wp.array(dtype=wp.int32),
+    texture_coords: wp.array(dtype=wp.vec2),
+    scale: wp.vec3,
+    gfx_vertices: wp.array(dtype=wp.float32, ndim=2)
+):
+    tid = wp.tid()
+    if tid >= len(vertices):
+        return
+        
+    pos = vertices[tid]
+    normal = normals[tid]
+    
+    # Normalize normal
+    if faces_per_vertex[tid] > 0:
+        normal = normal / wp.float32(faces_per_vertex[tid])
+        normal = wp.normalize(normal)
+    
+    # Get texture coordinates
+    uv = texture_coords[tid]
+    
+    # Pack vertex data: position (3) + normal (3) + texture coords (2)
+    gfx_vertices[tid, 0] = pos[0] * scale[0]
+    gfx_vertices[tid, 1] = pos[1] * scale[1]
+    gfx_vertices[tid, 2] = pos[2] * scale[2]
+    gfx_vertices[tid, 3] = normal[0]
+    gfx_vertices[tid, 4] = normal[1]
+    gfx_vertices[tid, 5] = normal[2]
+    gfx_vertices[tid, 6] = uv[0]
+    gfx_vertices[tid, 7] = uv[1]
+
+@wp.kernel
+def compute_gfx_vertices_textured(
+    indices: wp.array(dtype=wp.int32, ndim=2),
+    vertices: wp.array(dtype=wp.vec3),
+    texture_coords: wp.array(dtype=wp.vec2),
+    scale: wp.vec3,
+    gfx_vertices: wp.array(dtype=wp.float32, ndim=2)
+):
+    tid = wp.tid()
+    if tid >= len(indices):
+        return
+    
+    # Get triangle indices
+    i0 = indices[tid, 0]
+    i1 = indices[tid, 1] 
+    i2 = indices[tid, 2]
+    
+    # Get positions
+    p0 = vertices[i0] * scale[0]
+    p1 = vertices[i1] * scale[1]
+    p2 = vertices[i2] * scale[2]
+    
+    # Compute face normal
+    edge1 = p1 - p0
+    edge2 = p2 - p0
+    normal = wp.normalize(wp.cross(edge1, edge2))
+    
+    # Get texture coordinates
+    uv0 = texture_coords[i0]
+    uv1 = texture_coords[i1]
+    uv2 = texture_coords[i2]
+    
+    # Store vertices for this triangle
+    base_idx = tid * 3
+    
+    # Vertex 0
+    gfx_vertices[base_idx + 0, 0] = p0[0]
+    gfx_vertices[base_idx + 0, 1] = p0[1]
+    gfx_vertices[base_idx + 0, 2] = p0[2]
+    gfx_vertices[base_idx + 0, 3] = normal[0]
+    gfx_vertices[base_idx + 0, 4] = normal[1]
+    gfx_vertices[base_idx + 0, 5] = normal[2]
+    gfx_vertices[base_idx + 0, 6] = uv0[0]
+    gfx_vertices[base_idx + 0, 7] = uv0[1]
+    
+    # Vertex 1
+    gfx_vertices[base_idx + 1, 0] = p1[0]
+    gfx_vertices[base_idx + 1, 1] = p1[1]
+    gfx_vertices[base_idx + 1, 2] = p1[2]
+    gfx_vertices[base_idx + 1, 3] = normal[0]
+    gfx_vertices[base_idx + 1, 4] = normal[1]
+    gfx_vertices[base_idx + 1, 5] = normal[2]
+    gfx_vertices[base_idx + 1, 6] = uv1[0]
+    gfx_vertices[base_idx + 1, 7] = uv1[1]
+    
+    # Vertex 2
+    gfx_vertices[base_idx + 2, 0] = p2[0]
+    gfx_vertices[base_idx + 2, 1] = p2[1]
+    gfx_vertices[base_idx + 2, 2] = p2[2]
+    gfx_vertices[base_idx + 2, 3] = normal[0]
+    gfx_vertices[base_idx + 2, 4] = normal[1]
+    gfx_vertices[base_idx + 2, 5] = normal[2]
+    gfx_vertices[base_idx + 2, 6] = uv2[0]
+    gfx_vertices[base_idx + 2, 7] = uv2[1]
+
+@wp.kernel
+def update_mesh_vertices_optimized_textured(
+    points: wp.array(dtype=wp.vec3),
+    texture_coords: wp.array(dtype=wp.vec2),
+    scale: wp.vec3,
+    gfx_vertices: wp.array(dtype=wp.float32, ndim=2)
+):
+    tid = wp.tid()
+    if tid >= len(points):
+        return
+        
+    pos = points[tid]
+    uv = texture_coords[tid]
+    
+    # Update position and texture coordinates (keep existing normals)
+    gfx_vertices[tid, 0] = pos[0] * scale[0]
+    gfx_vertices[tid, 1] = pos[1] * scale[1]
+    gfx_vertices[tid, 2] = pos[2] * scale[2]
+    gfx_vertices[tid, 6] = uv[0]
+    gfx_vertices[tid, 7] = uv[1]
 
 @wp.kernel
 def copy_rgb_frame(
@@ -1304,7 +1413,7 @@ class CustomOpenGLRenderer:
         gl.glBindVertexArray(self._sky_vao)
 
         vertices, indices = self._create_sphere_mesh(self.camera_far_plane * 0.9, 32, 32, reverse_winding=True)
-        self._sky_tri_count = len(indices)
+        self._sky_tri_count = len(indices);
 
         self._sky_vbo = gl.GLuint()
         gl.glGenBuffers(1, self._sky_vbo)
@@ -1460,6 +1569,39 @@ class CustomOpenGLRenderer:
     def has_exit(self):
         return self.app.event_loop.has_exit
 
+    def load_texture(self, filepath: str, **kwargs) -> int:
+        """Load a texture from file"""
+        if not hasattr(self, '_texture_manager'):
+            from texture_loader import OpenGLTextureManager
+            self._texture_manager = OpenGLTextureManager(self)
+        return self._texture_manager.load_texture(filepath, **kwargs)
+
+    def create_checkerboard_texture(self, color1=(1.0, 1.0, 1.0), color2=(0.5, 0.5, 0.5), size=256, checker_size=32) -> int:
+        """Create a checkerboard texture"""
+        if not hasattr(self, '_texture_manager'):
+            from texture_loader import OpenGLTextureManager
+            self._texture_manager = OpenGLTextureManager(self)
+        return self._texture_manager.create_procedural_texture(
+            'checkerboard', color1=color1, color2=color2, size=size, checker_size=checker_size
+        )
+
+    def create_solid_texture(self, color=(1.0, 1.0, 1.0), size=1) -> int:
+        """Create a solid color texture"""
+        if not hasattr(self, '_texture_manager'):
+            from texture_loader import OpenGLTextureManager
+            self._texture_manager = OpenGLTextureManager(self)
+        return self._texture_manager.create_procedural_texture('solid', color=color, size=size)
+
+    def bind_texture(self, texture_id: int, unit: int = 0):
+        """Bind texture to specified texture unit"""
+        if hasattr(self, '_texture_manager'):
+            self._texture_manager.bind_texture(texture_id, unit)
+
+    def delete_texture(self, texture_id: int):
+        """Delete a texture"""
+        if hasattr(self, '_texture_manager'):
+            self._texture_manager.delete_texture(texture_id)
+            
     def clear(self):
         gl = CustomOpenGLRenderer.gl
 
@@ -1544,6 +1686,8 @@ class CustomOpenGLRenderer:
         :param tile_height: The height of each tile in pixels (optional).
         :param tile_ncols: The number of tiles rendered horizontally (optional). Will be considered
             if `tile_width` is set to compute the tile positions, unless `tile_positions` is defined.
+        :param tile_nrows: The number of tiles rendered vertically (optional). Will be considered
+            if `tile_height` is set to compute the tile positions, unless `tile_positions` is defined.
         :param tile_positions: A list of (x, y) tuples specifying the position of each tile in pixels.
             If None, the tiles will be arranged in a square grid, or, if `tile_ncols` and `tile_nrows`
             is set, in a grid with the specified number of columns and rows.
@@ -1576,6 +1720,7 @@ class CustomOpenGLRenderer:
             self._tile_width = tile_width or max(32, self.screen_width // self._tile_ncols)
             self._tile_height = tile_height or max(32, self.screen_height // self._tile_nrows)
             self._tile_viewports = [
+
                 (i * self._tile_width, j * self._tile_height, self._tile_width, self._tile_height)
                 for i in range(self._tile_ncols)
                 for j in range(self._tile_nrows)
@@ -2071,10 +2216,20 @@ Instances: {len(self._instances)}"""
         for shape, (vao, _, _, tri_count, _) in self._shape_gl_buffers.items():
             num_instances = len(self._shape_instances[shape])
 
+            # Bind texture if shape has one
+            if shape < len(self._shapes) and len(self._shapes[shape]) >= 6:
+                texture_id = self._shapes[shape][5]
+                if texture_id is not None:
+                    self.bind_texture(texture_id, 0)
+
             gl.glBindVertexArray(vao)
             gl.glDrawElementsInstancedBaseInstance(
                 gl.GL_TRIANGLES, tri_count, gl.GL_UNSIGNED_INT, None, num_instances, start_instance_idx
             )
+
+            # Unbind texture
+            if hasattr(self, '_texture_manager'):
+                self._texture_manager.unbind_texture(0)
 
             start_instance_idx += num_instances
 
@@ -2119,6 +2274,12 @@ Instances: {len(self._instances)}"""
             for instance in instances:
                 shape = self._instance_shape[instance]
 
+                # Bind texture if shape has one
+                if shape < len(self._shapes) and len(self._shapes[shape]) >= 6:
+                    texture_id = self._shapes[shape][5]
+                    if texture_id is not None:
+                        self.bind_texture(texture_id, 0)
+
                 vao, _, _, tri_count, _ = self._shape_gl_buffers[shape]
 
                 start_instance_idx = self._inverse_instance_ids[instance]
@@ -2127,6 +2288,10 @@ Instances: {len(self._instances)}"""
                 gl.glDrawElementsInstancedBaseInstance(
                     gl.GL_TRIANGLES, tri_count, gl.GL_UNSIGNED_INT, None, 1, start_instance_idx
                 )
+
+                # Unbind texture
+                if hasattr(self, '_texture_manager'):
+                    self._texture_manager.unbind_texture(0)
 
             if self.draw_axis:
                 self._axis_instancer.render()
@@ -2262,8 +2427,6 @@ Instances: {len(self._instances)}"""
         gl.glBindBuffer(gl.GL_ARRAY_BUFFER, vbo)
         gl.glBufferData(gl.GL_ARRAY_BUFFER, vertices.nbytes, vertices.ctypes.data, gl.GL_STATIC_DRAW)
 
-        vertex_cuda_buffer = wp.RegisteredGLBuffer(int(vbo.value), self._device)
-
         ebo = gl.GLuint()
         gl.glGenBuffers(1, ebo)
         gl.glBindBuffer(gl.GL_ELEMENT_ARRAY_BUFFER, ebo)
@@ -2283,7 +2446,7 @@ Instances: {len(self._instances)}"""
 
         gl.glBindVertexArray(0)
 
-        self._shape_gl_buffers[shape] = (vao, vbo, ebo, len(indices), vertex_cuda_buffer)
+        self._shape_gl_buffers[shape] = (vao, vbo, ebo, len(indices), None)
 
         return shape
 
@@ -2375,6 +2538,123 @@ Instances: {len(self._instances)}"""
 
         self._shape_gl_buffers[shape] = (vao, vbo, ebo, indices_count, vertex_cuda_buffer)
         return shape
+
+    def _register_shape_gpu_direct_textured(self, geo_hash, gfx_vertices: wp.array, gfx_indices: wp.array, texture: int = None):
+        """Register shape using GPU arrays directly with texture support"""
+        gl = CustomOpenGLRenderer.gl
+        self._switch_context()
+
+        shape = len(self._shapes)
+        color1 = self._get_default_color(len(self._shape_geo_hash))
+        color2 = np.clip(np.array(color1) + 0.25, 0.0, 1.0)
+        
+        # Store shape data with texture info
+        self._shapes.append((None, None, color1, color2, geo_hash, texture))
+        self._shape_geo_hash[geo_hash] = shape
+
+        gl.glUseProgram(self._shape_shader.id)
+
+        # Create VAO, VBO, and EBO
+        vao = gl.GLuint()
+        gl.glGenVertexArrays(1, vao)
+        gl.glBindVertexArray(vao)
+
+        # Create VBO and upload GPU data directly
+        vbo = gl.GLuint()
+        gl.glGenBuffers(1, vbo)
+        gl.glBindBuffer(gl.GL_ARRAY_BUFFER, vbo)
+        
+        # Get buffer size and allocate
+        vertex_count = gfx_vertices.shape[0]
+        vertex_size = gfx_vertices.shape[1] * 4  # 4 bytes per float
+        total_size = vertex_count * vertex_size
+        
+        gl.glBufferData(gl.GL_ARRAY_BUFFER, total_size, None, gl.GL_DYNAMIC_DRAW)
+        
+        # Create CUDA buffer and copy GPU data directly
+        vertex_cuda_buffer = wp.RegisteredGLBuffer(int(vbo.value), self._device)
+        mapped_buffer = vertex_cuda_buffer.map(dtype=wp.float32, shape=gfx_vertices.shape)
+        wp.copy(mapped_buffer, gfx_vertices)
+        vertex_cuda_buffer.unmap()
+
+        # Create EBO and upload indices
+        ebo = gl.GLuint()
+        gl.glGenBuffers(1, ebo)
+        gl.glBindBuffer(gl.GL_ELEMENT_ARRAY_BUFFER, ebo)
+        
+        indices_count = gfx_indices.shape[0]
+        indices_size = indices_count * 4  # 4 bytes per int32
+        
+        gl.glBufferData(gl.GL_ELEMENT_ARRAY_BUFFER, indices_size, None, gl.GL_DYNAMIC_DRAW)
+        
+        # Copy indices to GPU buffer
+        indices_cuda_buffer = wp.RegisteredGLBuffer(int(ebo.value), self._device)
+        mapped_indices = indices_cuda_buffer.map(dtype=wp.int32, shape=(indices_count,))
+        wp.copy(mapped_indices, gfx_indices)
+        indices_cuda_buffer.unmap()
+
+        # Set up vertex attributes
+        vertex_stride = vertex_size
+        # positions
+        gl.glVertexAttribPointer(0, 3, gl.GL_FLOAT, gl.GL_FALSE, vertex_stride, ctypes.c_void_p(0))
+        gl.glEnableVertexAttribArray(0)
+        # normals
+        gl.glVertexAttribPointer(1, 3, gl.GL_FLOAT, gl.GL_FALSE, vertex_stride, ctypes.c_void_p(12))
+        gl.glEnableVertexAttribArray(1)
+        # texture coordinates
+        gl.glVertexAttribPointer(2, 2, gl.GL_FLOAT, gl.GL_FALSE, vertex_stride, ctypes.c_void_p(24))
+        gl.glEnableVertexAttribArray(2)
+
+        gl.glBindVertexArray(0)
+
+        self._shape_gl_buffers[shape] = (vao, vbo, ebo, indices_count, vertex_cuda_buffer)
+        return shape
+
+    def _update_shape_vertices_gpu_direct_textured(self, shape, points: wp.array, texture_coords: wp.array = None, scale=(1.0, 1.0, 1.0)):
+        """Update vertices and texture coordinates using direct GPU-to-GPU copy"""
+        if shape not in self._shape_gl_buffers:
+            return
+            
+        cuda_buffer = self._shape_gl_buffers[shape][4]
+        vertex_count = points.shape[0]
+        
+        try:
+            vbo_vertices = cuda_buffer.map(dtype=wp.float32, shape=(vertex_count, 8))
+            
+            if texture_coords is not None:
+                wp.launch(
+                    update_mesh_vertices_optimized_textured,
+                    dim=vertex_count,
+                    inputs=[points, texture_coords, wp.vec3(scale)],
+                    outputs=[vbo_vertices],
+                    device=self._device,
+                )
+            else:
+                wp.launch(
+                    update_mesh_vertices_optimized,
+                    dim=vertex_count,
+                    inputs=[points, wp.vec3(scale)],
+                    outputs=[vbo_vertices],
+                    device=self._device,
+                )
+            
+            cuda_buffer.unmap()
+        except Exception as e:
+            print(f"Warning: Could not update vertices: {e}")
+            return
+
+    def _update_shape_texture(self, shape, texture: int):
+        """Update the texture binding for a shape"""
+        if shape >= len(self._shapes):
+            return
+        
+        # Update the stored shape data with new texture
+        shape_data = list(self._shapes[shape])
+        if len(shape_data) >= 6:
+            shape_data[5] = texture
+        else:
+            shape_data.append(texture)
+        self._shapes[shape] = tuple(shape_data)
 
     def add_shape_instance(
         self,
@@ -2607,7 +2887,6 @@ Instances: {len(self._instances)}"""
             
             cuda_buffer.unmap()
         except Exception as e:
-            # Buffer might already be mapped, skip update
             print(f"Warning: Could not update vertices: {e}")
             return
 
@@ -3138,7 +3417,7 @@ Instances: {len(self._instances)}"""
         point_count = len(points)
 
         indices = np.array(indices, dtype=np.int32).reshape((-1, 3))
-        idx_count = len(indices)
+        idx_count = len(indices);
 
         geo_hash = hash((points.tobytes(), indices.tobytes()))
 
@@ -3211,12 +3490,12 @@ Instances: {len(self._instances)}"""
             self.remove_shape_instance(name)
 
         # Register the new shape.
-        shape = self.register_shape(geo_hash, gfx_vertices, gfx_indices)
+        shape = self.register_shape(geo_hash, gfx_vertices, gfx_indices, color1=colors, color2=colors)
 
         if not is_template:
             # Create a new instance if necessary.
             body = self._resolve_body_id(parent_body)
-            self.add_shape_instance(name, shape, body, pos, rot, color1=colors)
+            self.add_shape_instance(name, shape, body, pos, rot, color1=colors, color2=colors)
 
         return shape
 
@@ -3226,6 +3505,8 @@ Instances: {len(self._instances)}"""
         points: wp.array,
         indices: wp.array,
         colors: wp.array = None,
+        texture_coords: wp.array = None,
+        texture: int = None,
         pos=(0.0, 0.0, 0.0),
         rot=(0.0, 0.0, 0.0, 1.0),
         scale=(1.0, 1.0, 1.0),
@@ -3242,6 +3523,8 @@ Instances: {len(self._instances)}"""
             points: Warp array of mesh vertices (dtype=wp.vec3)
             indices: Warp array of mesh face indices (dtype=int, shape=(-1, 3) or flat)
             colors: Warp array of vertex colors (optional)
+            texture_coords: Warp array of texture coordinates (dtype=wp.vec2 or 1D array with shape=(vertex_count*2,), optional)
+            texture: OpenGL texture ID (optional)
             pos: The position of the mesh
             rot: The rotation of the mesh
             scale: The scale of the mesh
@@ -3251,6 +3534,7 @@ Instances: {len(self._instances)}"""
             smooth_shading: Whether to average face normals at each vertex
             visible: Whether the shape is visible
         """
+        
         # Ensure arrays are on the correct device
         if points.device != self._device:
             points = points.to(self._device)
@@ -3258,151 +3542,24 @@ Instances: {len(self._instances)}"""
             indices = indices.to(self._device)
         if colors is not None and colors.device != self._device:
             colors = colors.to(self._device)
+        if texture_coords is not None and texture_coords.device != self._device:
+            texture_coords = texture_coords.to(self._device)
 
         point_count = points.shape[0]
         
-        # Reshape indices if needed
+        texture_coords_2d = texture_coords
+
+        indices_reshaped = indices
         if len(indices.shape) == 1:
             # Flat array, reshape to (-1, 3)
             assert indices.shape[0] % 3 == 0, "Flat indices array must be divisible by 3"
             indices_reshaped = indices.reshape((indices.shape[0] // 3, 3))
-        else:
-            indices_reshaped = indices
-        
-        idx_count = indices_reshaped.shape[0]
 
-        # Create geometry hash from raw data
-        # Note: This requires copying to CPU for hashing, but only small arrays for hash computation
-        points_sample = points.numpy()[:min(100, point_count)]  # Sample for hash
-        indices_sample = indices_reshaped.numpy()[:min(100, idx_count)]
-        geo_hash = hash((points_sample.tobytes(), indices_sample.tobytes()))
-
-        if name in self._instances:
-            # We've already registered this mesh instance and its associated shape.
-            shape = self._instances[name][2]
-        else:
-            if geo_hash in self._shape_geo_hash:
-                # We've only registered the shape, which can happen when `is_template` is `True`.
-                shape = self._shape_geo_hash[geo_hash]
-            else:
-                shape = None
-
-        # Check if we already have that shape registered and can perform
-        # minimal updates since the topology is not changing, before exiting.
-        if not update_topology:
-            if name in self._instances:
-                # Update the instance's transform.
-                colors_numpy = colors.numpy() if colors is not None else None
-                self.update_shape_instance(name, pos, rot, color1=colors_numpy)
-
-            if shape is not None:
-                # Update the shape's point positions directly on GPU
-                self.update_shape_vertices_warp(shape, points, scale)
-
-                if not is_template and name not in self._instances:
-                    # Create a new instance.
-                    body = self._resolve_body_id(parent_body)
-                    colors_numpy = colors.numpy() if colors is not None else None
-                    self.add_shape_instance(name, shape, body, pos, rot, color1=colors_numpy)
-
-                return shape
-
-        # No existing shape for the given mesh was found, or its topology may have changed,
-        # so we need to define a new one either way.
-        if smooth_shading:
-            normals = wp.zeros(point_count, dtype=wp.vec3, device=self._device)
-            faces_per_vertex = wp.zeros(point_count, dtype=int, device=self._device)
-            
-            wp.launch(
-                compute_average_normals,
-                dim=idx_count,
-                inputs=[indices_reshaped, points, scale],
-                outputs=[normals, faces_per_vertex],
-                device=self._device,
-            )
-            
-            gfx_vertices = wp.zeros((point_count, 8), dtype=float, device=self._device)
-            wp.launch(
-                assemble_gfx_vertices,
-                dim=point_count,
-                inputs=[points, normals, faces_per_vertex, scale],
-                outputs=[gfx_vertices],
-                device=self._device,
-            )
-            
-            gfx_vertices_numpy = gfx_vertices.numpy()
-            gfx_indices = indices_reshaped.numpy().flatten()
-        else:
-            gfx_vertices = wp.zeros((idx_count * 3, 8), dtype=float, device=self._device)
-            wp.launch(
-                compute_gfx_vertices,
-                dim=idx_count,
-                inputs=[indices_reshaped, points, scale],
-                outputs=[gfx_vertices],
-                device=self._device,
-            )
-            
-            gfx_vertices_numpy = gfx_vertices.numpy()
-            gfx_indices = wp.arange(idx_count * 3, dtype=wp.int32, device=self._device).numpy()
-
-        # If there was a shape for the given mesh, clean it up.
-        if shape is not None:
-            self.deregister_shape(shape)
-
-        # If there was an instance for the given mesh, clean it up.
-        if name in self._instances:
-            self.remove_shape_instance(name)
-
-        # Register the new shape.
-        colors_numpy = colors.numpy() if colors is not None else None
-        shape = self.register_shape(geo_hash, gfx_vertices_numpy, gfx_indices)
-
-        if not is_template:
-            # Create a new instance if necessary.
-            body = self._resolve_body_id(parent_body)
-            self.add_shape_instance(name, shape, body, pos, rot, color1=colors_numpy)
-
-        return shape
-
-    def render_mesh_warp_optimized(
-        self,
-        name: str,
-        points: wp.array,
-        indices: wp.array,
-        colors: wp.array = None,
-        pos=(0.0, 0.0, 0.0),
-        rot=(0.0, 0.0, 0.0, 1.0),
-        scale=(1.0, 1.0, 1.0),
-        update_topology=False,
-        parent_body: str | None = None,
-        is_template: bool = False,
-        smooth_shading: bool = True,
-        visible: bool = True,
-    ):
-        """Optimized mesh rendering with minimal CPU-GPU transfers"""
-        
-        # Ensure arrays are on the correct device
-        if points.device != self._device:
-            points = points.to(self._device)
-        if indices.device != self._device:
-            indices = indices.to(self._device)
-        if colors is not None and colors.device != self._device:
-            colors = colors.to(self._device)
-
-        point_count = points.shape[0]
-        
-        # Reshape indices if needed
-        if len(indices.shape) == 1:
-            assert indices.shape[0] % 3 == 0, "Flat indices array must be divisible by 3"
-            indices_reshaped = indices.reshape((indices.shape[0] // 3, 3))
-        else:
-            indices_reshaped = indices
-        
         idx_count = indices_reshaped.shape[0]
 
         # Use a simplified hash based on array metadata instead of data content
-        # This avoids CPU transfers for hashing
-        geo_hash = hash((name, point_count, idx_count, smooth_shading))
+        # Include texture info in hash to differentiate textured vs non-textured meshes
+        geo_hash = hash((name, point_count, idx_count, smooth_shading, texture is not None))
 
         if name in self._instances:
             shape = self._instances[name][2]
@@ -3423,7 +3580,12 @@ Instances: {len(self._instances)}"""
                     self._update_shape_instances = True
 
             # Update vertices directly on GPU
-            self._update_shape_vertices_gpu_direct(shape, points, scale)
+            self._update_shape_vertices_gpu_direct_textured(shape, points, texture_coords_2d, scale)
+            
+            # Update texture binding if provided
+            if texture is not None:
+                self._update_shape_texture(shape, texture)
+                
             return shape
 
         # Slow path: create new shape or topology changed
@@ -3439,25 +3601,47 @@ Instances: {len(self._instances)}"""
                 device=self._device,
             )
             
-            gfx_vertices = wp.zeros((point_count, 8), dtype=float, device=self._device)
-            wp.launch(
-                assemble_gfx_vertices,
-                dim=point_count,
-                inputs=[points, normals, faces_per_vertex, scale],
-                outputs=[gfx_vertices],
-                device=self._device,
-            )
+            # Create vertices with texture coordinates
+            if texture_coords_2d is not None:
+                gfx_vertices = wp.zeros((point_count, 8), dtype=float, device=self._device)
+                wp.launch(
+                    assemble_gfx_vertices_textured,
+                    dim=point_count,
+                    inputs=[points, normals, faces_per_vertex, texture_coords_2d, scale],
+                    outputs=[gfx_vertices],
+                    device=self._device,
+                )
+            else:
+                gfx_vertices = wp.zeros((point_count, 8), dtype=float, device=self._device)
+                wp.launch(
+                    assemble_gfx_vertices,
+                    dim=point_count,
+                    inputs=[points, normals, faces_per_vertex, scale],
+                    outputs=[gfx_vertices],
+                    device=self._device,
+                )
             
             gfx_indices_wp = indices_reshaped.flatten()
         else:
-            gfx_vertices = wp.zeros((idx_count * 3, 8), dtype=float, device=self._device)
-            wp.launch(
-                compute_gfx_vertices,
-                dim=idx_count,
-                inputs=[indices_reshaped, points, scale],
-                outputs=[gfx_vertices],
-                device=self._device,
-            )
+            # Create vertices with texture coordinates for non-smooth shading
+            if texture_coords_2d is not None:
+                gfx_vertices = wp.zeros((idx_count * 3, 8), dtype=float, device=self._device)
+                wp.launch(
+                    compute_gfx_vertices_textured,
+                    dim=idx_count,
+                    inputs=[indices_reshaped, points, texture_coords_2d, scale],
+                    outputs=[gfx_vertices],
+                    device=self._device,
+                )
+            else:
+                gfx_vertices = wp.zeros((idx_count * 3, 8), dtype=float, device=self._device)
+                wp.launch(
+                    compute_gfx_vertices,
+                    dim=idx_count,
+                    inputs=[indices_reshaped, points, scale],
+                    outputs=[gfx_vertices],
+                    device=self._device,
+                )
             
             gfx_indices_wp = wp.arange(idx_count * 3, dtype=wp.int32, device=self._device)
 
@@ -3467,16 +3651,65 @@ Instances: {len(self._instances)}"""
         if name in self._instances:
             self.remove_shape_instance(name)
 
-        # Register shape with GPU data
-        shape = self._register_shape_gpu_direct(geo_hash, gfx_vertices, gfx_indices_wp)
+        # Register shape with GPU data and texture
+        shape = self._register_shape_gpu_direct_textured(geo_hash, gfx_vertices, gfx_indices_wp, texture)
+
+        if texture is not None:
+            self.bind_texture(texture)
 
         if not is_template:
+            # Create a new instance if necessary.
             body = self._resolve_body_id(parent_body)
-            # Use default colors to avoid CPU transfer
-            default_color = self._get_default_color(len(self._shape_geo_hash))
-            self.add_shape_instance(name, shape, body, pos, rot, color1=default_color, color2=default_color)
+            self.add_shape_instance(name, shape, body, pos, rot, color1=colors, color2=colors)
 
         return shape
+
+    def render_mesh_warp_range(
+        self,
+        name: str,
+        points: wp.array,
+        indices: wp.array,
+        texture_coords: wp.array = None,
+        texture: int = None,
+        index_start: int = 0,
+        index_count: int = -1,
+        pos=(0.0, 0.0, 0.0),
+        rot=(0.0, 0.0, 0.0, 1.0),
+        scale=(1.0, 1.0, 1.0),
+        update_topology=False,
+        parent_body: str | None = None,
+        is_template: bool = False,
+        smooth_shading: bool = True,
+        visible: bool = True,
+    ):
+        """
+        Render a mesh using a specific range of indices from the full mesh
+        """
+        
+        # Extract the range of indices
+        if index_count == -1:
+            index_count = indices.shape[0] - index_start
+        
+        # Create a slice of the indices array for this range
+        indices_range = indices[index_start:index_start + index_count]
+        
+        # Use the existing render_mesh_warp method with the sliced indices
+        return self.render_mesh_warp(
+            name=name,
+            points=points,
+            indices=indices_range,
+            colors=None,
+            texture_coords=texture_coords,
+            texture=texture,
+            pos=pos,
+            rot=rot,
+            scale=scale,
+            update_topology=update_topology,
+            parent_body=parent_body,
+            is_template=is_template,
+            smooth_shading=smooth_shading,
+            visible=visible,
+        )
 
     def render_arrow(
         self,
@@ -3763,7 +3996,7 @@ Instances: {len(self._instances)}"""
                 cos_phi = np.cos(phi)
 
                 z = cos_phi * sin_theta
-                y = cos_theta
+                y = j * half_height
                 x = sin_phi * sin_theta
 
                 u = cos_theta * 0.5 + 0.5

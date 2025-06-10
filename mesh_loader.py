@@ -29,13 +29,21 @@ def parse_connector_file(filepath, particle_id_offset=0, tri_id_offset=0):
             connectors.append(connector)
     return connectors
 
-def load_mesh_component(vertices_file, indices_file, edges_file, surface_indices_file, offset=0):
+def load_mesh_component(base_path, offset=0):
     """Load a single mesh component and return positions, indices, and edges."""
     positions = []
     indices = []
     edges = []
     tri_surface_indices = []
+    uvs = []
     
+    vertices_file = base_path + "model.vertices"
+    indices_file = base_path + "model.tetras"
+    edges_file = base_path + "model.edges"
+    surface_indices_file = base_path + "model.tris"
+    uvs_file = base_path + "model.uvs"
+
+
     # Load vertices
     with open(vertices_file, 'r') as f:
         for line in f:
@@ -57,47 +65,88 @@ def load_mesh_component(vertices_file, indices_file, edges_file, surface_indices
         for line in f:
             tri_surface_indices.extend([int(x) + offset for x in line.split()])
     
-    return positions, indices, edges, tri_surface_indices
+    # Load uvs
+    with open(uvs_file, 'r') as f:
+        for line in f:
+            uv = [float(x) for x in line.split()]
+            uvs.append(uv)
+
+    return positions, indices, edges, tri_surface_indices, uvs
 
 def load_mesh_and_build_model(builder: wp.sim.ModelBuilder, vertical_offset=0.0):
-    """Load all mesh components and build the simulation model."""
+    """Load all mesh components and build the simulation model with ranges."""
     all_positions = []
     all_indices = []
     all_edges = []
     all_tri_surface_indices = []
     all_connectors = []
+    all_uvs = []
+    
+    mesh_ranges = {
+        'liver': {'vertex_start': 0, 'vertex_count': 0, 'index_start': 0, 'index_count': 0},
+        'fat': {'vertex_start': 0, 'vertex_count': 0, 'index_start': 0, 'index_count': 0},
+        'gallbladder': {'vertex_start': 0, 'vertex_count': 0, 'index_start': 0, 'index_count': 0}
+    }
+    
+    # Track current offsets
+    current_vertex_offset = 0
+    current_index_offset = 0
     
     # Liver
-    liver_positions, liver_indices, liver_edges, liver_tris  = load_mesh_component(
-        'meshes/liver.vertices', 'meshes/liver.indices', 'meshes/liver.edges', 'meshes/liver.tris', 0)
-    liver_particle_offset = 0
+    liver_positions, liver_indices, liver_edges, liver_tris, liver_uvs = load_mesh_component('meshes/liver/', 0)
+    mesh_ranges['liver'] = {
+        'vertex_start': current_vertex_offset,
+        'vertex_count': len(liver_positions),
+        'index_start': current_index_offset,
+        'index_count': len(liver_tris)
+    }
+    
     all_positions.extend(liver_positions)
     all_indices.extend(liver_indices)
     all_edges.extend(liver_edges)
     all_tri_surface_indices.extend(liver_tris)
+    all_uvs.extend(liver_uvs)
+    
+    current_vertex_offset = len(all_positions)
+    current_index_offset = len(all_tri_surface_indices)
     
     # Fat
     fat_particle_offset = len(all_positions)
-    fat_positions, fat_indices, fat_edges, fat_tris = load_mesh_component(
-        'meshes/fat.vertices', 'meshes/fat.indices', 'meshes/fat.edges', 'meshes/fat.tris', fat_particle_offset)
+    fat_positions, fat_indices, fat_edges, fat_tris, fat_uvs = load_mesh_component('meshes/fat/', fat_particle_offset)
+    mesh_ranges['fat'] = {
+        'vertex_start': current_vertex_offset,
+        'vertex_count': len(fat_positions),
+        'index_start': current_index_offset,
+        'index_count': len(fat_tris)
+    }
+    
     all_positions.extend(fat_positions)
     all_indices.extend(fat_indices)
     all_edges.extend(fat_edges)
     all_tri_surface_indices.extend(fat_tris)
-
+    all_uvs.extend(fat_uvs)
+    
+    current_vertex_offset = len(all_positions)
+    current_index_offset = len(all_tri_surface_indices)
     
     # Gallbladder
     gallbladder_particle_offset = len(all_positions)
-    gallbladder_positions, gallbladder_indices, gallbladder_edges, gallbladder_tris = load_mesh_component(
-        'meshes/gallbladder.vertices', 'meshes/gallbladder.indices', 'meshes/gallbladder.edges', 'meshes/gallbladder.tris', gallbladder_particle_offset)
+    gallbladder_positions, gallbladder_indices, gallbladder_edges, gallbladder_tris, gallbladder_uvs = load_mesh_component('meshes/gallbladder/', gallbladder_particle_offset)
+    mesh_ranges['gallbladder'] = {
+        'vertex_start': current_vertex_offset,
+        'vertex_count': len(gallbladder_positions),
+        'index_start': current_index_offset,
+        'index_count': len(gallbladder_tris)
+    }
+    
     all_positions.extend(gallbladder_positions)
     all_indices.extend(gallbladder_indices)
     all_edges.extend(gallbladder_edges)
     all_tri_surface_indices.extend(gallbladder_tris)
-
+    all_uvs.extend(gallbladder_uvs)
     
     # Load connectors
-    fat_liver_connectors = parse_connector_file('meshes/fat-liver.connector', fat_particle_offset, liver_particle_offset)
+    fat_liver_connectors = parse_connector_file('meshes/fat-liver.connector', fat_particle_offset, 0)
     gallbladder_fat_connectors = parse_connector_file('meshes/gallbladder-fat.connector', gallbladder_particle_offset, fat_particle_offset)
     all_connectors.extend(fat_liver_connectors)
     all_connectors.extend(gallbladder_fat_connectors)
@@ -119,4 +168,4 @@ def load_mesh_and_build_model(builder: wp.sim.ModelBuilder, vertical_offset=0.0)
     for i in range(0, len(all_indices), 4):
         builder.add_tetrahedron(all_indices[i], all_indices[i + 1], all_indices[i + 2], all_indices[i + 3])
     
-    return wp.array(all_connectors, dtype=TriPointsConnector, device=wp.get_device()), all_tri_surface_indices
+    return wp.array(all_connectors, dtype=TriPointsConnector, device=wp.get_device()), all_tri_surface_indices, all_uvs, mesh_ranges
