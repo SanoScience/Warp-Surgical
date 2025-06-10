@@ -179,6 +179,19 @@ class WarpSim:
             if self.use_opengl:
                 self.renderer.begin_frame()
                 
+                self.renderer.render_sphere(
+                    "sphere",
+                    [self.haptic_pos_right[0] * 0.01, self.haptic_pos_right[1] * 0.01, self.haptic_pos_right[2] * 0.01],
+                    [0.0, 0.0, 0.0, 1.0],
+                    0.1,
+                )
+
+                self.renderer.render_sphere(
+                    "locking_sphere",
+                    [0.5, 1.5, -5.0],
+                    [0.0, 0.0, 0.0, 1.0],
+                    1,
+                )
                 # Render liver mesh
                 if self.mesh_ranges['liver']['index_count'] > 0:
                     self.renderer.render_mesh_warp_range(
@@ -222,11 +235,14 @@ class WarpSim:
             else:
                 self.renderer.begin_frame(self.sim_time)
                 self.renderer.render(self.state_0)
+
                 self.renderer.end_frame()
 
     def update_haptic_position(self, position):
         """Update the haptic device position in the simulation."""
-        haptic_pos = wp.vec3(position[0], position[1], position[2])
+        
+        haptic_pos = wp.vec3(position[0], position[1], position[2] - 500.0)  # Offset to avoid collision with ground;
+        self.haptic_pos_right = [haptic_pos[0], haptic_pos[1], haptic_pos[2]];
         wp.copy(self.dev_pos_buffer, wp.array([haptic_pos], dtype=wp.vec3, device=wp.get_device()))
 
     def is_running(self):

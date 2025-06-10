@@ -153,12 +153,18 @@ def load_mesh_and_build_model(builder: wp.sim.ModelBuilder, vertical_offset=0.0)
     
     # Add particles to model
     mass_total = 10.0
-    mass = mass_total / len(all_positions)
-    
+    #mass = mass_total / len(all_positions)
+    mass = 0.1
+
     for position in all_positions:
         pos = wp.vec3(position)
         pos[1] += vertical_offset
-        builder.add_particle(pos, wp.vec3(0, 0, 0), mass=mass, radius=0.02)
+        #very ugly hardcoded position and radius below
+        if is_particle_within_radius(pos, [0.5, 1.5, -5.0], 1.0):
+            builder.add_particle(pos, wp.vec3(0, 0, 0), mass=0, radius=0.01)
+        else:
+            builder.add_particle(pos, wp.vec3(0, 0, 0), mass=mass, radius=0.01)
+    
     
     # Add springs
     for i in range(0, len(all_edges), 2):
@@ -169,3 +175,10 @@ def load_mesh_and_build_model(builder: wp.sim.ModelBuilder, vertical_offset=0.0)
         builder.add_tetrahedron(all_indices[i], all_indices[i + 1], all_indices[i + 2], all_indices[i + 3])
     
     return wp.array(all_connectors, dtype=TriPointsConnector, device=wp.get_device()), all_tri_surface_indices, all_uvs, mesh_ranges
+
+
+def is_particle_within_radius(particle_pos, centre, radius):
+    pos = wp.vec3(particle_pos[0], particle_pos[1], particle_pos[2])
+    centre_pos = wp.vec3(centre[0], centre[1], centre[2])
+    distance = wp.length(pos - centre_pos)
+    return distance < radius

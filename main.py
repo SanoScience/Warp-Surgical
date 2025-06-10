@@ -22,7 +22,7 @@ def parse_arguments():
 def run_simulation(args):
     """Run the main simulation loop."""
     # Initialize haptic controller
-    haptic_controller = HapticController()
+    haptic_controller = HapticController(scale=5.0)
     
     # Initialize simulation
     sim = WarpSim(
