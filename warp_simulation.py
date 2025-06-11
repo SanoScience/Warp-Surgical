@@ -1,6 +1,7 @@
 import warp as wp
-import warp.sim
-import warp.sim.render
+#import warp.sim
+#import warp.sim.render
+import newton
 
 from mesh_loader import load_mesh_and_build_model
 from render_opengl import CustomOpenGLRenderer
@@ -49,7 +50,7 @@ class WarpSim:
 
     def _build_model(self):
         """Build the simulation model with mesh and haptic device."""
-        builder = wp.sim.ModelBuilder()
+        builder = newton.ModelBuilder(up_axis=newton.Axis.Y)
         
         # Import the mesh
         self.tri_points_connectors, self.surface_tris, uvs, self.mesh_ranges = load_mesh_and_build_model(builder, vertical_offset=-3.0)
@@ -57,27 +58,35 @@ class WarpSim:
         self.uvs_wp = wp.array(uvs, dtype=wp.vec2f, device=wp.get_device())
 
         # Add haptic device collision body
-        self.haptic_body_id = builder.add_body(
-            origin=wp.transform([0.0, 0.0, 0.0], wp.quat_identity()),
-            m=0.0,  # Zero mass makes it kinematic
-            armature=0.0
-        )
+        # self.haptic_body_id = builder.add_body(
+        #     origin=wp.transform([0.0, 0.0, 0.0], 
+        #     wp.quat_identity()),
+        #     m=0.0,  # Zero mass makes it kinematic
+        #     armature=0.0
+        # )
 
-        builder.add_shape_sphere(
-            self.haptic_body_id,
-            has_ground_collision=False,
-            has_shape_collision=True,
-            radius=0.2,
-            pos=wp.vec3(0.0, 0.0, 0.0),
-            density=100
-        )
+        # self.haptic_body_id = builder.add_body(
+        #     wp.quat_identity(),
+        #     mass=0.0,  # Zero mass makes it kinematic
+        #     armature=0.0
+        # )
+
+
+        # builder.add_shape_sphere(
+        #     self.haptic_body_id,
+        #     has_ground_collision=False,
+        #     has_shape_collision=True,
+        #     radius=0.2,
+        #     pos=wp.vec3(0.0, 0.0, 0.0),
+        #     density=100
+        # )
 
         self.model = builder.finalize()
         self.model.ground = True
 
     def _setup_simulation(self):
         """Initialize simulation states and integrator."""
-        self.integrator = wp.sim.XPBDIntegrator(iterations=5)
+        self.integrator = newton.solvers.XPBDSolver(self.model, iterations=5)
         
         self.dev_pos_buffer = wp.array([0.0, 0.0, 0.0], dtype=wp.vec3, device=wp.get_device())
         
@@ -97,7 +106,7 @@ class WarpSim:
             #self.renderer = SimRendererOpenGL(self.model, "Warp Surgical Simulation", scaling=1.0)
             self.renderer = CustomOpenGLRenderer("Warp Surgical Simulation", scaling=1.0, camera_pos=(0.0, 1.0, -1.0), vsync=False, fps=self.fps)
         elif stage_path:
-            self.renderer = wp.sim.render.SimRenderer(self.model, stage_path, scaling=20.0)
+            self.renderer = newton.render.SimRenderer(self.model, stage_path, scaling=20.0)
         else:
             self.renderer = None
 
@@ -116,12 +125,12 @@ class WarpSim:
             self.state_1.clear_forces()
 
             # Update haptic device position
-            wp.launch(
-                set_body_position,
-                dim=1,
-                inputs=[self.state_0.body_q, self.state_0.body_qd, self.haptic_body_id, self.dev_pos_buffer],
-                device=self.state_0.body_q.device,
-            )
+            # wp.launch(
+            #     set_body_position,
+            #     dim=1,
+            #     inputs=[self.state_0.body_q, self.state_0.body_qd, self.haptic_body_id, self.dev_pos_buffer],
+            #     device=self.state_0.body_q.device,
+            # )
 
             for _ in range(self.sim_constraint_iterations):
                 # Clear Jacobian accumulators
@@ -154,8 +163,8 @@ class WarpSim:
                 )
 
             # Run collision detection and integration
-            wp.sim.collide(self.model, self.state_0)
-            self.integrator.simulate(self.model, self.state_0, self.state_1, self.sim_dt)
+            #newton.collide(self.model, self.state_0)
+            self.integrator.step(self.model, self.state_0, self.state_1, None, None, self.sim_dt)
             
             # Swap states
             (self.state_0, self.state_1) = (self.state_1, self.state_0)
