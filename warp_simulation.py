@@ -9,7 +9,8 @@ from simulation_kernels import (
     clear_jacobian_accumulator,
     apply_jacobian_deltas,
     apply_tri_points_constraints_jacobian,
-    set_body_position
+    set_body_position,
+    paint_vertices_near_haptic
 )
 
 class WarpSim:
@@ -25,6 +26,7 @@ class WarpSim:
 
         # Initialize model
         self._build_model()
+        self.vertex_colors = wp.zeros(self.model.particle_count, dtype=wp.vec3f, device=wp.get_device())
         
         # Initialize simulation components
         self._setup_simulation()
@@ -38,15 +40,44 @@ class WarpSim:
         #    'fat': {'vertex_start': 0, 'vertex_count': 0, 'index_start': 0, 'index_count': 0},
         #    'gallbladder': {'vertex_start': 0, 'vertex_count': 0, 'index_start': 0, 'index_count': 0}
         #}
-        
+
+        self.paint_color_buffer = wp.array([wp.vec3(1.0, 0.0, 0.0)], dtype=wp.vec3, device=wp.get_device())  # Default red
+        self.paint_strength_buffer = wp.array([0.1], dtype=wp.float32, device=wp.get_device())  # Default strength
+        self.set_paint_strength(0.0)
+    
+
         # Load textures
         if self.use_opengl and self.renderer:
             self.liver_texture = self.renderer.load_texture("textures/liver-base.png")
             self.fat_texture = self.renderer.load_texture("textures/fat-base.png") 
             self.gallbladder_texture = self.renderer.load_texture("textures/gallbladder-base.png")
 
+            self.renderer.set_input_callbacks(
+                on_key_press=self._on_key_press,
+                on_key_release=self._on_key_release
+            )
+
         # Setup CUDA graph if available
         self._setup_cuda_graph()
+
+    def _on_key_press(self, symbol, modifiers):
+        """Handle key press events."""
+        from pyglet.window import key
+        
+        if symbol == key.R:
+            self.set_paint_color([1.0, 0.0, 0.0])
+            self.set_paint_strength(1.0)
+        elif symbol == key.F:
+            self.set_paint_color([0.0, 1.0, 0.0])
+            self.set_paint_strength(1.0)
+
+    def _on_key_release(self, symbol, modifiers):
+        """Handle key release events."""
+        from pyglet.window import key
+        
+        # Stop painting when any paint key is released
+        if symbol in [key.R, key.F]:
+            self.set_paint_strength(0.0)
 
     def _build_model(self):
         """Build the simulation model with mesh and haptic device."""
@@ -83,6 +114,31 @@ class WarpSim:
 
         self.model = builder.finalize()
         self.model.ground = True
+
+    def _paint_vertices_near_haptic_proxy(self, paint_radius=0.25, falloff_power=2.0):
+        """Paint vertex colors near the haptic proxy position."""
+        wp.launch(
+            paint_vertices_near_haptic,
+            dim=self.model.particle_count,
+            inputs=[
+                self.state_0.particle_q,  # vertex positions
+                self.state_0.body_q,      # haptic position
+                self.vertex_colors,       # vertex colors to modify
+                paint_radius,             # paint radius
+                self.paint_color_buffer,  # paint color (from array)
+                self.paint_strength_buffer,  # paint strength (from array)
+                falloff_power             # falloff power for smooth edges
+            ],
+            device=wp.get_device()
+        )
+
+    def set_paint_color(self, color):
+        """Set the paint color from CPU."""
+        self.paint_color_buffer.assign([wp.vec3(color[0], color[1], color[2])])
+
+    def set_paint_strength(self, strength):
+        """Set the paint strength from CPU."""
+        self.paint_strength_buffer.assign([strength])
 
     def _setup_simulation(self):
         """Initialize simulation states and integrator."""
@@ -162,6 +218,8 @@ class WarpSim:
                     device=self.state_0.particle_q.device,
                 )
 
+            self._paint_vertices_near_haptic_proxy()
+
             # Run collision detection and integration
             #newton.collide(self.model, self.state_0)
             self.integrator.step(self.model, self.state_0, self.state_1, None, None, self.sim_dt)
@@ -209,6 +267,7 @@ class WarpSim:
                         indices=self.surface_tris_wp,
                         texture_coords=self.uvs_wp,
                         texture=self.liver_texture,
+                        colors=self.vertex_colors,
                         index_start=self.mesh_ranges['liver']['index_start'],
                         index_count=self.mesh_ranges['liver']['index_count'],
                         update_topology=False
@@ -222,6 +281,7 @@ class WarpSim:
                         indices=self.surface_tris_wp,
                         texture_coords=self.uvs_wp,
                         texture=self.fat_texture,
+                        colors=self.vertex_colors,
                         index_start=self.mesh_ranges['fat']['index_start'],
                         index_count=self.mesh_ranges['fat']['index_count'],
                         update_topology=False
@@ -235,6 +295,7 @@ class WarpSim:
                         indices=self.surface_tris_wp,
                         texture_coords=self.uvs_wp,
                         texture=self.gallbladder_texture,
+                        colors=self.vertex_colors,
                         index_start=self.mesh_ranges['gallbladder']['index_start'],
                         index_count=self.mesh_ranges['gallbladder']['index_count'],
                         update_topology=False
