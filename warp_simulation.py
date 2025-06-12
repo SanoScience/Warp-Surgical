@@ -1,7 +1,5 @@
 import warp as wp
-import warp.sim
-import warp.sim.render
-import numpy as np
+
 
 from mesh_loader import load_mesh_and_build_model
 from render_opengl import CustomOpenGLRenderer

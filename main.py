@@ -55,9 +55,11 @@ def run_simulation(args):
     sim.save()
 
 def main():
+
+    print("Warp path: " +wp.__file__)
     """Main entry point."""
     args = parse_arguments()
-    
+
     with wp.ScopedDevice(args.device):
         run_simulation(args)
 
