@@ -13,5 +13,5 @@ dependencies = [
 ]
 
 [tool.uv.sources]
-newton-physics = { path = "../newton" }
+newton-physics = { path = "../newton", editable = true }
 warp-lang = { path = "../warp", editable = true }

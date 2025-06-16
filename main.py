@@ -4,6 +4,8 @@ import warp as wp
 from haptic_device import HapticController
 from warp_simulation import WarpSim
 
+#wp.config.mode = "debug"
+
 def parse_arguments():
     """Parse command line arguments."""
     parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)

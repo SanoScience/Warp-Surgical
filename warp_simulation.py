@@ -1,4 +1,11 @@
+import os
 import warp as wp
+import warp.sim
+import warp.render
+import warp.examples
+import math
+from warp.sim import ModelBuilder
+from warp.sim.render import SimRendererOpenGL
 
 
 from mesh_loader import load_mesh_and_build_model
@@ -13,7 +20,7 @@ from simulation_kernels import (
 
 class WarpSim:
     def __init__(self, stage_path="output.usd", num_frames=300, use_opengl=True):
-        self.sim_substeps = 32
+        self.sim_substeps = 16
         self.num_frames = num_frames
         self.fps = 120
 
@@ -21,6 +28,12 @@ class WarpSim:
         self.sim_dt = self.frame_dt / self.sim_substeps
         self.sim_time = 0.0
         self.sim_constraint_iterations = 5
+
+        print("fps: ", self.fps)
+        print("frame_dt: ", self.frame_dt)
+        print("sim_substeps: ", self.sim_substeps)
+        print("sim_dt: ", self.sim_dt)
+
 
         # Initialize model
         self._build_model()
@@ -45,15 +58,15 @@ class WarpSim:
     
 
         # Load textures
-        if self.use_opengl and self.renderer:
-            self.liver_texture = self.renderer.load_texture("textures/liver-base.png")
-            self.fat_texture = self.renderer.load_texture("textures/fat-base.png") 
-            self.gallbladder_texture = self.renderer.load_texture("textures/gallbladder-base.png")
+        # if self.use_opengl and self.renderer:
+        #     self.liver_texture = self.renderer.load_texture("textures/liver-base.png")
+        #     self.fat_texture = self.renderer.load_texture("textures/fat-base.png") 
+        #     self.gallbladder_texture = self.renderer.load_texture("textures/gallbladder-base.png")
 
-            self.renderer.set_input_callbacks(
-                on_key_press=self._on_key_press,
-                on_key_release=self._on_key_release
-            )
+        #     self.renderer.set_input_callbacks(
+        #         on_key_press=self._on_key_press,
+        #         on_key_release=self._on_key_release
+        #     )
 
         # Setup CUDA graph if available
         self._setup_cuda_graph()
@@ -78,11 +91,39 @@ class WarpSim:
             self.set_paint_strength(0.0)
 
     def _build_model(self):
+
+        articulation_builder = wp.sim.ModelBuilder()
+        wp.sim.parse_urdf(
+            #os.path.join(warp.examples.get_asset_directory(), "quadruped.urdf"),
+            os.path.join(warp.examples.get_asset_directory(), "franka_description/urdfs/fr3.urdf"),
+            
+            articulation_builder,
+            xform=wp.transform([0.0, 0.0, 0.0], wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), -math.pi * 0.5)),
+            floating=False,
+            density=1000,
+            armature=0.01,
+            stiffness=200,
+            damping=1,
+            contact_ke=1.0e4,
+            contact_kd=1.0e2,
+            contact_kf=1.0e2,
+            contact_mu=1.0,
+            limit_ke=1.0e4,
+            limit_kd=1.0e1,
+            enable_self_collisions=False,
+            hide_visuals=True,
+            force_show_colliders=True,
+        )
+
+        
+
         """Build the simulation model with mesh and haptic device."""
         builder = wp.sim.ModelBuilder()
+
+
         
         # Import the mesh
-        self.tri_points_connectors, self.surface_tris, uvs, self.mesh_ranges = load_mesh_and_build_model(builder, vertical_offset=-3.0)
+        self.tri_points_connectors, self.positions, self.surface_tris, uvs, self.mesh_ranges = load_mesh_and_build_model(builder, vertical_offset=-3.0)
         self.surface_tris_wp = wp.array(self.surface_tris, dtype=wp.int32, device=wp.get_device())
         self.uvs_wp = wp.array(uvs, dtype=wp.vec2f, device=wp.get_device())
 
@@ -97,13 +138,27 @@ class WarpSim:
             self.haptic_body_id,
             has_ground_collision=False,
             has_shape_collision=True,
-            radius=0.2,
+            radius=0.1,
             pos=wp.vec3(0.0, 0.0, 0.0),
             density=100
         )
 
+        builder.add_builder(articulation_builder, xform=wp.transform(wp.vec3(0.0, 0.7, 0.0), wp.quat_identity()))
+
+        builder.joint_q[-12:] = [0.2, 0.4, -0.6, -0.2, -0.4, 0.6, -0.2, 0.4, -0.6, 0.2, -0.4, 0.6]
+
+        builder.joint_axis_mode = [wp.sim.JOINT_MODE_TARGET_POSITION] * len(builder.joint_axis_mode)
+        builder.joint_act[-12:] = [0.2, 0.4, -0.6, -0.2, -0.4, 0.6, -0.2, 0.4, -0.6, 0.2, -0.4, 0.6]
+
         self.model = builder.finalize()
         self.model.ground = True
+
+        self.model.joint_attach_ke = 16000.0
+        self.model.joint_attach_kd = 200.0
+        self.use_tile_gemm = False
+        self.fuse_cholesky = False
+
+
 
     def _paint_vertices_near_haptic_proxy(self, paint_radius=0.25, falloff_power=2.0):
         """Paint vertex colors near the haptic proxy position."""
@@ -133,6 +188,7 @@ class WarpSim:
     def _setup_simulation(self):
         """Initialize simulation states and integrator."""
         self.integrator = wp.sim.XPBDIntegrator(iterations=5)
+        self.integrator.soft_body_relaxation = 0.9
         
         self.dev_pos_buffer = wp.array([0.0, 0.0, 0.0], dtype=wp.vec3, device=wp.get_device())
         
@@ -140,6 +196,8 @@ class WarpSim:
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
         
+        wp.sim.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, None, self.state_0)
+
         # Create Jacobian accumulators
         self.delta_accumulator = wp.zeros(self.model.particle_count, dtype=wp.vec3f, device=wp.get_device())
         self.count_accumulator = wp.zeros(self.model.particle_count, dtype=wp.int32, device=wp.get_device())
@@ -150,7 +208,10 @@ class WarpSim:
         
         if self.use_opengl:
             #self.renderer = SimRendererOpenGL(self.model, "Warp Surgical Simulation", scaling=1.0)
-            self.renderer = CustomOpenGLRenderer("Warp Surgical Simulation", scaling=1.0, camera_pos=(0.0, 1.0, -1.0), vsync=False, fps=self.fps)
+            self.renderer = wp.sim.render.CreateSimRenderer(wp.render.OpenGLRenderer)(self.model, "Warp Surgical Simulation", scaling=1.0)
+            
+            #self.renderer = wp.sim.render.CreateSimRenderer(CustomOpenGLRenderer)(self.model, "Warp Surgical Simulation", scaling=1.0, camera_pos=(0.0, 1.0, -1.0), vsync=False, fps=self.fps)
+            #self.renderer = CustomOpenGLRenderer("Warp Surgical Simulation", scaling=1.0, camera_pos=(0.0, 1.0, -1.0), vsync=False, fps=self.fps)
         elif stage_path:
             self.renderer = wp.sim.render.SimRenderer(self.model, stage_path, scaling=20.0)
         else:
@@ -159,6 +220,7 @@ class WarpSim:
     def _setup_cuda_graph(self):
         """Setup CUDA graph for performance optimization."""
         self.use_cuda_graph = wp.get_device().is_cuda
+        #self.use_cuda_graph = False  # Disable CUDA graph for now
         if self.use_cuda_graph:
             with wp.ScopedCapture() as capture:
                 self.simulate()
@@ -178,35 +240,39 @@ class WarpSim:
                 device=self.state_0.body_q.device,
             )
 
-            for _ in range(self.sim_constraint_iterations):
-                # Clear Jacobian accumulators
-                wp.launch(
-                    clear_jacobian_accumulator,
-                    dim=self.model.particle_count,
-                    inputs=[self.delta_accumulator, self.count_accumulator],
-                    device=self.state_0.particle_q.device,
-                )
+            joint_positions = robot.compute_inverse_kinematics(self.haptic_pos_right)
 
-                # Apply constraints
-                wp.launch(
-                    apply_tri_points_constraints_jacobian,
-                    dim=len(self.tri_points_connectors),
-                    inputs=[
-                        self.state_0.particle_q,
-                        self.tri_points_connectors,
-                        self.delta_accumulator,
-                        self.count_accumulator
-                    ],
-                    device=self.state_0.particle_q.device,
-                )
+            robot.set_joint_positions(joint_positions)
 
-                # Apply accumulated deltas
-                wp.launch(
-                    apply_jacobian_deltas,
-                    dim=self.model.particle_count,
-                    inputs=[self.state_0.particle_q, self.delta_accumulator, self.count_accumulator],
-                    device=self.state_0.particle_q.device,
-                )
+            # for _ in range(self.sim_constraint_iterations):
+            #     # Clear Jacobian accumulators
+            #     wp.launch(
+            #         clear_jacobian_accumulator,
+            #         dim=self.model.particle_count,
+            #         inputs=[self.delta_accumulator, self.count_accumulator],
+            #         device=self.state_0.particle_q.device,
+            #     )
+
+            #     # Apply constraints
+            #     wp.launch(
+            #         apply_tri_points_constraints_jacobian,
+            #         dim=len(self.tri_points_connectors),
+            #         inputs=[
+            #             self.state_0.particle_q,
+            #             self.tri_points_connectors,
+            #             self.delta_accumulator,
+            #             self.count_accumulator
+            #         ],
+            #         device=self.state_0.particle_q.device,
+            #     )
+
+            #     # Apply accumulated deltas
+            #     wp.launch(
+            #         apply_jacobian_deltas,
+            #         dim=self.model.particle_count,
+            #         inputs=[self.state_0.particle_q, self.delta_accumulator, self.count_accumulator],
+            #         device=self.state_0.particle_q.device,
+            #     )
 
             self._paint_vertices_near_haptic_proxy()
 
@@ -236,6 +302,8 @@ class WarpSim:
             if self.use_opengl:
                 self.renderer.begin_frame()
                 
+                self.renderer.render(self.state_0)
+                
                 self.renderer.render_sphere(
                     "sphere",
                     [self.haptic_pos_right[0] * 0.01, self.haptic_pos_right[1] * 0.01, self.haptic_pos_right[2] * 0.01],
@@ -243,59 +311,78 @@ class WarpSim:
                     0.1,
                 )
 
-                self.renderer.render_sphere(
-                    "locking_sphere",
-                    [0.5, 1.5, -5.0],
-                    [0.0, 0.0, 0.0, 1.0],
-                    1,
-                )
-                # Render liver mesh
+                # self.renderer.render_sphere(
+                #     "locking_sphere",
+                #     [0.5, 1.5, -5.0],
+                #     [0.0, 0.0, 0.0, 1.0],
+                #     1,
+                # )
+
+                # Read positions from GPU to CPU for rendering
+                # self.positions = wp.to_host(self.state_0.particle_q)
+
+                # Use positions_cpu for rendering operations that require CPU data
+                # self.renderer.render_points(
+                #     "particle_points",
+                #     positions=self.positions,
+                #     radius=0.05,
+                #     color=[0.8, 0.2, 0.2, 1.0]
+                # )
+
                 if self.mesh_ranges['liver']['index_count'] > 0:
-                    self.renderer.render_mesh_warp_range(
+                    self.renderer.render_mesh(
                         name="liver_mesh",
-                        points=self.state_0.particle_q,
-                        indices=self.surface_tris_wp,
-                        texture_coords=self.uvs_wp,
-                        texture=self.liver_texture,
-                        colors=self.vertex_colors,
-                        index_start=self.mesh_ranges['liver']['index_start'],
-                        index_count=self.mesh_ranges['liver']['index_count'],
+                        points=self.positions,
+                        indices=self.surface_tris,
                         update_topology=False
                     )
                 
-                # Render fat mesh
-                if self.mesh_ranges['fat']['index_count'] > 0:
-                    self.renderer.render_mesh_warp_range(
-                        name="fat_mesh",
-                        points=self.state_0.particle_q,
-                        indices=self.surface_tris_wp,
-                        texture_coords=self.uvs_wp,
-                        texture=self.fat_texture,
-                        colors=self.vertex_colors,
-                        index_start=self.mesh_ranges['fat']['index_start'],
-                        index_count=self.mesh_ranges['fat']['index_count'],
-                        update_topology=False
-                    )
+                # # Render liver mesh
+                # if self.mesh_ranges['liver']['index_count'] > 0:
+                #     self.renderer.render_mesh_warp_range(
+                #         name="liver_mesh",
+                #         points=self.state_0.particle_q,
+                #         indices=self.surface_tris_wp,
+                #         texture_coords=self.uvs_wp,
+                #         texture=self.liver_texture,
+                #         colors=self.vertex_colors,
+                #         index_start=self.mesh_ranges['liver']['index_start'],
+                #         index_count=self.mesh_ranges['liver']['index_count'],
+                #         update_topology=False
+                #     )
                 
-                # Render gallbladder mesh
-                if self.mesh_ranges['gallbladder']['index_count'] > 0:
-                    self.renderer.render_mesh_warp_range(
-                        name="gallbladder_mesh",
-                        points=self.state_0.particle_q,
-                        indices=self.surface_tris_wp,
-                        texture_coords=self.uvs_wp,
-                        texture=self.gallbladder_texture,
-                        colors=self.vertex_colors,
-                        index_start=self.mesh_ranges['gallbladder']['index_start'],
-                        index_count=self.mesh_ranges['gallbladder']['index_count'],
-                        update_topology=False
-                    )
+                # # # Render fat mesh
+                # if self.mesh_ranges['fat']['index_count'] > 0:
+                #     self.renderer.render_mesh_warp_range(
+                #         name="fat_mesh",
+                #         points=self.state_0.particle_q,
+                #         indices=self.surface_tris_wp,
+                #         texture_coords=self.uvs_wp,
+                #         texture=self.fat_texture,
+                #         colors=self.vertex_colors,
+                #         index_start=self.mesh_ranges['fat']['index_start'],
+                #         index_count=self.mesh_ranges['fat']['index_count'],
+                #         update_topology=False
+                #     )
+                
+                # # # Render gallbladder mesh
+                # if self.mesh_ranges['gallbladder']['index_count'] > 0:
+                #     self.renderer.render_mesh_warp_range(
+                #         name="gallbladder_mesh",
+                #         points=self.state_0.particle_q,
+                #         indices=self.surface_tris_wp,
+                #         texture_coords=self.uvs_wp,
+                #         texture=self.gallbladder_texture,
+                #         colors=self.vertex_colors,
+                #         index_start=self.mesh_ranges['gallbladder']['index_start'],
+                #         index_count=self.mesh_ranges['gallbladder']['index_count'],
+                #         update_topology=False
+                #     )
                 
                 self.renderer.end_frame()
             else:
                 self.renderer.begin_frame(self.sim_time)
                 self.renderer.render(self.state_0)
-
                 self.renderer.end_frame()
 
     def update_haptic_position(self, position):

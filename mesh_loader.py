@@ -27,6 +27,8 @@ def parse_connector_file(filepath, particle_id_offset=0, tri_id_offset=0):
             connector.tri_bar = wp.vec3f(float(parts[5]), float(parts[6]), float(parts[7]))
             
             connectors.append(connector)
+
+
     return connectors
 
 def load_mesh_component(base_path, offset=0):
@@ -161,20 +163,29 @@ def load_mesh_and_build_model(builder: wp.sim.ModelBuilder, vertical_offset=0.0)
         pos[1] += vertical_offset
         #very ugly hardcoded position and radius below
         if is_particle_within_radius(pos, [0.5, 1.5, -5.0], 1.0):
-            builder.add_particle(pos, wp.vec3(0, 0, 0), mass=0, radius=0.01)
+            builder.add_particle(pos, wp.vec3(0, 0, 0), mass=mass, radius=0.01)
         else:
             builder.add_particle(pos, wp.vec3(0, 0, 0), mass=mass, radius=0.01)
     
     
     # Add springs
     for i in range(0, len(all_edges), 2):
-        builder.add_spring(all_edges[i], all_edges[i + 1], 1.0e3, 0.0, 0)
+        builder.add_spring(all_edges[i], all_edges[i + 1], 1.0e3, 0.1, 0)
     
     # Add tetrahedrons
     for i in range(0, len(all_indices), 4):
         builder.add_tetrahedron(all_indices[i], all_indices[i + 1], all_indices[i + 2], all_indices[i + 3])
     
-    return wp.array(all_connectors, dtype=TriPointsConnector, device=wp.get_device()), all_tri_surface_indices, all_uvs, mesh_ranges
+
+    # Add connectors
+    for connector in all_connectors:
+        builder.add_connector(
+            connector.particle_id,
+            connector.rest_dist,
+            connector.tri_ids,
+            connector.tri_bar
+        )
+    return wp.array(all_connectors, dtype=TriPointsConnector, device=wp.get_device()), all_positions, all_tri_surface_indices, all_uvs, mesh_ranges
 
 
 def is_particle_within_radius(particle_pos, centre, radius):
