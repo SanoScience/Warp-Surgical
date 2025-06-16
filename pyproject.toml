@@ -23,5 +23,5 @@ explicit = true
 url = "https://pypi.org/simple"
 
 [tool.uv.sources]
-newton-physics = { path = "../newton" }
+newton-physics = { path = "../newton", editable = true }
 warp-lang = { index = "nvidia"}

@@ -1,6 +1,11 @@
 import warp as wp
 import newton
+
+from newton.utils.render import SimRendererOpenGL
+
 import numpy as np
+
+from render_surgsim_opengl import SurgSimRendererOpenGL
 
 from mesh_loader import load_mesh_and_build_model
 from render_opengl import CustomOpenGLRenderer
@@ -51,10 +56,10 @@ class WarpSim:
             self.fat_texture = self.renderer.load_texture("textures/fat-base.png") 
             self.gallbladder_texture = self.renderer.load_texture("textures/gallbladder-base.png")
 
-            self.renderer.set_input_callbacks(
-                on_key_press=self._on_key_press,
-                on_key_release=self._on_key_release
-            )
+            # self.renderer.set_input_callbacks(
+            #     on_key_press=self._on_key_press,
+            #     on_key_release=self._on_key_release
+            # )
 
         # Setup CUDA graph if available
         self._setup_cuda_graph()
@@ -88,28 +93,22 @@ class WarpSim:
         self.uvs_wp = wp.array(uvs, dtype=wp.vec2f, device=wp.get_device())
 
         # Add haptic device collision body
-        # self.haptic_body_id = builder.add_body(
-        #     origin=wp.transform([0.0, 0.0, 0.0], 
-        #     wp.quat_identity()),
-        #     m=0.0,  # Zero mass makes it kinematic
-        #     armature=0.0
-        # )
+        self.haptic_body_id = builder.add_body(
+            xform=wp.transform([0.0, 0.0, 0.0], wp.quat_identity()),
+            mass=0.0,  # Zero mass makes it kinematic
+            armature=0.0
+        )
 
-        # self.haptic_body_id = builder.add_body(
-        #     wp.quat_identity(),
-        #     mass=0.0,  # Zero mass makes it kinematic
-        #     armature=0.0
-        # )
+        builder.add_shape_sphere(
+            body=self.haptic_body_id,
+            xform=wp.transform([0.0, 0.0, 0.0], wp.quat_identity()),
+            radius=0.2,
+            cfg=newton.ModelBuilder.ShapeConfig(
+                density=1000
+            )
+        )
+        
 
-
-        # builder.add_shape_sphere(
-        #     self.haptic_body_id,
-        #     has_ground_collision=False,
-        #     has_shape_collision=True,
-        #     radius=0.2,
-        #     pos=wp.vec3(0.0, 0.0, 0.0),
-        #     density=100
-        # )
 
         self.model = builder.finalize()
         self.model.ground = True
@@ -148,6 +147,7 @@ class WarpSim:
         self.rest = self.model.state()
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
+        self.contacts = self.model.collide(self.state_0)
         
         # Create Jacobian accumulators
         self.delta_accumulator = wp.zeros(self.model.particle_count, dtype=wp.vec3f, device=wp.get_device())
@@ -158,8 +158,7 @@ class WarpSim:
         self.use_opengl = use_opengl
         
         if self.use_opengl:
-            #self.renderer = SimRendererOpenGL(self.model, "Warp Surgical Simulation", scaling=1.0)
-            self.renderer = CustomOpenGLRenderer("Warp Surgical Simulation", scaling=1.0, camera_pos=(0.0, 1.0, -1.0), vsync=False, fps=self.fps)
+            self.renderer = SurgSimRendererOpenGL(self.model, "Warp Surgical Simulation", scaling=1.0)
         elif stage_path:
             self.renderer = newton.render.SimRenderer(self.model, stage_path, scaling=20.0)
         else:
@@ -180,12 +179,12 @@ class WarpSim:
             self.state_1.clear_forces()
 
             # Update haptic device position
-            # wp.launch(
-            #     set_body_position,
-            #     dim=1,
-            #     inputs=[self.state_0.body_q, self.state_0.body_qd, self.haptic_body_id, self.dev_pos_buffer],
-            #     device=self.state_0.body_q.device,
-            # )
+            wp.launch(
+                set_body_position,
+                dim=1,
+                inputs=[self.state_0.body_q, self.state_0.body_qd, self.haptic_body_id, self.dev_pos_buffer],
+                device=self.state_0.body_q.device,
+            )
 
             for _ in range(self.sim_constraint_iterations):
                 # Clear Jacobian accumulators
@@ -217,11 +216,13 @@ class WarpSim:
                     device=self.state_0.particle_q.device,
                 )
 
-            self._paint_vertices_near_haptic_proxy()
+           # self._paint_vertices_near_haptic_proxy()
 
             # Run collision detection and integration
             #newton.collide(self.model, self.state_0)
-            self.integrator.step(self.model, self.state_0, self.state_1, None, None, self.sim_dt)
+            
+
+            self.integrator.step(self.model, self.state_0, self.state_1, None, self.contacts, self.sim_dt)
             
             # Swap states
             (self.state_0, self.state_1) = (self.state_1, self.state_0)
@@ -244,6 +245,8 @@ class WarpSim:
         with wp.ScopedTimer("render"):
             if self.use_opengl:
                 self.renderer.begin_frame()
+                
+                #self.renderer.render(self.state_0)
                 
                 self.renderer.render_sphere(
                     "sphere",
