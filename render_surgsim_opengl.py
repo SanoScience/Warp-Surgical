@@ -27,164 +27,89 @@ from warp.render.utils import solidify_mesh, tab10_color_map
 
 import newton
 
-@wp.kernel
-def assemble_gfx_vertices(
-    vertices: wp.array(dtype=wp.vec3, ndim=1),
-    normals: wp.array(dtype=wp.vec3),
-    faces_per_vertex: wp.array(dtype=int),
-    scale: wp.vec3,
-    # outputs
-    gfx_vertices: wp.array(dtype=float, ndim=2),
-):
-    tid = wp.tid()
-    v = vertices[tid]
-    n = normals[tid] / float(faces_per_vertex[tid])
-    gfx_vertices[tid, 0] = v[0] * scale[0]
-    gfx_vertices[tid, 1] = v[1] * scale[1]
-    gfx_vertices[tid, 2] = v[2] * scale[2]
-    gfx_vertices[tid, 3] = n[0]
-    gfx_vertices[tid, 4] = n[1]
-    gfx_vertices[tid, 5] = n[2]
+from render_opengl import str_buffer
 
-@wp.kernel
-def assemble_gfx_vertices_textured(
-    vertices: wp.array(dtype=wp.vec3),
-    normals: wp.array(dtype=wp.vec3),
-    faces_per_vertex: wp.array(dtype=wp.int32),
-    texture_coords: wp.array(dtype=wp.vec2),
-    scale: wp.vec3,
-    gfx_vertices: wp.array(dtype=wp.float32, ndim=2)
-):
-    tid = wp.tid()
-    if tid >= len(vertices):
-        return
-        
-    pos = vertices[tid]
-    normal = normals[tid]
-    
-    # Normalize normal
-    if faces_per_vertex[tid] > 0:
-        normal = normal / wp.float32(faces_per_vertex[tid])
-        normal = wp.normalize(normal)
-    
-    # Get texture coordinates
-    uv = texture_coords[tid]
-    
-    # Pack vertex data: position (3) + normal (3) + texture coords (2)
-    gfx_vertices[tid, 0] = pos[0] * scale[0]
-    gfx_vertices[tid, 1] = pos[1] * scale[1]
-    gfx_vertices[tid, 2] = pos[2] * scale[2]
-    gfx_vertices[tid, 3] = normal[0]
-    gfx_vertices[tid, 4] = normal[1]
-    gfx_vertices[tid, 5] = normal[2]
-    gfx_vertices[tid, 6] = uv[0]
-    gfx_vertices[tid, 7] = uv[1]
+shape_vertex_shader = """
+#version 330 core
+layout (location = 0) in vec3 aPos;
+layout (location = 1) in vec3 aNormal;
+layout (location = 2) in vec2 aTexCoord;
+layout (location = 3) in vec3 aVertexColor;
 
-@wp.kernel
-def compute_gfx_vertices_textured(
-    indices: wp.array(dtype=wp.int32, ndim=2),
-    vertices: wp.array(dtype=wp.vec3),
-    texture_coords: wp.array(dtype=wp.vec2),
-    scale: wp.vec3,
-    gfx_vertices: wp.array(dtype=wp.float32, ndim=2)
-):
-    tid = wp.tid()
-    if tid >= len(indices):
-        return
-    
-    # Get triangle indices
-    i0 = indices[tid, 0]
-    i1 = indices[tid, 1] 
-    i2 = indices[tid, 2]
-    
-    # Get positions
-    p0 = vertices[i0] * scale[0]
-    p1 = vertices[i1] * scale[1]
-    p2 = vertices[i2] * scale[2]
-    
-    # Compute face normal
-    edge1 = p1 - p0
-    edge2 = p2 - p0
-    normal = wp.normalize(wp.cross(edge1, edge2))
-    
-    # Get texture coordinates
-    uv0 = texture_coords[i0]
-    uv1 = texture_coords[i1]
-    uv2 = texture_coords[i2]
-    
-    # Store vertices for this triangle
-    base_idx = tid * 3
-    
-    # Vertex 0
-    gfx_vertices[base_idx + 0, 0] = p0[0]
-    gfx_vertices[base_idx + 0, 1] = p0[1]
-    gfx_vertices[base_idx + 0, 2] = p0[2]
-    gfx_vertices[base_idx + 0, 3] = normal[0]
-    gfx_vertices[base_idx + 0, 4] = normal[1]
-    gfx_vertices[base_idx + 0, 5] = normal[2]
-    gfx_vertices[base_idx + 0, 6] = uv0[0]
-    gfx_vertices[base_idx + 0, 7] = uv0[1]
-    
-    # Vertex 1
-    gfx_vertices[base_idx + 1, 0] = p1[0]
-    gfx_vertices[base_idx + 1, 1] = p1[1]
-    gfx_vertices[base_idx + 1, 2] = p1[2]
-    gfx_vertices[base_idx + 1, 3] = normal[0]
-    gfx_vertices[base_idx + 1, 4] = normal[1]
-    gfx_vertices[base_idx + 1, 5] = normal[2]
-    gfx_vertices[base_idx + 1, 6] = uv1[0]
-    gfx_vertices[base_idx + 1, 7] = uv1[1]
-    
-    # Vertex 2
-    gfx_vertices[base_idx + 2, 0] = p2[0]
-    gfx_vertices[base_idx + 2, 1] = p2[1]
-    gfx_vertices[base_idx + 2, 2] = p2[2]
-    gfx_vertices[base_idx + 2, 3] = normal[0]
-    gfx_vertices[base_idx + 2, 4] = normal[1]
-    gfx_vertices[base_idx + 2, 5] = normal[2]
-    gfx_vertices[base_idx + 2, 6] = uv2[0]
-    gfx_vertices[base_idx + 2, 7] = uv2[1]
+// column vectors of the instance transform matrix
+layout (location = 4) in vec4 aInstanceTransform0;
+layout (location = 5) in vec4 aInstanceTransform1;
+layout (location = 6) in vec4 aInstanceTransform2;
+layout (location = 7) in vec4 aInstanceTransform3;
 
-@wp.kernel
-def update_mesh_vertices_optimized_textured(
-    points: wp.array(dtype=wp.vec3),
-    texture_coords: wp.array(dtype=wp.vec2),
-    scale: wp.vec3,
-    gfx_vertices: wp.array(dtype=wp.float32, ndim=2)
-):
-    tid = wp.tid()
-    if tid >= len(points):
-        return
-        
-    pos = points[tid]
-    uv = texture_coords[tid]
-    
-    # Update position and texture coordinates (keep existing normals)
-    gfx_vertices[tid, 0] = pos[0] * scale[0]
-    gfx_vertices[tid, 1] = pos[1] * scale[1]
-    gfx_vertices[tid, 2] = pos[2] * scale[2]
-    gfx_vertices[tid, 6] = uv[0]
-    gfx_vertices[tid, 7] = uv[1]
+uniform mat4 view;
+uniform mat4 model;
+uniform mat4 projection;
 
-@wp.kernel
-def copy_rgb_frame(
-    input_img: wp.array(dtype=wp.uint8),
-    width: int,
-    height: int,
-    # outputs
-    output_img: wp.array(dtype=float, ndim=3),
-):
-    w, v = wp.tid()
-    pixel = v * width + w
-    pixel *= 3
-    r = float(input_img[pixel + 0])
-    g = float(input_img[pixel + 1])
-    b = float(input_img[pixel + 2])
-    # flip vertically (OpenGL coordinates start at bottom)
-    v = height - v - 1
-    output_img[v, w, 0] = r / 255.0
-    output_img[v, w, 1] = g / 255.0
-    output_img[v, w, 2] = b / 255.0
+out vec3 Normal;
+out vec3 FragPos;
+out vec2 TexCoord;
+out vec3 VertexColor;
+
+void main()
+{
+    mat4 transform = model * mat4(aInstanceTransform0, aInstanceTransform1, aInstanceTransform2, aInstanceTransform3);
+    vec4 worldPos = transform * vec4(aPos, 1.0);
+    gl_Position = projection * view * worldPos;
+    FragPos = vec3(worldPos);
+    Normal = mat3(transpose(inverse(transform))) * aNormal;
+    TexCoord = aTexCoord;
+    VertexColor = aVertexColor;
+}
+"""
+
+shape_fragment_shader = """
+#version 330 core
+out vec4 FragColor;
+
+in vec3 Normal;
+in vec3 FragPos;
+in vec2 TexCoord;
+in vec3 VertexColor;
+
+uniform vec3 viewPos;
+uniform vec3 lightColor;
+uniform vec3 sunDirection;
+uniform sampler2D textureSampler;
+
+void main()
+{
+    float ambientStrength = 0.3;
+    vec3 ambient = ambientStrength * lightColor;
+    vec3 norm = normalize(Normal);
+
+    float diff = max(dot(norm, sunDirection), 0.0);
+    vec3 diffuse = diff * lightColor;
+
+    vec3 lightDir2 = normalize(vec3(1.0, 0.3, -0.3));
+    diff = max(dot(norm, lightDir2), 0.0);
+    diffuse += diff * lightColor * 0.3;
+
+    float specularStrength = 0.5;
+    vec3 viewDir = normalize(viewPos - FragPos);
+
+    vec3 reflectDir = reflect(-sunDirection, norm);
+    float spec = pow(max(dot(viewDir, reflectDir), 0.0), 32);
+    vec3 specular = specularStrength * spec * lightColor;
+
+    reflectDir = reflect(-lightDir2, norm);
+    spec = pow(max(dot(viewDir, reflectDir), 0.0), 64);
+    specular += specularStrength * spec * lightColor * 0.3;
+
+    vec3 baseColor = texture(textureSampler, TexCoord).rgb;
+    
+    // Use vertex color if it's not zero (black), otherwise use base texture color
+    vec3 finalColor = baseColor; //* (1.0 - VertexColor);
+
+    vec3 result = (ambient + diffuse + specular) * finalColor;
+    FragColor = vec4(result, 1.0);
+}
+"""
 
 @wp.kernel
 def assemble_gfx_vertices_with_colors(
@@ -305,129 +230,6 @@ def compute_gfx_vertices_with_colors(
     gfx_vertices[base_idx + 2, 10] = color2[2]
 
 @wp.kernel
-def copy_rgb_frame_uint8(
-    input_img: wp.array(dtype=wp.uint8),
-    width: int,
-    height: int,
-    # outputs
-    output_img: wp.array(dtype=wp.uint8, ndim=3),
-):
-    w, v = wp.tid()
-    pixel = v * width + w
-    pixel *= 3
-    # flip vertically (OpenGL coordinates start at bottom)
-    v = height - v - 1
-    output_img[v, w, 0] = input_img[pixel + 0]
-    output_img[v, w, 1] = input_img[pixel + 1]
-    output_img[v, w, 2] = input_img[pixel + 2]
-
-
-@wp.kernel
-def copy_depth_frame(
-    input_img: wp.array(dtype=wp.float32),
-    width: int,
-    height: int,
-    near: float,
-    far: float,
-    # outputs
-    output_img: wp.array(dtype=wp.float32, ndim=3),
-):
-    w, v = wp.tid()
-    pixel = v * width + w
-    # flip vertically (OpenGL coordinates start at bottom)
-    v = height - v - 1
-    d = 2.0 * input_img[pixel] - 1.0
-    d = 2.0 * near * far / ((far - near) * d - near - far)
-    output_img[v, w, 0] = -d
-
-
-@wp.kernel
-def copy_rgb_frame_tiles(
-    input_img: wp.array(dtype=wp.uint8),
-    positions: wp.array(dtype=int, ndim=2),
-    screen_width: int,
-    screen_height: int,
-    tile_height: int,
-    # outputs
-    output_img: wp.array(dtype=float, ndim=4),
-):
-    tile, x, y = wp.tid()
-    p = positions[tile]
-    qx = x + p[0]
-    qy = y + p[1]
-    pixel = qy * screen_width + qx
-    # flip vertically (OpenGL coordinates start at bottom)
-    y = tile_height - y - 1
-    if qx >= screen_width or qy >= screen_height:
-        output_img[tile, y, x, 0] = 0.0
-        output_img[tile, y, x, 1] = 0.0
-        output_img[tile, y, x, 2] = 0.0
-        return  # prevent out-of-bounds access
-    pixel *= 3
-    r = float(input_img[pixel + 0])
-    g = float(input_img[pixel + 1])
-    b = float(input_img[pixel + 2])
-    output_img[tile, y, x, 0] = r / 255.0
-    output_img[tile, y, x, 1] = g / 255.0
-    output_img[tile, y, x, 2] = b / 255.0
-
-
-@wp.kernel
-def copy_rgb_frame_tiles_uint8(
-    input_img: wp.array(dtype=wp.uint8),
-    positions: wp.array(dtype=int, ndim=2),
-    screen_width: int,
-    screen_height: int,
-    tile_height: int,
-    # outputs
-    output_img: wp.array(dtype=wp.uint8, ndim=4),
-):
-    tile, x, y = wp.tid()
-    p = positions[tile]
-    qx = x + p[0]
-    qy = y + p[1]
-    pixel = qy * screen_width + qx
-    # flip vertically (OpenGL coordinates start at bottom)
-    y = tile_height - y - 1
-    if qx >= screen_width or qy >= screen_height:
-        output_img[tile, y, x, 0] = wp.uint8(0)
-        output_img[tile, y, x, 1] = wp.uint8(0)
-        output_img[tile, y, x, 2] = wp.uint8(0)
-        return  # prevent out-of-bounds access
-    pixel *= 3
-    output_img[tile, y, x, 0] = input_img[pixel + 0]
-    output_img[tile, y, x, 1] = input_img[pixel + 1]
-    output_img[tile, y, x, 2] = input_img[pixel + 2]
-
-
-@wp.kernel
-def copy_depth_frame_tiles(
-    input_img: wp.array(dtype=wp.float32),
-    positions: wp.array(dtype=int, ndim=2),
-    screen_width: int,
-    screen_height: int,
-    tile_height: int,
-    near: float,
-    far: float,
-    # outputs
-    output_img: wp.array(dtype=wp.float32, ndim=4),
-):
-    tile, x, y = wp.tid()
-    p = positions[tile]
-    qx = x + p[0]
-    qy = y + p[1]
-    pixel = qy * screen_width + qx
-    # flip vertically (OpenGL coordinates start at bottom)
-    y = tile_height - y - 1
-    if qx >= screen_width or qy >= screen_height:
-        output_img[tile, y, x, 0] = far
-        return  # prevent out-of-bounds access
-    d = 2.0 * input_img[pixel] - 1.0
-    d = 2.0 * near * far / ((far - near) * d - near - far)
-    output_img[tile, y, x, 0] = -d
-
-
-@wp.kernel
 def update_mesh_vertices_optimized_with_colors(
     points: wp.array(dtype=wp.vec3),
     texture_coords: wp.array(dtype=wp.vec2),
@@ -452,64 +254,6 @@ def update_mesh_vertices_optimized_with_colors(
     gfx_vertices[tid, 8] = color[0]
     gfx_vertices[tid, 9] = color[1]
     gfx_vertices[tid, 10] = color[2]
-
-@wp.kernel
-def copy_rgb_frame_tile(
-    input_img: wp.array(dtype=wp.uint8),
-    offset_x: int,
-    offset_y: int,
-    screen_width: int,
-    screen_height: int,
-    tile_height: int,
-    # outputs
-    output_img: wp.array(dtype=float, ndim=4),
-):
-    tile, x, y = wp.tid()
-    qx = x + offset_x
-    qy = y + offset_y
-    pixel = qy * screen_width + qx
-    # flip vertically (OpenGL coordinates start at bottom)
-    y = tile_height - y - 1
-    if qx >= screen_width or qy >= screen_height:
-        output_img[tile, y, x, 0] = 0.0
-        output_img[tile, y, x, 1] = 0.0
-        output_img[tile, y, x, 2] = 0.0
-        return  # prevent out-of-bounds access
-    pixel *= 3
-    r = float(input_img[pixel + 0])
-    g = float(input_img[pixel + 1])
-    b = float(input_img[pixel + 2])
-    output_img[tile, y, x, 0] = r / 255.0
-    output_img[tile, y, x, 1] = g / 255.0
-    output_img[tile, y, x, 2] = b / 255.0
-
-
-@wp.kernel
-def copy_rgb_frame_tile_uint8(
-    input_img: wp.array(dtype=wp.uint8),
-    offset_x: int,
-    offset_y: int,
-    screen_width: int,
-    screen_height: int,
-    tile_height: int,
-    # outputs
-    output_img: wp.array(dtype=wp.uint8, ndim=4),
-):
-    tile, x, y = wp.tid()
-    qx = x + offset_x
-    qy = y + offset_y
-    pixel = qy * screen_width + qx
-    # flip vertically (OpenGL coordinates start at bottom)
-    y = tile_height - y - 1
-    if qx >= screen_width or qy >= screen_height:
-        output_img[tile, y, x, 0] = wp.uint8(0)
-        output_img[tile, y, x, 1] = wp.uint8(0)
-        output_img[tile, y, x, 2] = wp.uint8(0)
-        return  # prevent out-of-bounds access
-    pixel *= 3
-    output_img[tile, y, x, 0] = input_img[pixel + 0]
-    output_img[tile, y, x, 1] = input_img[pixel + 1]
-    output_img[tile, y, x, 2] = input_img[pixel + 2]
 
 
 def check_gl_error():
@@ -562,8 +306,10 @@ def CreateSurgSimRenderer(renderer):
         ):
             if up_axis is None:
                 up_axis = model.up_axis
-            up_axis = newton.Axis.from_any(up_axis)
+            up_axis = newton.Axis.from_any(up_axis)    
+
             super().__init__(path, scaling=scaling, fps=fps, up_axis=str(up_axis), **render_kwargs)
+            self._replace_shape_fragment_shader()
             self.scaling = scaling
             self.cam_axis = up_axis.value
             self.show_joints = show_joints
@@ -573,14 +319,41 @@ def CreateSurgSimRenderer(renderer):
 
             self._contact_points0 = None
             self._contact_points1 = None
-        
+
         def load_texture(self, filepath: str, **kwargs) -> int:
             """Load a texture from file"""
             if not hasattr(self, '_texture_manager'):
                 from texture_loader import OpenGLTextureManager
                 self._texture_manager = OpenGLTextureManager(self)
             return self._texture_manager.load_texture(filepath, **kwargs)
-        
+
+        def _replace_shape_fragment_shader(self):
+                # Access the OpenGL context and shader utilities
+                gl = self.gl
+                from pyglet.graphics.shader import Shader, ShaderProgram
+
+                # Create new Shader objects
+                vert_shader = Shader(shape_vertex_shader, 'vertex')
+                frag_shader = Shader(shape_fragment_shader, 'fragment')
+
+                # Create a new ShaderProgram
+                new_program = ShaderProgram(vert_shader, frag_shader)
+
+                # Replace the renderer's shape shader program
+                self._shape_shader = new_program
+
+                # Reinitialize uniforms
+                with self._shape_shader:
+                    gl.glUniform3f(
+                    gl.glGetUniformLocation(self._shape_shader.id, str_buffer("sunDirection")), *self._sun_direction)
+                    gl.glUniform3f(gl.glGetUniformLocation(self._shape_shader.id, str_buffer("lightColor")), 1, 1, 1)
+                    self._loc_shape_model = gl.glGetUniformLocation(self._shape_shader.id, str_buffer("model"))
+                    self._loc_shape_view = gl.glGetUniformLocation(self._shape_shader.id, str_buffer("view"))
+                    self._loc_shape_projection = gl.glGetUniformLocation(self._shape_shader.id, str_buffer("projection"))
+                    self._loc_shape_view_pos = gl.glGetUniformLocation(self._shape_shader.id, str_buffer("viewPos"))
+                    gl.glUniform3f(self._loc_shape_view_pos, 0, 0, 10)
+                    gl.glUniform1f(gl.glGetUniformLocation(self._shape_shader.id, str_buffer("texture_sampler")), 0)
+
         def render_mesh_warp(
             self,
             name: str,
@@ -780,144 +553,6 @@ def CreateSurgSimRenderer(renderer):
                 visible=visible,
             )
             
-        def _register_shape_gpu_direct(self, geo_hash, gfx_vertices: wp.array, gfx_indices: wp.array):
-                """Register shape using GPU arrays directly without CPU transfer"""
-                gl = CustomOpenGLRenderer.gl
-                self._switch_context()
-
-                shape = len(self._shapes)
-                color1 = self._get_default_color(len(self._shape_geo_hash))
-                color2 = np.clip(np.array(color1) + 0.25, 0.0, 1.0)
-                
-                # Store minimal shape data (avoid storing large arrays)
-                self._shapes.append((None, None, color1, color2, geo_hash))
-                self._shape_geo_hash[geo_hash] = shape
-
-                gl.glUseProgram(self._shape_shader.id)
-
-                # Create VAO, VBO, and EBO
-                vao = gl.GLuint()
-                gl.glGenVertexArrays(1, vao)
-                gl.glBindVertexArray(vao)
-
-                # Create VBO and upload GPU data directly
-                vbo = gl.GLuint()
-                gl.glGenBuffers(1, vbo)
-                gl.glBindBuffer(gl.GL_ARRAY_BUFFER, vbo)
-                
-                # Get buffer size and allocate
-                vertex_count = gfx_vertices.shape[0]
-                vertex_size = gfx_vertices.shape[1] * 4  # 4 bytes per float
-                total_size = vertex_count * vertex_size
-                
-                gl.glBufferData(gl.GL_ARRAY_BUFFER, total_size, None, gl.GL_DYNAMIC_DRAW)
-                
-                # Create CUDA buffer and copy GPU data directly
-                vertex_cuda_buffer = wp.RegisteredGLBuffer(int(vbo.value), self._device)
-                mapped_buffer = vertex_cuda_buffer.map(dtype=wp.float32, shape=gfx_vertices.shape)
-                wp.copy(mapped_buffer, gfx_vertices)
-                vertex_cuda_buffer.unmap()
-
-                # Create EBO and upload indices
-                ebo = gl.GLuint()
-                gl.glGenBuffers(1, ebo)
-                gl.glBindBuffer(gl.GL_ELEMENT_ARRAY_BUFFER, ebo)
-                
-                indices_count = gfx_indices.shape[0]
-                indices_size = indices_count * 4  # 4 bytes per int32
-                
-                gl.glBufferData(gl.GL_ELEMENT_ARRAY_BUFFER, indices_size, None, gl.GL_DYNAMIC_DRAW)
-                
-                # Copy indices to GPU buffer
-                indices_cuda_buffer = wp.RegisteredGLBuffer(int(ebo.value), self._device)
-                mapped_indices = indices_cuda_buffer.map(dtype=wp.int32, shape=(indices_count,))
-                wp.copy(mapped_indices, gfx_indices)
-                indices_cuda_buffer.unmap()
-
-                # Set up vertex attributes
-                vertex_stride = vertex_size
-                gl.glVertexAttribPointer(0, 3, gl.GL_FLOAT, gl.GL_FALSE, vertex_stride, ctypes.c_void_p(0))
-                gl.glEnableVertexAttribArray(0)
-                gl.glVertexAttribPointer(1, 3, gl.GL_FLOAT, gl.GL_FALSE, vertex_stride, ctypes.c_void_p(12))
-                gl.glEnableVertexAttribArray(1)
-                gl.glVertexAttribPointer(2, 2, gl.GL_FLOAT, gl.GL_FALSE, vertex_stride, ctypes.c_void_p(24))
-                gl.glEnableVertexAttribArray(2)
-
-                gl.glBindVertexArray(0)
-
-                self._shape_gl_buffers[shape] = (vao, vbo, ebo, indices_count, vertex_cuda_buffer)
-                return shape
-
-        def _register_shape_gpu_direct_textured(self, geo_hash, gfx_vertices: wp.array, gfx_indices: wp.array, texture: int = None):
-            """Register shape using GPU arrays directly with texture support"""
-            gl = CustomOpenGLRenderer.gl
-            self._switch_context()
-
-            shape = len(self._shapes)
-            color1 = self._get_default_color(len(self._shape_geo_hash))
-            color2 = np.clip(np.array(color1) + 0.25, 0.0, 1.0)
-            
-            # Store shape data with texture info
-            self._shapes.append((None, None, color1, color2, geo_hash, texture))
-            self._shape_geo_hash[geo_hash] = shape
-
-            gl.glUseProgram(self._shape_shader.id)
-
-            # Create VAO, VBO, and EBO
-            vao = gl.GLuint()
-            gl.glGenVertexArrays(1, vao)
-            gl.glBindVertexArray(vao)
-
-            # Create VBO and upload GPU data directly
-            vbo = gl.GLuint()
-            gl.glGenBuffers(1, vbo)
-            gl.glBindBuffer(gl.GL_ARRAY_BUFFER, vbo)
-            
-            # Get buffer size and allocate
-            vertex_count = gfx_vertices.shape[0]
-            vertex_size = gfx_vertices.shape[1] * 4  # 4 bytes per float
-            total_size = vertex_count * vertex_size
-            
-            gl.glBufferData(gl.GL_ARRAY_BUFFER, total_size, None, gl.GL_DYNAMIC_DRAW)
-            
-            # Create CUDA buffer and copy GPU data directly
-            vertex_cuda_buffer = wp.RegisteredGLBuffer(int(vbo.value), self._device)
-            mapped_buffer = vertex_cuda_buffer.map(dtype=wp.float32, shape=gfx_vertices.shape)
-            wp.copy(mapped_buffer, gfx_vertices)
-            vertex_cuda_buffer.unmap()
-
-            # Create EBO and upload indices
-            ebo = gl.GLuint()
-            gl.glGenBuffers(1, ebo)
-            gl.glBindBuffer(gl.GL_ELEMENT_ARRAY_BUFFER, ebo)
-            
-            indices_count = gfx_indices.shape[0]
-            indices_size = indices_count * 4  # 4 bytes per int32
-            
-            gl.glBufferData(gl.GL_ELEMENT_ARRAY_BUFFER, indices_size, None, gl.GL_DYNAMIC_DRAW)
-            
-            # Copy indices to GPU buffer
-            indices_cuda_buffer = wp.RegisteredGLBuffer(int(ebo.value), self._device)
-            mapped_indices = indices_cuda_buffer.map(dtype=wp.int32, shape=(indices_count,))
-            wp.copy(mapped_indices, gfx_indices)
-            indices_cuda_buffer.unmap()
-
-            # Set up vertex attributes
-            vertex_stride = vertex_size
-            # positions
-            gl.glVertexAttribPointer(0, 3, gl.GL_FLOAT, gl.GL_FALSE, vertex_stride, ctypes.c_void_p(0))
-            gl.glEnableVertexAttribArray(0)
-            # normals
-            gl.glVertexAttribPointer(1, 3, gl.GL_FLOAT, gl.GL_FALSE, vertex_stride, ctypes.c_void_p(12))
-            gl.glEnableVertexAttribArray(1)
-            # texture coordinates
-            gl.glVertexAttribPointer(2, 2, gl.GL_FLOAT, gl.GL_FALSE, vertex_stride, ctypes.c_void_p(24))
-            gl.glEnableVertexAttribArray(2)
-
-            gl.glBindVertexArray(0)
-
-            self._shape_gl_buffers[shape] = (vao, vbo, ebo, indices_count, vertex_cuda_buffer)
-            return shape
 
         def _register_shape_gpu_direct_with_colors(self, geo_hash, gfx_vertices: wp.array, gfx_indices: wp.array, texture: int = None):
             """Register shape using GPU arrays directly with vertex color and texture support"""
@@ -997,7 +632,6 @@ def CreateSurgSimRenderer(renderer):
             self._shape_gl_buffers[shape] = (vao, vbo, ebo, indices_count, vertex_cuda_buffer)
             return shape
 
-
         def _update_shape_vertices_gpu_direct_with_colors(self, shape, points: wp.array, texture_coords: wp.array = None, vertex_colors: wp.array = None, scale=(1.0, 1.0, 1.0)):
                 """Update vertices, texture coordinates, and vertex colors using direct GPU-to-GPU copy"""
                 if shape not in self._shape_gl_buffers:
@@ -1023,39 +657,6 @@ def CreateSurgSimRenderer(renderer):
                     print(f"Warning: Could not update vertices with colors: {e}")
                     return
 
-        def _update_shape_vertices_gpu_direct_textured(self, shape, points: wp.array, texture_coords: wp.array = None, scale=(1.0, 1.0, 1.0)):
-            """Update vertices and texture coordinates using direct GPU-to-GPU copy"""
-            if shape not in self._shape_gl_buffers:
-                return
-                
-            cuda_buffer = self._shape_gl_buffers[shape][4]
-            vertex_count = points.shape[0]
-            
-            try:
-                vbo_vertices = cuda_buffer.map(dtype=wp.float32, shape=(vertex_count, 8))
-                
-                if texture_coords is not None:
-                    wp.launch(
-                        update_mesh_vertices_optimized_textured,
-                        dim=vertex_count,
-                        inputs=[points, texture_coords, wp.vec3(scale)],
-                        outputs=[vbo_vertices],
-                        device=self._device,
-                    )
-                else:
-                    wp.launch(
-                        update_mesh_vertices_optimized,
-                        dim=vertex_count,
-                        inputs=[points, wp.vec3(scale)],
-                        outputs=[vbo_vertices],
-                        device=self._device,
-                    )
-                
-                cuda_buffer.unmap()
-            except Exception as e:
-                print(f"Warning: Could not update vertices: {e}")
-                return
-
         def _update_shape_texture(self, shape, texture: int):
             """Update the texture binding for a shape"""
             if shape >= len(self._shapes):
@@ -1069,6 +670,81 @@ def CreateSurgSimRenderer(renderer):
                 shape_data.append(texture)
             self._shapes[shape] = tuple(shape_data) 
         
+        def allocate_shape_instances(self):
+                gl = SurgSimRendererOpenGL.gl
+
+                self._switch_context()
+
+                self._add_shape_instances = False
+                self._wp_instance_transforms = wp.array(
+                    [instance[3] for instance in self._instances.values()], dtype=wp.transform, device=self._device
+                )
+                self._wp_instance_scalings = wp.array(
+                    [instance[4] for instance in self._instances.values()], dtype=wp.vec3, device=self._device
+                )
+                self._wp_instance_bodies = wp.array(
+                    [instance[1] for instance in self._instances.values()], dtype=wp.int32, device=self._device
+                )
+
+                gl.glUseProgram(self._shape_shader.id)
+                if self._instance_transform_gl_buffer is None:
+                    # create instance buffer and bind it as an instanced array
+                    self._instance_transform_gl_buffer = gl.GLuint()
+                    gl.glGenBuffers(1, self._instance_transform_gl_buffer)
+                gl.glBindBuffer(gl.GL_ARRAY_BUFFER, self._instance_transform_gl_buffer)
+
+                transforms = np.tile(np.diag(np.ones(4, dtype=np.float32)), (len(self._instances), 1, 1))
+                gl.glBufferData(gl.GL_ARRAY_BUFFER, transforms.nbytes, transforms.ctypes.data, gl.GL_DYNAMIC_DRAW)
+
+                # create CUDA buffer for instance transforms
+                self._instance_transform_cuda_buffer = wp.RegisteredGLBuffer(
+                    int(self._instance_transform_gl_buffer.value), self._device
+                )
+
+                self.update_instance_colors()
+
+                # set up instance attribute pointers
+                matrix_size = transforms[0].nbytes
+
+                instance_ids = []
+                instance_custom_ids = []
+                instance_visible = []
+                instances = list(self._instances.values())
+                inverse_instance_ids = {}
+                instance_count = 0
+                colors_size = np.zeros(3, dtype=np.float32).nbytes
+                for shape, (vao, _vbo, _ebo, _tri_count, _vertex_cuda_buffer) in self._shape_gl_buffers.items():
+                    gl.glBindVertexArray(vao)
+
+                    gl.glBindBuffer(gl.GL_ARRAY_BUFFER, self._instance_transform_gl_buffer)
+
+                    # we can only send vec4s to the shader, so we need to split the instance transforms matrix into its column vectors
+                    # Updated to use locations 4-7 for instance transforms
+                    for i in range(4):
+                        gl.glVertexAttribPointer(
+                            4 + i, 4, gl.GL_FLOAT, gl.GL_FALSE, matrix_size, ctypes.c_void_p(i * matrix_size // 4)
+                        )
+                        gl.glEnableVertexAttribArray(4 + i)
+                        gl.glVertexAttribDivisor(4 + i, 1)
+
+                    instance_ids.extend(self._shape_instances[shape])
+                    for i in self._shape_instances[shape]:
+                        instance_custom_ids.append(self._instance_custom_ids[i])
+                        instance_visible.append(instances[i][7])
+                        inverse_instance_ids[i] = instance_count
+                        instance_count += 1
+
+                # trigger update to the instance transforms
+                self._update_shape_instances = True
+
+                self._wp_instance_ids = wp.array(instance_ids, dtype=wp.int32, device=self._device)
+                self._wp_instance_custom_ids = wp.array(instance_custom_ids, dtype=wp.int32, device=self._device)
+                self._np_instance_visible = np.array(instance_visible)
+                self._instance_ids = instance_ids
+                self._inverse_instance_ids = inverse_instance_ids
+
+                gl.glBindVertexArray(0)
+
         def populate(self, model: newton.Model):
             self.skip_rendering = False
 
@@ -1079,6 +755,7 @@ def CreateSurgSimRenderer(renderer):
             self.body_env = []  # mapping from body index to its environment index
             env_id = 0
             self.bodies_per_env = model.body_count // self.num_envs
+
             # create rigid body nodes
             for b in range(model.body_count):
                 body_name = f"body_{b}_{self.model.body_key[b].replace(' ', '_')}"
@@ -1284,8 +961,60 @@ def CreateSurgSimRenderer(renderer):
             if hasattr(self, "complete_setup"):
                 self.complete_setup()
 
-        def _get_new_color(self):
-            return tab10_color_map(self.instance_count)
+            self.allocate_shape_instances()
+
+        def _render_scene(self):
+            """Override to add texture binding support"""
+            gl = SurgSimRendererOpenGL.gl
+            self._switch_context()
+
+            start_instance_idx = 0
+
+            for shape, (vao, _, _, tri_count, _) in self._shape_gl_buffers.items():
+                end_instance_idx = start_instance_idx + len(self._shape_instances[shape])
+                
+                if end_instance_idx > start_instance_idx:
+                    # Check if this shape has a texture
+                    shape_data = self._shapes[shape]
+                    texture_id = None
+                    if len(shape_data) >= 6:
+                        texture_id = shape_data[5]
+                    
+                    # Bind texture if available
+                    if texture_id is not None:
+                        self.bind_texture(texture_id, 0)
+                    else:
+                        # Unbind texture if none
+                        self.unbind_texture(0)
+                    
+                    gl.glBindVertexArray(vao)
+                    
+                    # Check visibility
+                    visible_instances = 0
+                    for i in range(start_instance_idx, end_instance_idx):
+                        if i < len(self._np_instance_visible) and self._np_instance_visible[i]:
+                            visible_instances += 1
+                    
+                    if visible_instances > 0:
+                        gl.glDrawElementsInstanced(
+                            gl.GL_TRIANGLES, 
+                            tri_count, 
+                            gl.GL_UNSIGNED_INT, 
+                            None, 
+                            len(self._shape_instances[shape])
+                        )
+                
+                start_instance_idx = end_instance_idx
+
+            if self.draw_axis:
+                self._axis_instancer.render()
+
+            for instancer in self._shape_instancers.values():
+                instancer.render()
+
+            gl.glBindVertexArray(0)
+            # Unbind any texture
+            self.unbind_texture(0)
 
         def render(self, state: newton.State):
             """
@@ -1415,7 +1144,23 @@ def CreateSurgSimRenderer(renderer):
                 radius=contact_point_radius * self.scaling,
                 colors=(0.0, 0.5, 1.0),
             )
-            
+        
+        def bind_texture(self, texture_id: int, unit: int = 0):
+            """Bind texture to specified texture unit"""
+            assert(hasattr(self, '_texture_manager')), "Texture manager not initialized"
+            if hasattr(self, '_texture_manager'):
+                self._texture_manager.bind_texture(texture_id, unit)
+
+        def unbind_texture(self, unit: int = 0):
+            """Unbind texture from specified texture unit"""
+            if hasattr(self, '_texture_manager'):
+                self._texture_manager.unbind_texture(unit)
+
+        def delete_texture(self, texture_id: int):
+            """Delete a texture"""
+            if hasattr(self, '_texture_manager'):
+                self._texture_manager.delete_texture(texture_id)
+
         def _get_default_color(self, index):
             """Get default color without importing tab10_color_map if possible"""
             colors = [
@@ -1426,6 +1171,10 @@ def CreateSurgSimRenderer(renderer):
                 (0.58, 0.4, 0.74),   # purple
             ]
             return colors[index % len(colors)]
+
+        def _get_new_color(self):
+            return tab10_color_map(self.instance_count)
+
 
     return SimRenderer
 
