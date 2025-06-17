@@ -76,6 +76,7 @@ uniform vec3 viewPos;
 uniform vec3 lightColor;
 uniform vec3 sunDirection;
 uniform sampler2D textureSampler;
+uniform int hasTexture;
 
 void main()
 {
@@ -101,12 +102,16 @@ void main()
     spec = pow(max(dot(viewDir, reflectDir), 0.0), 64);
     specular += specularStrength * spec * lightColor * 0.3;
 
-    vec3 baseColor = texture(textureSampler, TexCoord).rgb;
-    
-    // Use vertex color if it's not zero (black), otherwise use base texture color
-    vec3 finalColor = baseColor; //* (1.0 - VertexColor);
+    vec3 baseColor;
+    if (hasTexture == 1) {
+        // Use texture color
+        baseColor = texture(textureSampler, TexCoord).rgb;
+    } else {
+        // Use vertex color or default white if vertex color is black
+        baseColor = length(VertexColor) > 0.01 ? VertexColor : vec3(1.0, 1.0, 1.0);
+    }
 
-    vec3 result = (ambient + diffuse + specular) * finalColor;
+    vec3 result = (ambient + diffuse + specular) * baseColor;
     FragColor = vec4(result, 1.0);
 }
 """
@@ -328,31 +333,32 @@ def CreateSurgSimRenderer(renderer):
             return self._texture_manager.load_texture(filepath, **kwargs)
 
         def _replace_shape_fragment_shader(self):
-                # Access the OpenGL context and shader utilities
-                gl = self.gl
-                from pyglet.graphics.shader import Shader, ShaderProgram
+            # Access the OpenGL context and shader utilities
+            gl = self.gl
+            from pyglet.graphics.shader import Shader, ShaderProgram
 
-                # Create new Shader objects
-                vert_shader = Shader(shape_vertex_shader, 'vertex')
-                frag_shader = Shader(shape_fragment_shader, 'fragment')
+            # Create new Shader objects
+            vert_shader = Shader(shape_vertex_shader, 'vertex')
+            frag_shader = Shader(shape_fragment_shader, 'fragment')
 
-                # Create a new ShaderProgram
-                new_program = ShaderProgram(vert_shader, frag_shader)
+            # Create a new ShaderProgram
+            new_program = ShaderProgram(vert_shader, frag_shader)
 
-                # Replace the renderer's shape shader program
-                self._shape_shader = new_program
+            # Replace the renderer's shape shader program
+            self._shape_shader = new_program
 
-                # Reinitialize uniforms
-                with self._shape_shader:
-                    gl.glUniform3f(
-                    gl.glGetUniformLocation(self._shape_shader.id, str_buffer("sunDirection")), *self._sun_direction)
-                    gl.glUniform3f(gl.glGetUniformLocation(self._shape_shader.id, str_buffer("lightColor")), 1, 1, 1)
-                    self._loc_shape_model = gl.glGetUniformLocation(self._shape_shader.id, str_buffer("model"))
-                    self._loc_shape_view = gl.glGetUniformLocation(self._shape_shader.id, str_buffer("view"))
-                    self._loc_shape_projection = gl.glGetUniformLocation(self._shape_shader.id, str_buffer("projection"))
-                    self._loc_shape_view_pos = gl.glGetUniformLocation(self._shape_shader.id, str_buffer("viewPos"))
-                    gl.glUniform3f(self._loc_shape_view_pos, 0, 0, 10)
-                    gl.glUniform1f(gl.glGetUniformLocation(self._shape_shader.id, str_buffer("texture_sampler")), 0)
+            # Reinitialize uniforms
+            with self._shape_shader:
+                gl.glUniform3f(
+                gl.glGetUniformLocation(self._shape_shader.id, str_buffer("sunDirection")), *self._sun_direction)
+                gl.glUniform3f(gl.glGetUniformLocation(self._shape_shader.id, str_buffer("lightColor")), 1, 1, 1)
+                gl.glUniform1i(gl.glGetUniformLocation(self._shape_shader.id, str_buffer("textureSampler")), 0)
+                gl.glUniform1i(gl.glGetUniformLocation(self._shape_shader.id, str_buffer("hasTexture")), 0)  # Default to no texture
+                self._loc_shape_model = gl.glGetUniformLocation(self._shape_shader.id, str_buffer("model"))
+                self._loc_shape_view = gl.glGetUniformLocation(self._shape_shader.id, str_buffer("view"))
+                self._loc_shape_projection = gl.glGetUniformLocation(self._shape_shader.id, str_buffer("projection"))
+                self._loc_shape_view_pos = gl.glGetUniformLocation(self._shape_shader.id, str_buffer("viewPos"))
+                gl.glUniform3f(self._loc_shape_view_pos, 0, 0, 10)
 
         def render_mesh_warp(
             self,
@@ -964,47 +970,47 @@ def CreateSurgSimRenderer(renderer):
             self.allocate_shape_instances()
 
         def _render_scene(self):
-            """Override to add texture binding support"""
-            gl = SurgSimRendererOpenGL.gl
+            gl = OpenGLRenderer.gl
+
             self._switch_context()
 
             start_instance_idx = 0
 
             for shape, (vao, _, _, tri_count, _) in self._shape_gl_buffers.items():
-                end_instance_idx = start_instance_idx + len(self._shape_instances[shape])
+                num_instances = len(self._shape_instances[shape])
+
+                # Get texture for this shape (if any)
+                texture_id = None
+                if shape < len(self._shapes) and len(self._shapes[shape]) >= 6:
+                    texture_id = self._shapes[shape][5]
+
+                gl.glBindVertexArray(vao)
                 
-                if end_instance_idx > start_instance_idx:
-                    # Check if this shape has a texture
-                    shape_data = self._shapes[shape]
-                    texture_id = None
-                    if len(shape_data) >= 6:
-                        texture_id = shape_data[5]
+                # Bind texture if available, otherwise use a default white texture
+                if texture_id is not None:
+                    self.bind_texture(texture_id, 0)
+                    # Set uniform to indicate texture is available
+                    gl.glUseProgram(self._shape_shader.id)
+                    gl.glUniform1i(gl.glGetUniformLocation(self._shape_shader.id, str_buffer("hasTexture")), 1)
+                else:
+                    # Create or bind a default white texture for objects without textures
+                    if not hasattr(self, '_default_white_texture'):
+                        from texture_loader import create_solid_texture
+                        self._default_white_texture = create_solid_texture(self, color=(1.0, 1.0, 1.0), size=1)
                     
-                    # Bind texture if available
-                    if texture_id is not None:
-                        self.bind_texture(texture_id, 0)
-                    else:
-                        # Unbind texture if none
-                        self.unbind_texture(0)
-                    
-                    gl.glBindVertexArray(vao)
-                    
-                    # Check visibility
-                    visible_instances = 0
-                    for i in range(start_instance_idx, end_instance_idx):
-                        if i < len(self._np_instance_visible) and self._np_instance_visible[i]:
-                            visible_instances += 1
-                    
-                    if visible_instances > 0:
-                        gl.glDrawElementsInstanced(
-                            gl.GL_TRIANGLES, 
-                            tri_count, 
-                            gl.GL_UNSIGNED_INT, 
-                            None, 
-                            len(self._shape_instances[shape])
-                        )
-                
-                start_instance_idx = end_instance_idx
+                    self.bind_texture(self._default_white_texture, 0)
+                    # Set uniform to indicate no texture (use vertex colors/solid color)
+                    gl.glUseProgram(self._shape_shader.id)
+                    gl.glUniform1i(gl.glGetUniformLocation(self._shape_shader.id, str_buffer("hasTexture")), 0)
+
+                gl.glDrawElementsInstancedBaseInstance(
+                    gl.GL_TRIANGLES, tri_count, gl.GL_UNSIGNED_INT, None, num_instances, start_instance_idx
+                )
+
+                # Unbind texture after rendering
+                self.unbind_texture(0)
+
+                start_instance_idx += num_instances
 
             if self.draw_axis:
                 self._axis_instancer.render()
@@ -1013,8 +1019,6 @@ def CreateSurgSimRenderer(renderer):
                 instancer.render()
 
             gl.glBindVertexArray(0)
-            # Unbind any texture
-            self.unbind_texture(0)
 
         def render(self, state: newton.State):
             """

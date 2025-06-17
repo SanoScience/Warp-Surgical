@@ -111,7 +111,6 @@ class WarpSim:
 
 
         self.model = builder.finalize()
-        self.model.ground = True
 
     def _paint_vertices_near_haptic_proxy(self, paint_radius=0.25, falloff_power=2.0):
         """Paint vertex colors near the haptic proxy position."""
@@ -219,8 +218,9 @@ class WarpSim:
            # self._paint_vertices_near_haptic_proxy()
 
             # Run collision detection and integration
-            #newton.collide(self.model, self.state_0)
-            
+            self.contacts = self.model.collide(self.state_0)
+            if self.contacts:
+                print(f"Contacts detected: {self.contacts}")
 
             self.integrator.step(self.model, self.state_0, self.state_1, None, self.contacts, self.sim_dt)
             
