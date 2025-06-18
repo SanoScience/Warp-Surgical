@@ -95,7 +95,7 @@ class WarpSim:
         # Add haptic device collision body
         self.haptic_body_id = builder.add_body(
             xform=wp.transform([0.0, 0.0, 0.0], wp.quat_identity()),
-            mass=0.0,  # Zero mass makes it kinematic
+            mass=1.0,  # Zero mass makes it kinematic
             armature=0.0
         )
 
@@ -165,7 +165,7 @@ class WarpSim:
 
     def _setup_cuda_graph(self):
         """Setup CUDA graph for performance optimization."""
-        self.use_cuda_graph = wp.get_device().is_cuda
+        self.use_cuda_graph = False #wp.get_device().is_cuda
         if self.use_cuda_graph:
             with wp.ScopedCapture() as capture:
                 self.simulate()
@@ -219,8 +219,8 @@ class WarpSim:
 
             # Run collision detection and integration
             self.contacts = self.model.collide(self.state_0)
-            if self.contacts:
-                print(f"Contacts detected: {self.contacts}")
+            #if self.contacts:
+            #    print(f"Contacts detected: {self.contacts.soft_contact_normal}")
 
             self.integrator.step(self.model, self.state_0, self.state_1, None, self.contacts, self.sim_dt)
             
@@ -246,7 +246,8 @@ class WarpSim:
             if self.use_opengl:
                 self.renderer.begin_frame()
                 
-                #self.renderer.render(self.state_0)
+                self.renderer.render_contacts(self.state_0, self.contacts)
+                
                 
                 self.renderer.render_sphere(
                     "sphere",

@@ -1109,45 +1109,69 @@ def CreateSurgSimRenderer(renderer):
                 contacts (newton.Contacts): The contacts to render.
                 contact_point_radius (float, optional): The radius of the contact points.
             """
-            if self._contact_points0 is None or len(self._contact_points0) < contacts.rigid_contact_max:
+            import warp as wp
+            if self._contact_points0 is None or len(self._contact_points0) < contacts.soft_contact_max:
                 self._contact_points0 = wp.array(
-                    np.zeros((contacts.rigid_contact_max, 3)), dtype=wp.vec3, device=self.model.device
+                    np.zeros((contacts.soft_contact_max, 3)), dtype=wp.vec3, device=self.model.device
                 )
                 self._contact_points1 = wp.array(
-                    np.zeros((contacts.rigid_contact_max, 3)), dtype=wp.vec3, device=self.model.device
+                    np.zeros((contacts.soft_contact_max, 3)), dtype=wp.vec3, device=self.model.device
                 )
+           
 
-            wp.launch(
-                kernel=compute_contact_points,
-                dim=contacts.rigid_contact_max,
-                inputs=[
-                    state.body_q,
-                    self.model.shape_body,
-                    contacts.rigid_contact_count,
-                    contacts.rigid_contact_shape0,
-                    contacts.rigid_contact_shape1,
-                    contacts.rigid_contact_point0,
-                    contacts.rigid_contact_point1,
-                ],
-                outputs=[
-                    self._contact_points0,
-                    self._contact_points1,
-                ],
-                device=self.model.device,
-            )
+            try:
+                soft_count = int(contacts.soft_contact_max)
+                # These should be arrays of length soft_count
+                soft_points = contacts.soft_contact_particle.numpy()[:soft_count]
+                soft_forces = contacts.soft_contact_normal.numpy()[:soft_count]
+            except Exception as e:
+                print(f"Could not access softbody contact arrays: {e}")
+                return
 
-            self.render_points(
-                "contact_points0",
-                self._contact_points0,
-                radius=contact_point_radius * self.scaling,
-                colors=(1.0, 0.5, 0.0),
-            )
-            self.render_points(
-                "contact_points1",
-                self._contact_points1,
-                radius=contact_point_radius * self.scaling,
-                colors=(0.0, 0.5, 1.0),
-            )
+            particles_pos_cpu = state.particle_q.numpy()
+
+            # Draw an arrow for each softbody contact
+            for i in range(soft_count):
+                id = soft_points[i]
+                if id == -1:
+                    break
+
+                p = particles_pos_cpu[id]
+                f = soft_forces[i]
+                # Only draw if force is nonzero
+                if np.linalg.norm(f) > 1e-8:
+                    # Scale the force vector for visualization
+                    arrow_scale = 0.1 * self.scaling  # You may want to adjust this factor
+                    force_vec = np.array(f) * arrow_scale
+                    start = np.array(p)
+                    end = start + force_vec
+
+                    # Compute arrow direction as quaternion
+                    direction = force_vec / (np.linalg.norm(force_vec) + 1e-12)
+
+                    # Default arrow points along +Y; compute rotation quaternion
+                    import warp as wp
+                    q = wp.quat_between_vectors(wp.vec3(0.0, 1.0, 0.0), wp.vec3(*direction))
+
+                    # Arrow length and thickness
+                    arrow_length = np.linalg.norm(force_vec)
+                    base_radius = 0.01 * self.scaling
+                    cap_radius = 0.02 * self.scaling
+                    cap_height = 0.04 * self.scaling
+
+                    # Use orange color for force arrows
+                    color = (1.0, 0.6, 0.1)
+                    self.render_arrow(
+                        name=f"soft_contact_force_{i}",
+                        pos=tuple(start),
+                        rot=(float(q.x), float(q.y), float(q.z), float(q.w)),
+                        base_radius=base_radius,
+                        base_height=arrow_length - cap_height if arrow_length > cap_height else arrow_length * 0.7,
+                        cap_radius=cap_radius,
+                        cap_height=cap_height,
+                        color=color,
+                        visible=True,
+                    )
         
         def bind_texture(self, texture_id: int, unit: int = 0):
             """Bind texture to specified texture unit"""
