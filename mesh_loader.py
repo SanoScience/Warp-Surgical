@@ -2,6 +2,11 @@ import warp as wp
 import warp.sim
 
 @wp.struct
+class Tetrahedron:
+    ids: wp.vec4i
+    rest_volume: wp.float32
+
+@wp.struct
 class TriPointsConnector:
     particle_id: wp.int32
     rest_dist: wp.float32
@@ -28,6 +33,15 @@ def parse_connector_file(filepath, particle_id_offset=0, tri_id_offset=0):
             
             connectors.append(connector)
     return connectors
+
+def compute_tet_volume(p0, p1, p2, p3):
+    # Returns the signed volume of the tetrahedron
+    return abs(
+        wp.dot(
+            wp.cross(p1 - p0, p2 - p0),
+            p3 - p0
+        ) / 6.0
+    )
 
 def load_mesh_component(base_path, offset=0):
     """Load a single mesh component and return positions, indices, and edges."""
@@ -73,7 +87,7 @@ def load_mesh_component(base_path, offset=0):
 
     return positions, indices, edges, tri_surface_indices, uvs
 
-def load_mesh_and_build_model(builder: wp.sim.ModelBuilder, vertical_offset=0.0):
+def load_mesh_and_build_model(builder: wp.sim.ModelBuilder, vertical_offset=0.0, spring_stiffness=1.0e3, spring_dampen=0.0, tetra_stiffness_mu=1.0e3, tetra_stiffness_lambda=1.0e3, tetra_dampen=0.0):
     """Load all mesh components and build the simulation model with ranges."""
     all_positions = []
     all_indices = []
@@ -168,13 +182,29 @@ def load_mesh_and_build_model(builder: wp.sim.ModelBuilder, vertical_offset=0.0)
     
     # Add springs
     for i in range(0, len(all_edges), 2):
-        builder.add_spring(all_edges[i], all_edges[i + 1], 1.0e3, 0.0, 0)
+        builder.add_spring(all_edges[i], all_edges[i + 1], spring_stiffness, spring_dampen, 0)
     
-    # Add tetrahedrons
+    all_tetrahedra = []
+
+    # Add tetrahedrons (neo-hookean + custom volume constraint)    
     for i in range(0, len(all_indices), 4):
-        builder.add_tetrahedron(all_indices[i], all_indices[i + 1], all_indices[i + 2], all_indices[i + 3])
-    
-    return wp.array(all_connectors, dtype=TriPointsConnector, device=wp.get_device()), all_tri_surface_indices, all_uvs, mesh_ranges
+        ids = [all_indices[i], all_indices[i+1], all_indices[i+2], all_indices[i+3]]
+        p0 = wp.vec3(all_positions[ids[0]])
+        p1 = wp.vec3(all_positions[ids[1]])
+        p2 = wp.vec3(all_positions[ids[2]])
+        p3 = wp.vec3(all_positions[ids[3]])
+        rest_volume = compute_tet_volume(p0, p1, p2, p3)
+        
+        tet = Tetrahedron()
+        tet.ids = wp.vec4i(tet.ids[0], tet.ids[1], tet.ids[2], tet.ids[3])
+        tet.rest_volume = rest_volume
+
+        all_tetrahedra.append(tet)
+        builder.add_tetrahedron(all_indices[i], all_indices[i + 1], all_indices[i + 2], all_indices[i + 3], tetra_stiffness_mu, tetra_stiffness_lambda, tetra_dampen)
+
+
+
+    return wp.array(all_connectors, dtype=TriPointsConnector, device=wp.get_device()), all_tri_surface_indices, all_uvs, mesh_ranges, wp.array(all_tetrahedra, dtype=Tetrahedron, device=wp.get_device())
 
 
 def is_particle_within_radius(particle_pos, centre, radius):

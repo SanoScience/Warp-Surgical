@@ -14,17 +14,18 @@ from simulation_kernels import (
     apply_jacobian_deltas,
     apply_tri_points_constraints_jacobian,
     set_body_position,
-    paint_vertices_near_haptic
+    paint_vertices_near_haptic,
+    apply_volume_constraints_jacobian
 )
 
 class WarpSim:
     def __init__(self, stage_path="output.usd", num_frames=300, use_opengl=True):
-        self.sim_substeps = 32
+        self.sim_substeps = 16
         self.num_frames = num_frames
         self.fps = 120
 
         self.frame_dt = 1.0 / self.fps
-        self.sim_dt = self.frame_dt / self.sim_substeps
+        self.substep_dt = self.frame_dt / self.sim_substeps
         self.sim_time = 0.0
         self.sim_constraint_iterations = 5
 
@@ -87,15 +88,25 @@ class WarpSim:
         """Build the simulation model with mesh and haptic device."""
         builder = newton.ModelBuilder(up_axis=newton.Axis.Y)
         
+        spring_stiffness = 1.0e3
+        spring_dampen = 0.2
+
+        tetra_stiffness_mu = 1.0e4
+        tetra_stiffness_lambda = 1.0e4
+        tetra_dampen = 0.2
+
         # Import the mesh
-        self.tri_points_connectors, self.surface_tris, uvs, self.mesh_ranges = load_mesh_and_build_model(builder, vertical_offset=-3.0)
+        self.tri_points_connectors, self.surface_tris, uvs, self.mesh_ranges, self.tetrahedra_wp = load_mesh_and_build_model(builder, vertical_offset=-3.0, 
+            spring_stiffness=spring_stiffness, spring_dampen=spring_dampen,
+            tetra_stiffness_mu=tetra_stiffness_mu, tetra_stiffness_lambda=tetra_stiffness_lambda, tetra_dampen=tetra_dampen)
+        
         self.surface_tris_wp = wp.array(self.surface_tris, dtype=wp.int32, device=wp.get_device())
         self.uvs_wp = wp.array(uvs, dtype=wp.vec2f, device=wp.get_device())
 
         # Add haptic device collision body
         self.haptic_body_id = builder.add_body(
             xform=wp.transform([0.0, 0.0, 0.0], wp.quat_identity()),
-            mass=1.0,  # Zero mass makes it kinematic
+            mass=0.0,  # Zero mass makes it kinematic
             armature=0.0
         )
 
@@ -104,7 +115,7 @@ class WarpSim:
             xform=wp.transform([0.0, 0.0, 0.0], wp.quat_identity()),
             radius=0.2,
             cfg=newton.ModelBuilder.ShapeConfig(
-                density=1000
+                density=10
             )
         )
         
@@ -165,7 +176,7 @@ class WarpSim:
 
     def _setup_cuda_graph(self):
         """Setup CUDA graph for performance optimization."""
-        self.use_cuda_graph = False #wp.get_device().is_cuda
+        self.use_cuda_graph = wp.get_device().is_cuda
         if self.use_cuda_graph:
             with wp.ScopedCapture() as capture:
                 self.simulate()
@@ -181,7 +192,7 @@ class WarpSim:
             wp.launch(
                 set_body_position,
                 dim=1,
-                inputs=[self.state_0.body_q, self.state_0.body_qd, self.haptic_body_id, self.dev_pos_buffer],
+                inputs=[self.state_0.body_q, self.state_0.body_qd, self.haptic_body_id, self.dev_pos_buffer, self.substep_dt],
                 device=self.state_0.body_q.device,
             )
 
@@ -195,6 +206,19 @@ class WarpSim:
                 )
 
                 # Apply constraints
+                wp.launch(
+                    apply_volume_constraints_jacobian,
+                    dim=len(self.tetrahedra_wp),
+                    inputs=[
+                        self.state_0.particle_q,
+                        self.tetrahedra_wp,
+                        self.delta_accumulator,
+                        self.count_accumulator,
+                        1.0  # stiffness
+                    ],
+                    device=self.state_0.particle_q.device,
+                )
+
                 wp.launch(
                     apply_tri_points_constraints_jacobian,
                     dim=len(self.tri_points_connectors),
@@ -222,7 +246,7 @@ class WarpSim:
             #if self.contacts:
             #    print(f"Contacts detected: {self.contacts.soft_contact_normal}")
 
-            self.integrator.step(self.model, self.state_0, self.state_1, None, self.contacts, self.sim_dt)
+            self.integrator.step(self.model, self.state_0, self.state_1, None, self.contacts, self.substep_dt)
             
             # Swap states
             (self.state_0, self.state_1) = (self.state_1, self.state_0)
@@ -246,14 +270,14 @@ class WarpSim:
             if self.use_opengl:
                 self.renderer.begin_frame()
                 
-                self.renderer.render_contacts(self.state_0, self.contacts)
+                #self.renderer.render_contacts(self.state_0, self.contacts)
                 
                 
                 self.renderer.render_sphere(
-                    "sphere",
+                    "haptic_proxy_sphere",
                     [self.haptic_pos_right[0] * 0.01, self.haptic_pos_right[1] * 0.01, self.haptic_pos_right[2] * 0.01],
                     [0.0, 0.0, 0.0, 1.0],
-                    0.1,
+                    0.2,
                 )
 
                 self.renderer.render_sphere(

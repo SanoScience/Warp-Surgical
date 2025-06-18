@@ -58,12 +58,19 @@ def apply_tri_points_constraints_jacobian(positions: wp.array(dtype=wp.vec3f),
 @wp.kernel
 def set_body_position(body_q: wp.array(dtype=wp.transformf), 
                       body_qd: wp.array(dtype=wp.spatial_vectorf),
-                      body_id: int, posParameter: wp.array(dtype=wp.vec3f)):
+                      body_id: int, 
+                      posParameter: wp.array(dtype=wp.vec3f),
+                      dt: wp.float32):
     t = body_q[body_id]
-    pos = posParameter[0]
+    prev_pos = wp.transform_get_translation(t)
+    new_pos = posParameter[0] * 0.01
 
     # Set translation part while preserving rotation
-    body_q[body_id] = wp.transform(pos * 0.01, wp.quat(t[3], t[4], t[5], t[6]))
+    body_q[body_id] = wp.transform(new_pos, wp.quat(t[3], t[4], t[5], t[6]))
+
+    # Update velocity
+    lin_vel = (new_pos - prev_pos) / dt
+    body_qd[body_id] = wp.spatial_vector(lin_vel, wp.vec3f(0.0, 0.0, 0.0))
 
 @wp.kernel
 def paint_vertices_near_haptic(
@@ -112,3 +119,61 @@ def paint_vertices_near_haptic(
         )
         
         vertex_colors[tid] = new_color
+
+
+from mesh_loader import Tetrahedron
+
+@wp.kernel
+def apply_volume_constraints_jacobian(
+    positions: wp.array(dtype=wp.vec3f),
+    tetrahedra: wp.array(dtype=Tetrahedron),
+    delta_accumulator: wp.array(dtype=wp.vec3f),
+    count_accumulator: wp.array(dtype=wp.int32),
+    stiffness: wp.float32
+):
+    tid = wp.tid()
+    tet = tetrahedra[tid]
+    ids = tet.ids
+
+    p0 = positions[ids[0]]
+    p1 = positions[ids[1]]
+    p2 = positions[ids[2]]
+    p3 = positions[ids[3]]
+
+    # Compute current volume
+    v = wp.dot(wp.cross(p1 - p0, p2 - p0), p3 - p0) / 6.0
+
+    # Constraint: C = v - rest_volume = 0
+    C = v - tet.rest_volume
+
+    # Compute gradients
+    grad0 = wp.cross(p1 - p2, p3 - p2) / 6.0
+    grad1 = wp.cross(p2 - p0, p3 - p0) / 6.0
+    grad2 = wp.cross(p0 - p1, p3 - p1) / 6.0
+    grad3 = wp.cross(p1 - p0, p2 - p0) / 6.0
+
+    sum_grad = wp.length_sq(grad0) + wp.length_sq(grad1) + wp.length_sq(grad2) + wp.length_sq(grad3)
+    if sum_grad < 1e-8:
+        return
+
+    # Lagrange multiplier (projective dynamics style)
+    s = stiffness * C / sum_grad
+
+    # Compute deltas
+    d0 = -grad0 * s
+    d1 = -grad1 * s
+    d2 = -grad2 * s
+    d3 = -grad3 * s
+
+    # Atomically accumulate deltas and counts
+    wp.atomic_add(delta_accumulator, ids[0], d0)
+    wp.atomic_add(count_accumulator, ids[0], 1)
+
+    wp.atomic_add(delta_accumulator, ids[1], d1)
+    wp.atomic_add(count_accumulator, ids[1], 1)
+
+    wp.atomic_add(delta_accumulator, ids[2], d2)
+    wp.atomic_add(count_accumulator, ids[2], 1)
+
+    wp.atomic_add(delta_accumulator, ids[3], d3)
+    wp.atomic_add(count_accumulator, ids[3], 1)
