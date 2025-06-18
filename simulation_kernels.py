@@ -20,8 +20,7 @@ def apply_jacobian_deltas(positions: wp.array(dtype=wp.vec3f),
 @wp.kernel
 def apply_tri_points_constraints_jacobian(positions: wp.array(dtype=wp.vec3f),
                                          connectors: wp.array(dtype=TriPointsConnector),
-                                         delta_accumulator: wp.array(dtype=wp.vec3f),
-                                         count_accumulator: wp.array(dtype=wp.int32)):
+                                         delta_accumulator: wp.array(dtype=wp.vec3f)):
     i = wp.tid()
     conn = connectors[i]
 
@@ -34,7 +33,7 @@ def apply_tri_points_constraints_jacobian(positions: wp.array(dtype=wp.vec3f),
     if length < 1e-7:
         return
     
-    kS = 1.0
+    kS = 0.1
     invMassP = 0.75
     invMassT = 1.0 - invMassP
 
@@ -42,18 +41,16 @@ def apply_tri_points_constraints_jacobian(positions: wp.array(dtype=wp.vec3f),
     s = invMassP + invMassT * conn.tri_bar[0] * conn.tri_bar[0] + invMassT * conn.tri_bar[1] * conn.tri_bar[1] + invMassT * conn.tri_bar[2] * conn.tri_bar[2]
     dP = (C / s) * (dir / length) * kS
 
-    # Accumulate deltas and counts separately
+    # Accumulate deltas
     wp.atomic_add(delta_accumulator, conn.particle_id, -dP * invMassP)
-    wp.atomic_add(count_accumulator, conn.particle_id, 1)
-    
     wp.atomic_add(delta_accumulator, conn.tri_ids[0], dP * conn.tri_bar[0] * invMassT)
-    wp.atomic_add(count_accumulator, conn.tri_ids[0], 1)
-    
     wp.atomic_add(delta_accumulator, conn.tri_ids[1], dP * conn.tri_bar[1] * invMassT)
-    wp.atomic_add(count_accumulator, conn.tri_ids[1], 1)
-    
     wp.atomic_add(delta_accumulator, conn.tri_ids[2], dP * conn.tri_bar[2] * invMassT)
-    wp.atomic_add(count_accumulator, conn.tri_ids[2], 1)
+
+    #wp.atomic_add(count_accumulator, conn.particle_id, 1)
+    #wp.atomic_add(count_accumulator, conn.tri_ids[0], 1)
+    #wp.atomic_add(count_accumulator, conn.tri_ids[1], 1)
+    #wp.atomic_add(count_accumulator, conn.tri_ids[2], 1)
 
 @wp.kernel
 def set_body_position(body_q: wp.array(dtype=wp.transformf), 
@@ -128,7 +125,6 @@ def apply_volume_constraints_jacobian(
     positions: wp.array(dtype=wp.vec3f),
     tetrahedra: wp.array(dtype=Tetrahedron),
     delta_accumulator: wp.array(dtype=wp.vec3f),
-    count_accumulator: wp.array(dtype=wp.int32),
     stiffness: wp.float32
 ):
     tid = wp.tid()
@@ -167,13 +163,11 @@ def apply_volume_constraints_jacobian(
 
     # Atomically accumulate deltas and counts
     wp.atomic_add(delta_accumulator, ids[0], d0)
-    wp.atomic_add(count_accumulator, ids[0], 1)
-
     wp.atomic_add(delta_accumulator, ids[1], d1)
-    wp.atomic_add(count_accumulator, ids[1], 1)
-
     wp.atomic_add(delta_accumulator, ids[2], d2)
-    wp.atomic_add(count_accumulator, ids[2], 1)
-
     wp.atomic_add(delta_accumulator, ids[3], d3)
-    wp.atomic_add(count_accumulator, ids[3], 1)
+
+    #wp.atomic_add(count_accumulator, ids[0], 1)
+    #wp.atomic_add(count_accumulator, ids[1], 1)
+    #wp.atomic_add(count_accumulator, ids[2], 1)
+    #wp.atomic_add(count_accumulator, ids[3], 1)

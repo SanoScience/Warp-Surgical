@@ -5,17 +5,14 @@ from newton.utils.render import SimRendererOpenGL
 
 import numpy as np
 
+from custom_xpdb import CustomXPBDSolver
 from render_surgsim_opengl import SurgSimRendererOpenGL
 
 from mesh_loader import load_mesh_and_build_model
 from render_opengl import CustomOpenGLRenderer
 from simulation_kernels import (
-    clear_jacobian_accumulator,
-    apply_jacobian_deltas,
-    apply_tri_points_constraints_jacobian,
     set_body_position,
     paint_vertices_near_haptic,
-    apply_volume_constraints_jacobian
 )
 
 class WarpSim:
@@ -96,7 +93,7 @@ class WarpSim:
         tetra_dampen = 0.2
 
         # Import the mesh
-        self.tri_points_connectors, self.surface_tris, uvs, self.mesh_ranges, self.tetrahedra_wp = load_mesh_and_build_model(builder, vertical_offset=-3.0, 
+        tri_points_connectors, self.surface_tris, uvs, self.mesh_ranges, tetrahedra_wp = load_mesh_and_build_model(builder, vertical_offset=-3.0, 
             spring_stiffness=spring_stiffness, spring_dampen=spring_dampen,
             tetra_stiffness_mu=tetra_stiffness_mu, tetra_stiffness_lambda=tetra_stiffness_lambda, tetra_dampen=tetra_dampen)
         
@@ -122,6 +119,8 @@ class WarpSim:
 
 
         self.model = builder.finalize()
+        self.model.tetrahedra_wp = tetrahedra_wp
+        self.model.tri_points_connectors = tri_points_connectors
 
     def _paint_vertices_near_haptic_proxy(self, paint_radius=0.25, falloff_power=2.0):
         """Paint vertex colors near the haptic proxy position."""
@@ -150,7 +149,7 @@ class WarpSim:
 
     def _setup_simulation(self):
         """Initialize simulation states and integrator."""
-        self.integrator = newton.solvers.XPBDSolver(self.model, iterations=5)
+        self.integrator = CustomXPBDSolver(self.model, iterations=5)
         
         self.dev_pos_buffer = wp.array([0.0, 0.0, 0.0], dtype=wp.vec3, device=wp.get_device())
         
@@ -195,49 +194,6 @@ class WarpSim:
                 inputs=[self.state_0.body_q, self.state_0.body_qd, self.haptic_body_id, self.dev_pos_buffer, self.substep_dt],
                 device=self.state_0.body_q.device,
             )
-
-            for _ in range(self.sim_constraint_iterations):
-                # Clear Jacobian accumulators
-                wp.launch(
-                    clear_jacobian_accumulator,
-                    dim=self.model.particle_count,
-                    inputs=[self.delta_accumulator, self.count_accumulator],
-                    device=self.state_0.particle_q.device,
-                )
-
-                # Apply constraints
-                wp.launch(
-                    apply_volume_constraints_jacobian,
-                    dim=len(self.tetrahedra_wp),
-                    inputs=[
-                        self.state_0.particle_q,
-                        self.tetrahedra_wp,
-                        self.delta_accumulator,
-                        self.count_accumulator,
-                        1.0  # stiffness
-                    ],
-                    device=self.state_0.particle_q.device,
-                )
-
-                wp.launch(
-                    apply_tri_points_constraints_jacobian,
-                    dim=len(self.tri_points_connectors),
-                    inputs=[
-                        self.state_0.particle_q,
-                        self.tri_points_connectors,
-                        self.delta_accumulator,
-                        self.count_accumulator
-                    ],
-                    device=self.state_0.particle_q.device,
-                )
-
-                # Apply accumulated deltas
-                wp.launch(
-                    apply_jacobian_deltas,
-                    dim=self.model.particle_count,
-                    inputs=[self.state_0.particle_q, self.delta_accumulator, self.count_accumulator],
-                    device=self.state_0.particle_q.device,
-                )
 
            # self._paint_vertices_near_haptic_proxy()
 
