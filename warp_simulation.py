@@ -2,10 +2,11 @@ import warp as wp
 import newton
 
 from newton.utils.render import SimRendererOpenGL
-
+from newton.solvers import XPBDSolver
+from newton.solvers import VBDSolver
 import numpy as np
 
-from custom_xpdb import CustomXPBDSolver
+from PBDSolver import PBDSolver
 from render_surgsim_opengl import SurgSimRendererOpenGL
 
 from mesh_loader import load_mesh_and_build_model
@@ -24,7 +25,12 @@ class WarpSim:
         self.frame_dt = 1.0 / self.fps
         self.substep_dt = self.frame_dt / self.sim_substeps
         self.sim_time = 0.0
-        self.sim_constraint_iterations = 5
+        self.sim_constraint_iterations = 1
+
+        self.haptic_pos_right = None  # Haptic device position in simulation space
+
+        print(f"Initializing WarpSim with {self.sim_substeps} substeps at {self.fps} FPS")
+        print(f"Frame time: {self.frame_dt:.4f}s, Substep time: {self.substep_dt:.4f}s")
 
         # Initialize model
         self._build_model()
@@ -149,9 +155,9 @@ class WarpSim:
 
     def _setup_simulation(self):
         """Initialize simulation states and integrator."""
-        self.integrator = CustomXPBDSolver(self.model, iterations=5)
+        self.integrator = PBDSolver(self.model, iterations=5)
         
-        self.dev_pos_buffer = wp.array([0.0, 0.0, 0.0], dtype=wp.vec3, device=wp.get_device())
+        self.integrator.dev_pos_buffer = wp.array([0.0, 0.0, 0.0], dtype=wp.vec3, device=wp.get_device())
         
         self.rest = self.model.state()
         self.state_0 = self.model.state()
@@ -159,8 +165,8 @@ class WarpSim:
         self.contacts = self.model.collide(self.state_0)
         
         # Create Jacobian accumulators
-        self.delta_accumulator = wp.zeros(self.model.particle_count, dtype=wp.vec3f, device=wp.get_device())
-        self.count_accumulator = wp.zeros(self.model.particle_count, dtype=wp.int32, device=wp.get_device())
+        # self.model.delta_accumulator = wp.zeros(self.model.particle_count, dtype=wp.vec3f, device=wp.get_device())
+        # self.model.count_accumulator = wp.zeros(self.model.particle_count, dtype=wp.int32, device=wp.get_device())
 
     def _setup_renderer(self, stage_path, use_opengl):
         """Initialize the appropriate renderer."""
@@ -172,6 +178,9 @@ class WarpSim:
             self.renderer = newton.render.SimRenderer(self.model, stage_path, scaling=20.0)
         else:
             self.renderer = None
+
+        self.renderer._camera_pos = [0.2, 1.2, -1.0]
+        #self.renderer.update_view_matrix()
 
     def _setup_cuda_graph(self):
         """Setup CUDA graph for performance optimization."""
@@ -191,14 +200,14 @@ class WarpSim:
             wp.launch(
                 set_body_position,
                 dim=1,
-                inputs=[self.state_0.body_q, self.state_0.body_qd, self.haptic_body_id, self.dev_pos_buffer, self.substep_dt],
+                inputs=[self.state_0.body_q, self.state_0.body_qd, self.haptic_body_id, self.integrator.dev_pos_buffer, self.substep_dt],
                 device=self.state_0.body_q.device,
             )
 
            # self._paint_vertices_near_haptic_proxy()
 
             # Run collision detection and integration
-            self.contacts = self.model.collide(self.state_0)
+            #self.contacts = self.model.collide(self.state_0)
             #if self.contacts:
             #    print(f"Contacts detected: {self.contacts.soft_contact_normal}")
 
@@ -236,12 +245,13 @@ class WarpSim:
                     0.2,
                 )
 
-                self.renderer.render_sphere(
-                    "locking_sphere",
-                    [0.5, 1.5, -5.0],
-                    [0.0, 0.0, 0.0, 1.0],
-                    1,
-                )
+                # self.renderer.render_sphere(
+                #     "locking_sphere",
+                #     [0.5, 1.5, -5.0],
+                #     [0.0, 0.0, 0.0, 1.0],
+                #     1,
+                # )
+
                 # Render liver mesh
                 if self.mesh_ranges['liver']['index_count'] > 0:
                     self.renderer.render_mesh_warp_range(
@@ -296,7 +306,8 @@ class WarpSim:
         
         haptic_pos = wp.vec3(position[0], position[1], position[2] - 500.0)  # Offset to avoid collision with ground;
         self.haptic_pos_right = [haptic_pos[0], haptic_pos[1], haptic_pos[2]];
-        wp.copy(self.dev_pos_buffer, wp.array([haptic_pos], dtype=wp.vec3, device=wp.get_device()))
+
+        wp.copy(self.integrator.dev_pos_buffer, wp.array([haptic_pos], dtype=wp.vec3, device=wp.get_device()))
 
     def is_running(self):
         """Check if the simulation should continue running."""

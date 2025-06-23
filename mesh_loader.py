@@ -1,5 +1,5 @@
 import warp as wp
-import warp.sim
+import newton
 
 @wp.struct
 class Tetrahedron:
@@ -87,7 +87,7 @@ def load_mesh_component(base_path, offset=0):
 
     return positions, indices, edges, tri_surface_indices, uvs
 
-def load_mesh_and_build_model(builder: wp.sim.ModelBuilder, vertical_offset=0.0, spring_stiffness=1.0e3, spring_dampen=0.0, tetra_stiffness_mu=1.0e3, tetra_stiffness_lambda=1.0e3, tetra_dampen=0.0):
+def load_mesh_and_build_model(builder: newton.ModelBuilder, vertical_offset=0.0, spring_stiffness=1.0e3, spring_dampen=0.0, tetra_stiffness_mu=1.0e3, tetra_stiffness_lambda=1.0e3, tetra_dampen=0.0):
     """Load all mesh components and build the simulation model with ranges."""
     all_positions = []
     all_indices = []

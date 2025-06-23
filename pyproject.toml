@@ -10,7 +10,7 @@ dependencies = [
     "pyglet==2.1.3", # for some reason higher versions dont work for Przemek
     "pyopenhaptics>=1.0.1",
     "usd-core>=25.5.1",
-    "warp-lang==1.8.0.dev20250618",
+    "warp-lang==1.8.0rc1",
 ]
 
 
@@ -24,4 +24,4 @@ url = "https://pypi.org/simple"
 
 [tool.uv.sources]
 newton-physics = { path = "../newton", editable = true }
-warp-lang = { index = "nvidia"}
+warp-lang = { path = "../warp", editable = true }

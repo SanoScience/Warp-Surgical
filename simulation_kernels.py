@@ -121,11 +121,96 @@ def paint_vertices_near_haptic(
 from mesh_loader import Tetrahedron
 
 @wp.kernel
-def apply_volume_constraints_jacobian(
+def solve_distance_constraints(
+    x: wp.array(dtype=wp.vec3),
+    v: wp.array(dtype=wp.vec3),
+    invmass: wp.array(dtype=float),
+    spring_indices: wp.array(dtype=int),
+    spring_rest_lengths: wp.array(dtype=float),
+    spring_stiffness: wp.array(dtype=float),
+    spring_damping: wp.array(dtype=float),
+    dt: float,
+    lambdas: wp.array(dtype=float),
+    delta: wp.array(dtype=wp.vec3),
+    delta_counter: wp.array(dtype=wp.int32),
+):
+    tid = wp.tid()
+
+    i = spring_indices[tid * 2 + 0]
+    j = spring_indices[tid * 2 + 1]
+
+    #ke = spring_stiffness[tid]
+    ke = 1.0
+    kd = spring_damping[tid]
+    rest = spring_rest_lengths[tid]
+
+    xi = x[i]
+    xj = x[j]
+
+    vi = v[i]
+    vj = v[j]
+
+    wi = invmass[i]
+    wj = invmass[j]
+    
+    w = wi + wj
+    if w <= 0.0 or ke <= 0.0:
+        return
+    
+    xij = xi - xj
+    vij = vi - vj
+
+    l = wp.length(xij)
+    if l == 0.0:
+        return
+
+    n = xij / l
+
+    C = l - rest
+    grad = n
+
+    dlambda = -1.0 * (C / w) * ke
+
+    dxi = wi * dlambda *  grad
+    dxj = wj * dlambda * -grad
+
+    wp.atomic_add(delta, i, dxi)
+    wp.atomic_add(delta, j, dxj)
+
+    wp.atomic_add(delta_counter, i, 1)
+    wp.atomic_add(delta_counter, j, 1)
+
+@wp.kernel
+def apply_deltas(
+    delta: wp.array(dtype=wp.vec3),
+    delta_counter: wp.array(dtype=wp.int32),
+    target: wp.array(dtype=wp.vec3),
+):
+    tid = wp.tid()
+    if delta_counter[tid] > 0:
+        target[tid] += delta[tid] / wp.float32(delta_counter[tid])
+
+@wp.kernel
+def apply_deltas_and_zero_accumulators(
+    delta: wp.array(dtype=wp.vec3),
+    delta_counter: wp.array(dtype=wp.int32),
+    target: wp.array(dtype=wp.vec3),
+):
+    tid = wp.tid()
+    if delta_counter[tid] > 0:
+        target[tid] += delta[tid] / wp.float32(delta_counter[tid])
+
+    # Zero out the accumulators
+    delta[tid] = wp.vec3(0.0, 0.0, 0.0)
+    delta_counter[tid] = 0
+
+@wp.kernel
+def solve_volume_constraints(
     positions: wp.array(dtype=wp.vec3f),
     tetrahedra: wp.array(dtype=Tetrahedron),
+    stiffness: wp.float32,
     delta_accumulator: wp.array(dtype=wp.vec3f),
-    stiffness: wp.float32
+    delta_counter: wp.array(dtype=wp.int32)
 ):
     tid = wp.tid()
     tet = tetrahedra[tid]
@@ -167,7 +252,144 @@ def apply_volume_constraints_jacobian(
     wp.atomic_add(delta_accumulator, ids[2], d2)
     wp.atomic_add(delta_accumulator, ids[3], d3)
 
-    #wp.atomic_add(count_accumulator, ids[0], 1)
-    #wp.atomic_add(count_accumulator, ids[1], 1)
-    #wp.atomic_add(count_accumulator, ids[2], 1)
-    #wp.atomic_add(count_accumulator, ids[3], 1)
+    wp.atomic_add(delta_counter, ids[0], 1)
+    wp.atomic_add(delta_counter, ids[1], 1)
+    wp.atomic_add(delta_counter, ids[2], 1)
+    wp.atomic_add(delta_counter, ids[3], 1)
+
+@wp.kernel
+def floor_collision(
+    positions: wp.array(dtype=wp.vec3f),
+    velocities: wp.array(dtype=wp.vec3f),
+    inv_masses: wp.array(dtype=wp.float32),
+    floor_height: wp.float32,
+    restitution: wp.float32,
+    friction: wp.float32,         # <-- Add friction parameter
+    dt: wp.float32
+    ):
+    tid = wp.tid()
+    if tid >= len(positions):
+        return
+    pos = positions[tid]
+    vel = velocities[tid]
+    inv_mass = inv_masses[tid]
+    if pos[1] < floor_height:
+        # Collision detected
+        penetration_depth = floor_height - pos[1]
+        if inv_mass > 0.0: 
+            # Apply restitution
+            vel[1] = -vel[1] * restitution
+            pos[1] = floor_height + penetration_depth
+
+            # --- Friction ---
+            # Compute tangential velocity (x and z)
+            if friction != 0.0:
+                tangential = wp.vec2f(vel[0], vel[2])
+                tangential_len = wp.length(tangential)
+                if tangential_len > 1e-6:
+                    friction_impulse = min(friction * abs(vel[1]), tangential_len)
+                    scale = max(0.0, tangential_len - friction_impulse) / tangential_len
+                    vel[0] *= scale
+                    vel[2] *= scale
+        else:
+            # Static body, just move it up
+            pos[1] = floor_height + penetration_depth
+
+        # Update positions and velocities
+        positions[tid] = pos
+        velocities[tid] = vel
+ 
+@wp.kernel
+def bounds_collision(
+    positions: wp.array(dtype=wp.vec3f),
+    velocities: wp.array(dtype=wp.vec3f),
+    inv_masses: wp.array(dtype=wp.float32),
+    bounds_min: wp.vec3f,
+    bounds_max: wp.vec3f,
+    restitution: wp.float32,
+    friction: wp.float32,
+    dt: wp.float32
+):
+    tid = wp.tid()
+    if tid >= len(positions):
+        return
+    pos = positions[tid]
+    vel = velocities[tid]
+    inv_mass = inv_masses[tid]
+
+    for axis in range(3):
+        if pos[axis] < bounds_min[axis]:
+            penetration = bounds_min[axis] - pos[axis]
+            if inv_mass > 0.0:
+                vel[axis] = -vel[axis] * restitution
+                pos[axis] = bounds_min[axis] + penetration
+
+                # Friction on tangential axes
+                # if friction != 0.0:
+                #     tangential_axes = [i for i in range(3) if i != axis]
+                #     tangential = wp.vec2f(vel[tangential_axes[0]], vel[tangential_axes[1]])
+                #     tangential_len = wp.length(tangential)
+                #     if tangential_len > 1e-6:
+                #         friction_impulse = min(friction * abs(vel[axis]), tangential_len)
+                #         scale = max(0.0, tangential_len - friction_impulse) / tangential_len
+                #         vel[tangential_axes[0]] *= scale
+                #         vel[tangential_axes[1]] *= scale
+            else:
+                pos[axis] = bounds_min[axis] + penetration
+
+        elif pos[axis] > bounds_max[axis]:
+            penetration = pos[axis] - bounds_max[axis]
+            if inv_mass > 0.0:
+                vel[axis] = -vel[axis] * restitution
+                pos[axis] = bounds_max[axis] - penetration
+
+                # Friction on tangential axes
+                # if friction != 0.0:
+                #     tangential_axes = [i for i in range(3) if i != axis]
+                #     tangential = wp.vec2f(vel[tangential_axes[0]], vel[tangential_axes[1]])
+                #     tangential_len = wp.length(tangential)
+                #     if tangential_len > 1e-6:
+                #         friction_impulse = min(friction * abs(vel[axis]), tangential_len)
+                #         scale = max(0.0, tangential_len - friction_impulse) / tangential_len
+                #         vel[tangential_axes[0]] *= scale
+                #         vel[tangential_axes[1]] *= scale
+            else:
+                pos[axis] = bounds_max[axis] - penetration
+
+    positions[tid] = pos
+    velocities[tid] = vel
+
+@wp.kernel
+def collide_particles_vs_sphere(
+    positions: wp.array(dtype=wp.vec3f),
+    velocities: wp.array(dtype=wp.vec3f),
+    inv_masses: wp.array(dtype=wp.float32),
+    sphere_center: wp.array(dtype=wp.vec3f),
+    sphere_radius: wp.float32,
+    restitution: wp.float32,
+    dt: wp.float32,
+    deltas: wp.array(dtype=wp.vec3f)
+):
+    tid = wp.tid()
+    if tid >= len(positions):
+        return
+    pos = positions[tid]
+    #vel = velocities[tid]
+    inv_mass = inv_masses[tid]
+
+    # Sphere collision detection
+    to_sphere = pos - sphere_center[0] * 0.01  # Scale the sphere center if needed
+    dist = wp.length(to_sphere)
+    if dist < sphere_radius:
+        # Collision response
+        penetration = sphere_radius - dist
+        # if inv_mass > 0.0:
+        #     # Apply restitution
+        #     vel += wp.normalize(to_sphere) * penetration * restitution
+        # else:
+        # Static body, just move it out of the sphere
+        #pos += wp.normalize(to_sphere) * penetration
+        deltas[tid] += wp.normalize(to_sphere) * penetration
+    # Update positions and velocities
+    #positions[tid] = pos
+    #velocities[tid] = vel
