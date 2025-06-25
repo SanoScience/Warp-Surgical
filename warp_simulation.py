@@ -9,12 +9,51 @@ import numpy as np
 from PBDSolver import PBDSolver
 from render_surgsim_opengl import SurgSimRendererOpenGL
 
-from mesh_loader import load_mesh_and_build_model
+from mesh_loader import Tetrahedron, load_mesh_and_build_model
 from render_opengl import CustomOpenGLRenderer
 from simulation_kernels import (
     set_body_position,
     paint_vertices_near_haptic,
 )
+
+@wp.kernel
+def extract_surface_from_tets(
+    tets: wp.array(dtype=Tetrahedron),           # [num_tets]
+    tet_active: wp.array(dtype=wp.int32),        # [num_tets], 1=keep, 0=skip
+    counter: wp.array(dtype=wp.int32),           # [1], atomic counter
+    out_indices: wp.array(dtype=wp.int32, ndim=2), # [max_triangles, 3]
+):
+    tid = wp.tid()
+    if tid >= tets.shape[0]:
+        return
+
+    #if tet_active[tid] == 0:
+    #    return
+
+    tet = tets[tid]
+    # Each tet has 4 faces (triangles)
+    face1 = wp.vec3i(0, 1, 2)
+    face2 = wp.vec3i(0, 1, 3)
+    face3 = wp.vec3i(0, 2, 3)
+    face4 = wp.vec3i(1, 2, 3)
+    
+    for f in range(4):
+        face = face1
+        if f == 1:
+            face = face2
+        elif f == 2:
+            face = face3
+        elif f == 3:
+            face = face4
+
+
+        tri_idx = wp.atomic_add(counter, 0, 1)
+        i0 = tet.ids[face[0]]
+        i1 = tet.ids[face[1]]
+        i2 = tet.ids[face[2]]
+        out_indices[tri_idx, 0] = i0
+        out_indices[tri_idx, 1] = i1
+        out_indices[tri_idx, 2] = i2
 
 class WarpSim:
     def __init__(self, stage_path="output.usd", num_frames=300, use_opengl=True):
@@ -237,6 +276,28 @@ class WarpSim:
                 
                 #self.renderer.render_contacts(self.state_0, self.contacts)
                 
+                num_tets = self.model.tetrahedra_wp.shape[0]
+                max_triangles = num_tets * 4
+
+                # Allocate buffers for surface if not already done
+                if not hasattr(self, 'tet_surface_counter'):
+                    self.tet_surface_counter = wp.zeros(1, dtype=wp.int32, device=wp.get_device())
+                    self.tet_surface_indices = wp.zeros((max_triangles, 3), dtype=wp.int32, device=wp.get_device())
+                    self.tet_active = wp.ones(num_tets, dtype=wp.int32, device=wp.get_device())  # All active
+
+                # Reset counter
+                wp.copy(self.tet_surface_counter, wp.zeros(1, dtype=wp.int32, device=wp.get_device()))
+
+                # Generate surface indices
+                wp.launch(
+                    extract_surface_from_tets,
+                    dim=num_tets,
+                    inputs=[self.model.tetrahedra_wp, self.tet_active, self.tet_surface_counter, self.tet_surface_indices],
+                    device=wp.get_device()
+                )
+
+                # Get number of triangles written
+                num_triangles = int(self.tet_surface_counter.numpy()[0])
                 
                 self.renderer.render_sphere(
                     "haptic_proxy_sphere",
@@ -252,6 +313,34 @@ class WarpSim:
                 #     1,
                 # )
 
+                #print(num_triangles)
+                if num_triangles > 0:
+                    # Slice the indices buffer to the number of triangles written
+                    indices_to_render = self.tet_surface_indices[:num_triangles]
+                    #self.renderer.render_mesh_warp(
+                    #    name="tet_surface",
+                    #    points=self.state_0.particle_q,
+                    #    indices=indices_to_render,
+                    #    colors=self.vertex_colors,
+                    #    texture_coords=self.uvs_wp,
+                    #    texture=None,
+                    #    update_topology=False,
+                    #    smooth_shading=True,
+                    #)
+
+                    self.renderer.render_mesh_warp_range(
+                        name="tet_mesh",
+                        points=self.state_0.particle_q,
+                        indices=indices_to_render,
+                        texture_coords=self.uvs_wp,
+                        texture=None,
+                        colors=self.vertex_colors,
+                        index_start=0,
+                        index_count=num_triangles,
+                        update_topology=False
+                    )
+
+                '''
                 # Render liver mesh
                 if self.mesh_ranges['liver']['index_count'] > 0:
                     self.renderer.render_mesh_warp_range(
@@ -293,7 +382,7 @@ class WarpSim:
                         index_count=self.mesh_ranges['gallbladder']['index_count'],
                         update_topology=False
                     )
-                
+                '''
                 self.renderer.end_frame()
             else:
                 self.renderer.begin_frame(self.sim_time)
