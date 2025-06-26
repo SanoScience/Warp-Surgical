@@ -27,8 +27,8 @@ def extract_surface_from_tets(
     if tid >= tets.shape[0]:
         return
 
-    #if tet_active[tid] == 0:
-    #    return
+    if tet_active[tid] == 0:
+        return
 
     tet = tets[tid]
     # Each tet has 4 faces (triangles)
@@ -38,6 +38,7 @@ def extract_surface_from_tets(
     face4 = wp.vec3i(1, 2, 3)
     
     for f in range(4):
+        # TODO: probably inefficient
         face = face1
         if f == 1:
             face = face2
@@ -54,6 +55,20 @@ def extract_surface_from_tets(
         out_indices[tri_idx, 0] = i0
         out_indices[tri_idx, 1] = i1
         out_indices[tri_idx, 2] = i2
+
+@wp.kernel
+def set_active_tets_test(
+    tet_active: wp.array(dtype=wp.int32),
+    num_tets: int
+):
+    tid = wp.tid()
+    if tid >= num_tets:
+        return
+
+    if tid % 5 == 0:
+        tet_active[tid] = 1
+    else:
+        tet_active[tid] = 0
 
 class WarpSim:
     def __init__(self, stage_path="output.usd", num_frames=300, use_opengl=True):
@@ -285,6 +300,13 @@ class WarpSim:
                     self.tet_surface_indices = wp.zeros((max_triangles, 3), dtype=wp.int32, device=wp.get_device())
                     self.tet_active = wp.ones(num_tets, dtype=wp.int32, device=wp.get_device())  # All active
 
+
+                wp.launch(
+                    set_active_tets_test,
+                    dim=num_tets,
+                    inputs=[self.tet_active, num_tets],
+                    device=wp.get_device()
+                )
                 # Reset counter
                 wp.copy(self.tet_surface_counter, wp.zeros(1, dtype=wp.int32, device=wp.get_device()))
 
@@ -313,7 +335,7 @@ class WarpSim:
                 #     1,
                 # )
 
-                #print(num_triangles)
+                print(num_triangles)
                 if num_triangles > 0:
                     # Slice the indices buffer to the number of triangles written
                     indices_to_render = self.tet_surface_indices[:num_triangles]
@@ -336,8 +358,8 @@ class WarpSim:
                         texture=None,
                         colors=self.vertex_colors,
                         index_start=0,
-                        index_count=num_triangles,
-                        update_topology=False
+                        index_count=-1,
+                        update_topology=True
                     )
 
                 '''

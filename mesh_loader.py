@@ -196,7 +196,7 @@ def load_mesh_and_build_model(builder: newton.ModelBuilder, vertical_offset=0.0,
         rest_volume = compute_tet_volume(p0, p1, p2, p3)
         
         tet = Tetrahedron()
-        tet.ids = wp.vec4i(tet.ids[0], tet.ids[1], tet.ids[2], tet.ids[3])
+        tet.ids = wp.vec4i(ids[0], ids[1], ids[2], ids[3])
         tet.rest_volume = rest_volume
 
         all_tetrahedra.append(tet)

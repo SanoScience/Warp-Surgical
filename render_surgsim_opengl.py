@@ -751,6 +751,27 @@ def CreateSurgSimRenderer(renderer):
 
                 gl.glBindVertexArray(0)
 
+        def deregister_shape(self, shape):
+            gl = OpenGLRenderer.gl
+
+            self._switch_context()
+
+            if shape not in self._shape_gl_buffers:
+                return
+
+            vao, vbo, ebo, _, vertex_cuda_buffer = self._shape_gl_buffers[shape]
+            try:
+                gl.glDeleteVertexArrays(1, vao)
+                gl.glDeleteBuffers(1, vbo)
+                gl.glDeleteBuffers(1, ebo)
+            except gl.GLException:
+                pass
+
+            _, _, _, _, geo_hash, _ = self._shapes[shape]
+            del self._shape_geo_hash[geo_hash]
+            del self._shape_gl_buffers[shape]
+            self._shapes.pop(shape)
+
         def populate(self, model: newton.Model):
             self.skip_rendering = False
 
