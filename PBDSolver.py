@@ -60,7 +60,7 @@ class PBDSolver(XPBDSolver):
 
         if contacts:
             if self.rigid_contact_con_weighting:
-                rigid_contact_inv_weight = wp.zeros_like(contacts.rigid_contact_thickness)
+                rigid_contact_inv_weight = wp.zeros_like(contacts.rigid_contact_thickness0)
             rigid_contact_inv_weight_init = None
 
         if control is None:
@@ -459,7 +459,7 @@ class PBDSolver(XPBDSolver):
                                 contacts.rigid_contact_offset0,
                                 contacts.rigid_contact_offset1,
                                 contacts.rigid_contact_normal,
-                                contacts.rigid_contact_thickness,
+                                contacts.rigid_contact_thickness0,
                                 contacts.rigid_contact_shape0,
                                 contacts.rigid_contact_shape1,
                                 model.shape_materials,

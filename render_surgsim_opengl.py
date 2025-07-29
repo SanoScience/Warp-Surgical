@@ -76,6 +76,7 @@ uniform vec3 viewPos;
 uniform vec3 lightColor;
 uniform vec3 sunDirection;
 uniform sampler2D textureSampler;
+uniform sampler2D burnTextureSampler;
 uniform int hasTexture;
 
 void main()
@@ -102,10 +103,16 @@ void main()
     spec = pow(max(dot(viewDir, reflectDir), 0.0), 64);
     specular += specularStrength * spec * lightColor * 0.3;
 
+    vec3 vCol = VertexColor;
+    float burnBlend = vCol.x;
+    float mainBlend = 1.0 - burnBlend;
+
     vec3 baseColor;
     if (hasTexture == 1) {
-        // Use texture color
-        baseColor = texture(textureSampler, TexCoord).rgb;
+        vec3 baseCol = texture(textureSampler, TexCoord).rgb;
+        vec3 burnCol = texture(burnTextureSampler, TexCoord).rgb;
+
+        baseColor = mix(baseCol, burnCol, burnBlend);
     } else {
         // Use vertex color or default white if vertex color is black
         baseColor = length(VertexColor) > 0.01 ? VertexColor : vec3(1.0, 1.0, 1.0);
@@ -325,6 +332,23 @@ def CreateSurgSimRenderer(renderer):
             self._contact_points0 = None
             self._contact_points1 = None
 
+        def set_input_callbacks(self, on_key_press=None, on_key_release=None):
+            """Set callback functions for input events."""
+            self.on_key_press_callback = on_key_press
+            self.on_key_release_callback = on_key_release
+            # If window exists, set pyglet event handlers
+            if hasattr(self, "window"):
+                self.window.on_key_press = self._on_key_press
+                self.window.on_key_release = self._on_key_release
+
+        def _on_key_press(self, symbol, modifiers):
+            if self.on_key_press_callback:
+                self.on_key_press_callback(symbol, modifiers)
+
+        def _on_key_release(self, symbol, modifiers):
+            if self.on_key_release_callback:
+                self.on_key_release_callback(symbol, modifiers)
+
         def load_texture(self, filepath: str, **kwargs) -> int:
             """Load a texture from file"""
             if not hasattr(self, '_texture_manager'):
@@ -369,6 +393,7 @@ def CreateSurgSimRenderer(renderer):
             texture_coords: wp.array = None,
             vertex_colors: wp.array = None,
             texture: int = None,
+            burn_texture: int = None,
             pos=(0.0, 0.0, 0.0),
             rot=(0.0, 0.0, 0.0, 1.0),
             scale=(1.0, 1.0, 1.0),
@@ -490,7 +515,7 @@ def CreateSurgSimRenderer(renderer):
                 self.remove_shape_instance(name)
 
             # Register shape with GPU data, texture, and vertex colors
-            shape = self._register_shape_gpu_direct_with_colors(geo_hash, gfx_vertices, gfx_indices_wp, texture)
+            shape = self._register_shape_gpu_direct_with_colors(geo_hash, gfx_vertices, gfx_indices_wp, texture, burn_texture)
 
             if texture is not None:
                 self._update_shape_texture(shape, texture)
@@ -518,6 +543,7 @@ def CreateSurgSimRenderer(renderer):
             texture_coords: wp.array = None,
             colors: wp.array = None,
             texture: int = None,
+            burn_texture: int = None,
             index_start: int = 0,
             index_count: int = -1,
             pos=(0.0, 0.0, 0.0),
@@ -549,6 +575,7 @@ def CreateSurgSimRenderer(renderer):
                 texture_coords=texture_coords,
                 vertex_colors=colors,
                 texture=texture,
+                burn_texture=burn_texture,
                 pos=pos,
                 rot=rot,
                 scale=scale,
@@ -560,7 +587,7 @@ def CreateSurgSimRenderer(renderer):
             )
             
 
-        def _register_shape_gpu_direct_with_colors(self, geo_hash, gfx_vertices: wp.array, gfx_indices: wp.array, texture: int = None):
+        def _register_shape_gpu_direct_with_colors(self, geo_hash, gfx_vertices: wp.array, gfx_indices: wp.array, texture: int = None, burn_texture: int = None):
             """Register shape using GPU arrays directly with vertex color and texture support"""
             gl = SurgSimRendererOpenGL.gl
             self._switch_context()
@@ -570,7 +597,7 @@ def CreateSurgSimRenderer(renderer):
             color2 = np.clip(np.array(color1) + 0.25, 0.0, 1.0)
             
             # Store shape data with texture info
-            self._shapes.append((None, None, color1, color2, geo_hash, texture))
+            self._shapes.append((None, None, color1, color2, geo_hash, texture, burn_texture))
             self._shape_geo_hash[geo_hash] = shape
 
             gl.glUseProgram(self._shape_shader.id)
@@ -1002,8 +1029,12 @@ def CreateSurgSimRenderer(renderer):
 
                 # Get texture for this shape (if any)
                 texture_id = None
+                burn_texture_id = None
                 if shape < len(self._shapes) and len(self._shapes[shape]) >= 6:
                     texture_id = self._shapes[shape][5]
+                # Assume you store burn_texture_id at index 6 (add this in your shape registration)
+                if shape < len(self._shapes) and len(self._shapes[shape]) >= 7:
+                    burn_texture_id = self._shapes[shape][6]
 
                 gl.glBindVertexArray(vao)
                 
@@ -1024,12 +1055,21 @@ def CreateSurgSimRenderer(renderer):
                     gl.glUseProgram(self._shape_shader.id)
                     gl.glUniform1i(gl.glGetUniformLocation(self._shape_shader.id, str_buffer("hasTexture")), 0)
 
+                # Bind burn texture (unit 1)
+                if burn_texture_id is not None:
+                    self.bind_texture(burn_texture_id, 1)
+                    gl.glUseProgram(self._shape_shader.id)
+                    gl.glUniform1i(gl.glGetUniformLocation(self._shape_shader.id, str_buffer("burnTextureSampler")), 1)
+
                 gl.glDrawElementsInstancedBaseInstance(
                     gl.GL_TRIANGLES, tri_count, gl.GL_UNSIGNED_INT, None, num_instances, start_instance_idx
                 )
 
                 # Unbind texture after rendering
                 self.unbind_texture(0)
+
+                if burn_texture_id is not None:
+                    self.unbind_texture(1)
 
                 start_instance_idx += num_instances
 

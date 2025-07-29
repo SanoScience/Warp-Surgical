@@ -105,6 +105,7 @@ def load_mesh_and_build_model(builder: newton.ModelBuilder, vertical_offset=0.0,
     # Track current offsets
     current_vertex_offset = 0
     current_index_offset = 0
+    current_tet_offset = 0
     
     # Liver
     liver_positions, liver_indices, liver_edges, liver_tris, liver_uvs = load_mesh_component('meshes/liver/', 0)
@@ -112,7 +113,9 @@ def load_mesh_and_build_model(builder: newton.ModelBuilder, vertical_offset=0.0,
         'vertex_start': current_vertex_offset,
         'vertex_count': len(liver_positions),
         'index_start': current_index_offset,
-        'index_count': len(liver_tris)
+        'index_count': len(liver_tris),
+        'tet_start': current_tet_offset,
+        'tet_count': len(liver_indices) // 4
     }
     
     all_positions.extend(liver_positions)
@@ -123,6 +126,7 @@ def load_mesh_and_build_model(builder: newton.ModelBuilder, vertical_offset=0.0,
     
     current_vertex_offset = len(all_positions)
     current_index_offset = len(all_tri_surface_indices)
+    current_tet_offset = len(all_indices) // 4
     
     # Fat
     fat_particle_offset = len(all_positions)
@@ -131,7 +135,9 @@ def load_mesh_and_build_model(builder: newton.ModelBuilder, vertical_offset=0.0,
         'vertex_start': current_vertex_offset,
         'vertex_count': len(fat_positions),
         'index_start': current_index_offset,
-        'index_count': len(fat_tris)
+        'index_count': len(fat_tris),
+        'tet_start': current_tet_offset,
+        'tet_count': len(fat_indices) // 4
     }
     
     all_positions.extend(fat_positions)
@@ -142,7 +148,9 @@ def load_mesh_and_build_model(builder: newton.ModelBuilder, vertical_offset=0.0,
     
     current_vertex_offset = len(all_positions)
     current_index_offset = len(all_tri_surface_indices)
+    current_tet_offset = len(all_indices) // 4
     
+
     # Gallbladder
     gallbladder_particle_offset = len(all_positions)
     gallbladder_positions, gallbladder_indices, gallbladder_edges, gallbladder_tris, gallbladder_uvs = load_mesh_component('meshes/gallbladder/', gallbladder_particle_offset)
@@ -150,7 +158,9 @@ def load_mesh_and_build_model(builder: newton.ModelBuilder, vertical_offset=0.0,
         'vertex_start': current_vertex_offset,
         'vertex_count': len(gallbladder_positions),
         'index_start': current_index_offset,
-        'index_count': len(gallbladder_tris)
+        'index_count': len(gallbladder_tris),
+        'tet_start': current_tet_offset,
+        'tet_count': len(gallbladder_indices) // 4
     }
     
     all_positions.extend(gallbladder_positions)

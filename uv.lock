@@ -577,7 +577,6 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "alphashape", marker = "extra == 'dev'", specifier = ">=1.3.1" },
-    { name = "coverage", extras = ["toml"], marker = "extra == 'dev'", specifier = ">=7.8.0" },
     { name = "fast-simplification", marker = "extra == 'dev'", specifier = ">=0.1.11" },
     { name = "gitpython", marker = "extra == 'dev'", specifier = ">=3.1.44" },
     { name = "matplotlib", marker = "extra == 'dev'", specifier = ">=3.9.4" },
@@ -586,31 +585,26 @@ requires-dist = [
     { name = "myst-parser", marker = "extra == 'docs'", specifier = ">=3.0.1" },
     { name = "pycollada", marker = "extra == 'dev'", specifier = ">=0.9" },
     { name = "pydata-sphinx-theme", marker = "extra == 'docs'", specifier = ">=0.16.1" },
-    { name = "pyglet", marker = "extra == 'dev'", specifier = "==2.1.3" },
+    { name = "pyglet", marker = "extra == 'dev'", specifier = ">=2.1.6" },
     { name = "scipy", marker = "extra == 'dev'" },
     { name = "sphinx", marker = "extra == 'docs'", specifier = ">=7.4.7" },
     { name = "sphinx-copybutton", marker = "extra == 'docs'", specifier = ">=0.5.0" },
     { name = "sphinx-design", marker = "extra == 'docs'", specifier = "<=0.6.1" },
     { name = "sphinx-tabs", marker = "extra == 'docs'", specifier = ">=3.3.0" },
     { name = "sphinxcontrib-mermaid", marker = "extra == 'docs'", specifier = ">=1.0.0" },
+    { name = "torch", marker = "extra == 'cu12'", specifier = ">=2.7.0", index = "https://download.pytorch.org/whl/cu128", conflict = { package = "newton-physics", extra = "cu12" } },
     { name = "tqdm", marker = "extra == 'dev'", specifier = ">=4.67.1" },
     { name = "trimesh", marker = "extra == 'dev'", specifier = ">=4.6.8" },
     { name = "usd-core", marker = "platform_machine != 'aarch64' and extra == 'dev'", specifier = ">=25.5" },
-    { name = "warp-lang", marker = "sys_platform != 'darwin'", specifier = ">=1.7.0.dev20250326", index = "https://pypi.nvidia.com/" },
-    { name = "warp-lang", marker = "sys_platform == 'darwin'", specifier = ">=1.7.0.dev20250326" },
+    { name = "warp-lang", marker = "sys_platform != 'darwin'", specifier = ">=1.7.0.dev20250625", index = "https://pypi.nvidia.com/" },
+    { name = "warp-lang", marker = "sys_platform == 'darwin'", specifier = ">=1.7.0.dev20250625" },
 ]
-provides-extras = ["dev", "docs"]
+provides-extras = ["cu12", "dev", "docs"]
 
 [package.metadata.requires-dev]
 dev = [
+    { name = "asv", specifier = ">=0.6.4" },
     { name = "coverage", extras = ["toml"], specifier = ">=7.8.0" },
-    { name = "gitpython", specifier = ">=3.1.44" },
-    { name = "matplotlib", specifier = ">=3.9.4" },
-    { name = "mujoco-warp", git = "https://github.com/google-deepmind/mujoco_warp" },
-    { name = "pycollada", specifier = ">=0.9" },
-    { name = "pyglet", specifier = "==2.1.3" },
-    { name = "trimesh", specifier = ">=4.6.8" },
-    { name = "usd-core", marker = "platform_machine != 'aarch64'", specifier = ">=25.5" },
 ]
 
 [[package]]
