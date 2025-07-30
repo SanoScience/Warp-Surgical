@@ -1,3 +1,4 @@
+from surface_reconstruction import extract_surface_triangles_bucketed
 import warp as wp
 import newton
 
@@ -5,6 +6,7 @@ from newton.utils.render import SimRendererOpenGL
 from newton.solvers import XPBDSolver
 from newton.solvers import VBDSolver
 import numpy as np
+import math
 
 from PBDSolver import PBDSolver
 from render_surgsim_opengl import SurgSimRendererOpenGL
@@ -16,96 +18,7 @@ from simulation_kernels import (
     paint_vertices_near_haptic,
 )
 
-@wp.kernel
-def extract_surface_from_tets(
-    tets: wp.array(dtype=Tetrahedron),           # [num_tets]
-    tet_active: wp.array(dtype=wp.int32),        # [num_tets], 1=keep, 0=skip
-    counter: wp.array(dtype=wp.int32),           # [1], atomic counter
-    out_indices: wp.array(dtype=wp.int32, ndim=2), # [max_triangles, 3]
-):
-    tid = wp.tid()
-    if tid >= tets.shape[0]:
-        return
 
-    if tet_active[tid] == 0:
-        return
-
-    tet = tets[tid]
-
-    for f in range(4):
-        # Get face indices
-        if f == 0:
-            i0, i1, i2 = tet.ids[0], tet.ids[1], tet.ids[2]
-        elif f == 1:
-            i0, i1, i2 = tet.ids[0], tet.ids[1], tet.ids[3]
-        elif f == 2:
-            i0, i1, i2 = tet.ids[0], tet.ids[2], tet.ids[3]
-        else:
-            i0, i1, i2 = tet.ids[1], tet.ids[2], tet.ids[3]
-
-        # Sort
-        a, b, c = i0, i1, i2
-        if a > b:
-            a, b = b, a
-        if b > c:
-            b, c = c, b
-        if a > b:
-            a, b = b, a
-
-        # Check if internal
-        # TODO: Extremely inefficient
-        shared = bool(False)
-        for j in range(tets.shape[0]):
-            if j == tid or tet_active[j] == 0:
-                continue
-            tet2 = tets[j]
-            for f2 in range(4):
-                # Get face indices for tet2
-                if f2 == 0:
-                    j0, j1, j2 = tet2.ids[0], tet2.ids[1], tet2.ids[2]
-                elif f2 == 1:
-                    j0, j1, j2 = tet2.ids[0], tet2.ids[1], tet2.ids[3]
-                elif f2 == 2:
-                    j0, j1, j2 = tet2.ids[0], tet2.ids[2], tet2.ids[3]
-                else:
-                    j0, j1, j2 = tet2.ids[1], tet2.ids[2], tet2.ids[3]
-
-                # Sort
-                aa, bb, cc = j0, j1, j2
-                if aa > bb:
-                    aa, bb = bb, aa
-                if bb > cc:
-                    bb, cc = cc, bb
-                if aa > bb:
-                    aa, bb = bb, aa
-
-                # If the sorted face matches, it's shared
-                if a == aa and b == bb and c == cc:
-                    shared = True
-                    break
-            if shared:
-                break
-
-        # Only emit if not shared with any other active tet
-        # This outputs the tet in the proper culling orientation
-        if not shared:
-            tri_idx = wp.atomic_add(counter, 0, 1)
-            if f == 0:
-                out_indices[tri_idx, 0] = tet.ids[0]
-                out_indices[tri_idx, 1] = tet.ids[2]
-                out_indices[tri_idx, 2] = tet.ids[1]
-            elif f == 1:
-                out_indices[tri_idx, 0] = tet.ids[0]
-                out_indices[tri_idx, 1] = tet.ids[1]
-                out_indices[tri_idx, 2] = tet.ids[3]
-            elif f == 2:
-                out_indices[tri_idx, 0] = tet.ids[0]
-                out_indices[tri_idx, 1] = tet.ids[3]
-                out_indices[tri_idx, 2] = tet.ids[2]
-            else: 
-                out_indices[tri_idx, 0] = tet.ids[1]
-                out_indices[tri_idx, 1] = tet.ids[2]
-                out_indices[tri_idx, 2] = tet.ids[3]
 
 @wp.kernel
 def set_active_tets_near_haptic(
@@ -219,6 +132,26 @@ class WarpSim:
         
         self.surface_tris_wp = wp.array(self.surface_tris, dtype=wp.int32, device=wp.get_device())
         self.uvs_wp = wp.array(uvs, dtype=wp.vec2f, device=wp.get_device())
+
+        for mesh_name, mesh_info in self.mesh_ranges.items():
+                tet_count = mesh_info.get('tet_count', 0)
+                if tet_count == 0:
+                    continue
+
+                # Allocate surface extraction buffers
+                setattr(self, f'{mesh_name}_tet_surface_counter', wp.zeros(1, dtype=wp.int32, device=wp.get_device()))
+                setattr(self, f'{mesh_name}_tet_surface_indices', wp.zeros((tet_count * 4, 3), dtype=wp.int32, device=wp.get_device()))
+                setattr(self, f'{mesh_name}_tet_active', wp.ones(tet_count, dtype=wp.int32, device=wp.get_device()))
+                
+                # bucket buffers
+                max_tri_count = tet_count * 4
+                num_buckets = math.ceil(max_tri_count / 16)
+                bucket_size = 64
+
+                setattr(self, f'{mesh_name}_bucket_count', num_buckets)
+                setattr(self, f'{mesh_name}_bucket_size', bucket_size)
+                setattr(self, f'{mesh_name}_bucket_counters', wp.zeros(num_buckets, dtype=wp.int32, device=wp.get_device()))
+                setattr(self, f'{mesh_name}_bucket_storage', wp.zeros((num_buckets, bucket_size, 3), dtype=wp.int32, device=wp.get_device()))
 
         # Add haptic device collision body
         self.haptic_body_id = builder.add_body(
@@ -361,12 +294,6 @@ class WarpSim:
                     if tet_count == 0:
                         continue
 
-                    # Allocate buffers for this mesh if not already done
-                    if not hasattr(self, f'{mesh_name}_tet_surface_counter'):
-                        setattr(self, f'{mesh_name}_tet_surface_counter', wp.zeros(1, dtype=wp.int32, device=wp.get_device()))
-                        setattr(self, f'{mesh_name}_tet_surface_indices', wp.zeros((tet_count * 4, 3), dtype=wp.int32, device=wp.get_device()))
-                        setattr(self, f'{mesh_name}_tet_active', wp.ones(tet_count, dtype=wp.int32, device=wp.get_device()))
-
                     tet_surface_counter = getattr(self, f'{mesh_name}_tet_surface_counter')
                     tet_surface_indices = getattr(self, f'{mesh_name}_tet_surface_indices')
                     tet_active = getattr(self, f'{mesh_name}_tet_active')
@@ -397,23 +324,25 @@ class WarpSim:
                         self._paint_vertices_near_haptic_proxy(paint_radius=0.35, falloff_power=2.0)
                         self.set_paint_strength(0.05)
 
-                    # Reset counter
-                    wp.copy(tet_surface_counter, wp.zeros(1, dtype=wp.int32, device=wp.get_device()))
-
                     # Extract surface
-                    wp.launch(
-                        extract_surface_from_tets,
-                        dim=tet_count,
-                        inputs=[mesh_tets, tet_active, tet_surface_counter, tet_surface_indices],
-                        device=wp.get_device()
+                    bucket_counters = getattr(self, f'{mesh_name}_bucket_counters')
+                    bucket_storage = getattr(self, f'{mesh_name}_bucket_storage')
+                    num_buckets = getattr(self, f'{mesh_name}_bucket_count')
+                    bucket_size = getattr(self, f'{mesh_name}_bucket_size')
+
+                    extract_surface_triangles_bucketed(
+                        mesh_tets,
+                        tet_active,
+                        tet_surface_indices,
+                        tet_surface_counter,
+                        bucket_counters,
+                        bucket_storage,
+                        num_buckets,
+                        bucket_size
                     )
 
                     num_triangles = int(tet_surface_counter.numpy()[0])
                     if num_triangles > 0:
-                        # Hack, only the last shape renders otherwise
-                        if f"{mesh_name}_mesh" in self.renderer._instances:
-                            self.renderer.remove_shape_instance(f"{mesh_name}_mesh")
-
                         texture = getattr(self, f"{mesh_name}_texture", None)
                         burn_texture = getattr(self, f"{mesh_name}_burn_texture", None)
 

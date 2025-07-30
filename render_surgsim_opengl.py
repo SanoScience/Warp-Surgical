@@ -455,20 +455,19 @@ def CreateSurgSimRenderer(renderer):
             idx_count = indices_reshaped.shape[0]
 
             # Use a simplified hash based on array metadata instead of data content
-            # Include texture info in hash to differentiate textured vs non-textured meshes
-            geo_hash = hash((name, point_count, idx_count, smooth_shading, texture is not None))
+            geo_hash = hash(name)
 
             if name in self._instances:
-                shape = self._instances[name][2]
+                shape_id = self._instances[name][2]
             else:
-                shape = None
+                shape_id = None
 
             # Fast path: update existing shape without topology changes
-            if not update_topology and shape is not None:
-                self._update_shape_vertices_gpu_direct_with_colors(shape, points, texture_coords_2d, vertex_colors, scale)
+            if not update_topology and shape_id is not None:
+                self._update_shape_vertices_gpu_direct_with_colors(shape_id, points, texture_coords_2d, vertex_colors, scale)
                 if texture is not None:
-                    self._update_shape_texture(shape, texture)
-                return shape
+                    self._update_shape_texture(shape_id, texture)
+                return shape_id
 
             # Slow path: create new shape or topology changed
             if smooth_shading:
@@ -508,22 +507,21 @@ def CreateSurgSimRenderer(renderer):
 
                 gfx_indices_wp = wp.arange(idx_count * 3, dtype=wp.int32, device=self._device)
 
-            # Clean up existing shape if needed
-            if shape is not None:
-                self.deregister_shape(shape)
+            if shape_id is not None:
+                self.deregister_shape(shape_id)
             if name in self._instances:
                 self.remove_shape_instance(name)
 
             # Register shape with GPU data, texture, and vertex colors
-            shape = self._register_shape_gpu_direct_with_colors(geo_hash, gfx_vertices, gfx_indices_wp, texture, burn_texture)
+            shape_id = self._register_shape_gpu_direct_with_colors(geo_hash, shape_id, gfx_vertices, gfx_indices_wp, texture, burn_texture)
 
             if texture is not None:
-                self._update_shape_texture(shape, texture)
+                self._update_shape_texture(shape_id, texture)
 
             if not is_template:
                 self.add_shape_instance(
                     name=name,
-                    shape=shape,
+                    shape=shape_id,
                     body=parent_body,
                     pos=pos,
                     rot=rot,
@@ -533,7 +531,7 @@ def CreateSurgSimRenderer(renderer):
                     visible=visible,
                 )
 
-            return shape
+            return shape_id
 
         def render_mesh_warp_range(
             self,
@@ -585,20 +583,30 @@ def CreateSurgSimRenderer(renderer):
                 smooth_shading=smooth_shading,
                 visible=visible,
             )
-            
 
-        def _register_shape_gpu_direct_with_colors(self, geo_hash, gfx_vertices: wp.array, gfx_indices: wp.array, texture: int = None, burn_texture: int = None):
+
+        def _register_shape_gpu_direct_with_colors(self, geo_hash, shape_id, gfx_vertices: wp.array, gfx_indices: wp.array, texture: int = None, burn_texture: int = None):
             """Register shape using GPU arrays directly with vertex color and texture support"""
             gl = SurgSimRendererOpenGL.gl
             self._switch_context()
 
-            shape = len(self._shapes)
+            if shape_id is None:
+                new_shape = True
+                shape_id = len(self._shapes)
+            else:
+                new_shape = False
+
             color1 = self._get_default_color(len(self._shape_geo_hash))
             color2 = np.clip(np.array(color1) + 0.25, 0.0, 1.0)
             
             # Store shape data with texture info
-            self._shapes.append((None, None, color1, color2, geo_hash, texture, burn_texture))
-            self._shape_geo_hash[geo_hash] = shape
+            shape = (None, None, color1, color2, geo_hash, texture, burn_texture)
+            if new_shape:
+                self._shapes.append(shape)
+            else:
+                self._shapes[shape_id] = shape
+
+            self._shape_geo_hash[geo_hash] = shape_id
 
             gl.glUseProgram(self._shape_shader.id)
 
@@ -662,8 +670,8 @@ def CreateSurgSimRenderer(renderer):
 
             gl.glBindVertexArray(0)
 
-            self._shape_gl_buffers[shape] = (vao, vbo, ebo, indices_count, vertex_cuda_buffer)
-            return shape
+            self._shape_gl_buffers[shape_id] = (vao, vbo, ebo, indices_count, vertex_cuda_buffer)
+            return shape_id
 
         def _update_shape_vertices_gpu_direct_with_colors(self, shape, points: wp.array, texture_coords: wp.array = None, vertex_colors: wp.array = None, scale=(1.0, 1.0, 1.0)):
                 """Update vertices, texture coordinates, and vertex colors using direct GPU-to-GPU copy"""
@@ -690,7 +698,7 @@ def CreateSurgSimRenderer(renderer):
                     print(f"Warning: Could not update vertices with colors: {e}")
                     return
 
-        def _update_shape_texture(self, shape, texture: int):
+        def _update_shape_texture(self, shape: int, texture: int):
             """Update the texture binding for a shape"""
             if shape >= len(self._shapes):
                 return
@@ -794,10 +802,12 @@ def CreateSurgSimRenderer(renderer):
             except gl.GLException:
                 pass
 
-            _, _, _, _, geo_hash, _ = self._shapes[shape]
+            _, _, _, _, geo_hash, _, _ = self._shapes[shape]
+            assert(self._shape_geo_hash[geo_hash] == shape)
+
             del self._shape_geo_hash[geo_hash]
-            del self._shape_gl_buffers[shape]
-            self._shapes.pop(shape)
+            #del self._shape_gl_buffers[shape]
+            #self._shapes.pop(shape)
 
         def populate(self, model: newton.Model):
             self.skip_rendering = False
