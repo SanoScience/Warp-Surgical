@@ -46,6 +46,82 @@ def set_active_tets_near_haptic(
     if dist < radius:
         tet_active[tid] = 0
 
+@wp.kernel
+def build_vertex_neighbor_table(
+    tet_active: wp.array(dtype=wp.int32),         # [num_tets]
+    tets: wp.array(dtype=Tetrahedron),            # [num_tets]
+    vertex_neighbors: wp.array(dtype=wp.int32, ndim = 2),   # [num_vertices, max_neighbors]
+    vertex_neighbor_counts: wp.array(dtype=wp.int32),       # [num_vertices]
+    num_tets: int,
+    max_neighbors: int
+):
+    tid = wp.tid()
+    if tid >= num_tets:
+        return
+
+    if tet_active[tid] == 0:
+        return
+
+    tet = tets[tid]
+    for i in range(4):
+        v = tet.ids[i]
+
+        for j in range(4):
+            if i == j:
+                continue
+
+            n = tet.ids[j]
+
+            # Atomically add neighbor if not already present
+            # (no duplicate check)
+            idx = wp.atomic_add(vertex_neighbor_counts, v, 1)
+            if idx < max_neighbors:
+                vertex_neighbors[v, idx] = n
+
+@wp.kernel
+def heat_conduction_kernel(
+    vertex_neighbors: wp.array(dtype=wp.int32, ndim = 2),   # [num_vertices, max_neighbors]
+    vertex_neighbor_counts: wp.array(dtype=wp.int32), # [num_vertices]
+    vertex_colors: wp.array(dtype=wp.vec3f),          # [num_vertices] - heat stored in red channel
+    heat_diffusion_rate: float,                       # diffusion coefficient (0.0 - 1.0)
+    max_neighbors: int,
+    vertex_count: int,
+    dt: float                                         # time step
+):
+    vid = wp.tid()
+    if vid >= vertex_count:
+        return
+    
+    current_color = vertex_colors[vid]
+    current_heat = current_color[0]  # Heat stored in red channel
+
+    if current_heat <= 0.0:
+        return
+    
+    neighbor_count = vertex_neighbor_counts[vid]
+    if neighbor_count == 0:
+        return
+    
+    heat_per_neighbor = current_heat * heat_diffusion_rate * dt / float(neighbor_count)
+    
+    # Conduct heat to neighbors
+    for i in range(neighbor_count):
+        if i >= max_neighbors:
+            break
+            
+        neighbor_id = vertex_neighbors[vid, i]
+        if neighbor_id < 0 or neighbor_id >= vertex_count:
+            continue
+            
+        # Add heat to neighbor (non-atomic approximation)
+        neighbor_color = vertex_colors[neighbor_id]
+        new_heat = wp.min(neighbor_color[0] + heat_per_neighbor, 1.0)  # Clamp to max 1.0
+        vertex_colors[neighbor_id] = wp.vec3(new_heat, neighbor_color[1], neighbor_color[2])
+    
+    # Reduce heat from current vertex
+    # remaining_heat = current_heat * (1.0 - heat_diffusion_rate * dt)
+    # vertex_colors[vid] = wp.vec3(remaining_heat, current_color[1], current_color[2])
+
 class WarpSim:
     def __init__(self, stage_path="output.usd", num_frames=300, use_opengl=True):
         self.sim_substeps = 16
@@ -69,6 +145,13 @@ class WarpSim:
         self._build_model()
         self.vertex_colors = wp.zeros(self.model.particle_count, dtype=wp.vec3f, device=wp.get_device())
         
+        vertex_count = self.model.particle_count
+        vertex_neighbour_count = 32
+
+        self.vertex_to_vneighbours = wp.zeros((vertex_count, vertex_neighbour_count), dtype=wp.int32, device=wp.get_device())
+        self.vertex_vneighbor_counts = wp.zeros(vertex_count, dtype=wp.int32, device=wp.get_device())
+        self.vneighbours_max = vertex_neighbour_count
+
         # Initialize simulation components
         self._setup_simulation()
         
@@ -141,7 +224,6 @@ class WarpSim:
                 # Allocate surface extraction buffers
                 setattr(self, f'{mesh_name}_tet_surface_counter', wp.zeros(1, dtype=wp.int32, device=wp.get_device()))
                 setattr(self, f'{mesh_name}_tet_surface_indices', wp.zeros((tet_count * 4, 3), dtype=wp.int32, device=wp.get_device()))
-                setattr(self, f'{mesh_name}_tet_active', wp.ones(tet_count, dtype=wp.int32, device=wp.get_device()))
                 
                 # bucket buffers
                 max_tri_count = tet_count * 4
@@ -171,6 +253,7 @@ class WarpSim:
         
         self.model = builder.finalize()
         self.model.tetrahedra_wp = tetrahedra_wp
+        self.model.tet_active = wp.ones(self.model.tetrahedra_wp.shape[0], dtype=wp.int32, device=wp.get_device())
         self.model.tri_points_connectors = tri_points_connectors
 
     def _paint_vertices_near_haptic_proxy(self, paint_radius=0.25, falloff_power=2.0):
@@ -288,6 +371,38 @@ class WarpSim:
                     0.1,
                 )
 
+                # Recompute connectivity
+                wp.copy(self.vertex_vneighbor_counts, wp.zeros(self.model.particle_count, dtype=wp.int32, device=wp.get_device()))
+                wp.launch(
+                    build_vertex_neighbor_table,
+                    dim=self.model.tetrahedra_wp.shape[0],
+                    inputs=[
+                        self.model.tet_active,
+                        self.model.tetrahedra_wp,
+                        self.vertex_to_vneighbours,
+                        self.vertex_vneighbor_counts,
+                        self.model.tetrahedra_wp.shape[0],
+                        self.vneighbours_max
+                    ],
+                    device=wp.get_device()
+                )
+
+                # Heat conduction
+                wp.launch(
+                    heat_conduction_kernel,
+                    dim=self.model.particle_count,
+                    inputs=[
+                        self.vertex_to_vneighbours,
+                        self.vertex_vneighbor_counts,
+                        self.vertex_colors,
+                        2.0,  # heat_diffusion_rate
+                        self.vneighbours_max,
+                        self.model.particle_count,
+                        self.frame_dt
+                    ],
+                    device=wp.get_device()
+                )
+
                 for mesh_name, mesh_info in self.mesh_ranges.items():
                     tet_start = mesh_info.get('tet_start', 0)
                     tet_count = mesh_info.get('tet_count', 0)
@@ -296,16 +411,18 @@ class WarpSim:
 
                     tet_surface_counter = getattr(self, f'{mesh_name}_tet_surface_counter')
                     tet_surface_indices = getattr(self, f'{mesh_name}_tet_surface_indices')
-                    tet_active = getattr(self, f'{mesh_name}_tet_active')
 
                     # Slice the tetrahedra for this mesh
+                    tet_active = self.model.tet_active[tet_start:tet_start+tet_count]
                     mesh_tets = self.model.tetrahedra_wp[tet_start:tet_start+tet_count]
 
+                    # Handle cutting
                     if self.cutting_active:
                         if tet_count == 0:
                             continue
                         if tet_active is None:
                             continue
+
                         wp.launch(
                             set_active_tets_near_haptic,
                             dim=tet_count,
@@ -320,10 +437,12 @@ class WarpSim:
                             device=wp.get_device()
                         )
 
+                    # Handle heating
                     if self.heating_active:
                         self._paint_vertices_near_haptic_proxy(paint_radius=0.35, falloff_power=2.0)
                         self.set_paint_strength(0.05)
 
+                    
                     # Extract surface
                     bucket_counters = getattr(self, f'{mesh_name}_bucket_counters')
                     bucket_storage = getattr(self, f'{mesh_name}_bucket_storage')
