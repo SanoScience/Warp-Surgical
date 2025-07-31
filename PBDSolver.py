@@ -35,13 +35,33 @@ from newton.solvers.vbd.tri_mesh_collision import (
     TriMeshCollisionInfo,
 )
 
+NUM_THREADS_PER_COLLISION_PRIMITIVE = 4
 
 class PBDSolver(XPBDSolver):
     def __init__(self, model: Model, **kwargs):
         super().__init__(model, **kwargs)
         self.volCnstrs = True
         self.dev_pos_buffer = None
-        #self.collision_detector = TriMeshCollisionDetector(self.model)
+        self.self_contact_radius: float = 0.2,
+        self.self_contact_margin: float = 0.2,
+        
+        self.trimesh_collision_detector = TriMeshCollisionDetector(
+            self.model,
+            vertex_collision_buffer_pre_alloc=32,
+            edge_collision_buffer_pre_alloc=64,
+            edge_edge_parallel_epsilon=1e-5,
+        )
+
+        self.trimesh_collision_info = wp.array(
+            [self.trimesh_collision_detector.collision_info], dtype=TriMeshCollisionInfo, device=self.device
+        )
+        
+        soft_contact_max = model.shape_count * model.particle_count
+        self.collision_evaluation_kernel_launch_size = max(
+            self.model.particle_count * NUM_THREADS_PER_COLLISION_PRIMITIVE,
+            self.model.edge_count * NUM_THREADS_PER_COLLISION_PRIMITIVE,
+            soft_contact_max,
+        )
 
     def step(self, model: Model, state_in: State, state_out: State, control: Control, contacts: Contacts, dt: float):
         requires_grad = state_in.requires_grad
@@ -335,9 +355,9 @@ class PBDSolver(XPBDSolver):
                         )
 
                         
-                        # self.collision_detector.refit(self.state_0.particle_q)
-                        # self.collision_detector.vertex_triangle_collision_detection(self.radius_collision)
-                        # self.collision_detector.edge_edge_collision_detection(self.radius_collision)
+                       # self.trimesh_collision_detector.refit(state_in.particle_q)
+                       # self.trimesh_collision_detector.vertex_triangle_collision_detection(self.self_contact_margin)
+                       # self.trimesh_collision_detector.edge_edge_collision_detection(self.self_contact_margin)
 
                         # # 3. Launch a kernel to resolve mesh self-collisions
                         # wp.launch(
