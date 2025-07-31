@@ -158,6 +158,7 @@ def apply_deltas_and_zero_accumulators(
 @wp.kernel
 def solve_volume_constraints(
     positions: wp.array(dtype=wp.vec3f),
+    invmass: wp.array(dtype=float),
     tetrahedra: wp.array(dtype=Tetrahedron),
     stiffness: wp.float32,
     delta_accumulator: wp.array(dtype=wp.vec3f),
@@ -172,6 +173,12 @@ def solve_volume_constraints(
     p2 = positions[ids[2]]
     p3 = positions[ids[3]]
 
+    w0 = invmass[ids[0]]
+    w1 = invmass[ids[1]]
+    w2 = invmass[ids[2]]
+    w3 = invmass[ids[3]]
+    w = w0 + w1 + w2 + w3
+
     # Compute current volume
     v = wp.dot(wp.cross(p1 - p0, p2 - p0), p3 - p0) / 6.0
 
@@ -184,18 +191,28 @@ def solve_volume_constraints(
     grad2 = wp.cross(p0 - p1, p3 - p1) / 6.0
     grad3 = wp.cross(p1 - p0, p2 - p0) / 6.0
 
-    sum_grad = wp.length_sq(grad0) + wp.length_sq(grad1) + wp.length_sq(grad2) + wp.length_sq(grad3)
+
+    # Mass-weighted denominator
+    sum_grad = w0 * wp.length_sq(grad0) + w1 * wp.length_sq(grad1) + w2 * wp.length_sq(grad2) + w3 * wp.length_sq(grad3)
+   
+    #sum_grad = wp.length_sq(grad0) + wp.length_sq(grad1) + wp.length_sq(grad2) + wp.length_sq(grad3)
     if sum_grad < 1e-8:
         return
 
     # Lagrange multiplier (projective dynamics style)
     s = stiffness * C / sum_grad
 
-    # Compute deltas
-    d0 = -grad0 * s
-    d1 = -grad1 * s
-    d2 = -grad2 * s
-    d3 = -grad3 * s
+    # # Compute deltas
+    # d0 = -grad0 * s
+    # d1 = -grad1 * s
+    # d2 = -grad2 * s
+    # d3 = -grad3 * s
+
+    # Compute mass-weighted deltas
+    d0 = -grad0 * s * w0
+    d1 = -grad1 * s * w1
+    d2 = -grad2 * s * w2
+    d3 = -grad3 * s * w3
 
     # Atomically accumulate deltas and counts
     wp.atomic_add(delta_accumulator, ids[0], d0)

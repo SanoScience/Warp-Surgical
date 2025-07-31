@@ -161,6 +161,9 @@ class WarpSim:
             heating_start(self)
         elif symbol == key.B:
             grasp_start(self)
+        elif symbol == key.Y:
+            self.integrator.volCnstrs = not self.integrator.volCnstrs
+
 
     def _on_key_release(self, symbol, modifiers):
         from pyglet.window import key
@@ -230,6 +233,8 @@ class WarpSim:
         self.model.tetrahedra_wp = tetrahedra_wp
         self.model.tet_active = wp.ones(self.model.tetrahedra_wp.shape[0], dtype=wp.int32, device=wp.get_device())
         self.model.tri_points_connectors = tri_points_connectors
+
+        self.model.particle_max_velocity = 10.0
 
     def _setup_simulation(self):
         """Initialize simulation states and integrator."""

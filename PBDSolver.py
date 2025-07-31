@@ -36,8 +36,8 @@ from simulation_kernels import (
 class PBDSolver(XPBDSolver):
     def __init__(self, model: Model, **kwargs):
         super().__init__(model, **kwargs)
-
-        dev_pos_buffer = None
+        self.volCnstrs = True
+        self.dev_pos_buffer = None
 
     def step(self, model: Model, state_in: State, state_out: State, control: Control, contacts: Contacts, dt: float):
         requires_grad = state_in.requires_grad
@@ -275,20 +275,22 @@ class PBDSolver(XPBDSolver):
                         #     )
 
                             # # solve volume constraints
-                            # wp.launch(
-                            #     solve_volume_constraints,
-                            #     dim=len(model.tetrahedra_wp),
-                            #     inputs=[
-                            #         particle_q,
-                            #         model.tetrahedra_wp,
-                            #         1.0  # stiffness
-                            #     ],
-                            #     outputs=[
-                            #         particle_deltas_accumulator,
-                            #         particle_deltas_count,
-                            #     ],
-                            #     device=model.device,
-                            # )
+                            if self.volCnstrs:
+                                wp.launch(
+                                    solve_volume_constraints,
+                                    dim=len(model.tetrahedra_wp),
+                                    inputs=[
+                                        particle_q,
+                                        model.particle_inv_mass,
+                                        model.tetrahedra_wp,
+                                        0.1  # stiffness
+                                    ],
+                                    outputs=[
+                                        particle_deltas_accumulator,
+                                        particle_deltas_count,
+                                    ],
+                                    device=model.device,
+                                )
 
                             wp.launch(
                                 kernel=apply_deltas,
