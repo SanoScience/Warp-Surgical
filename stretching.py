@@ -4,12 +4,15 @@ from mesh_loader import Tetrahedron
 @wp.kernel
 def deactivate_tets_by_stretch_kernel(
     tet_active: wp.array(dtype=wp.int32),         # [num_tets]
+    tets: wp.array(dtype=Tetrahedron),            # [num_tets]
     tet_to_edges: wp.array(dtype=wp.int32, ndim=2), # [num_tets, 6]
     edges: wp.array(dtype=wp.int32),              # [num_springs * 2]
     edges_rest_len: wp.array(dtype=wp.float32),   # [num_springs]
     particle_q: wp.array(dtype=wp.vec3f),         # [num_particles]
+    vertex_colors: wp.array(dtype=wp.vec4f),      # [num_particles]
     stretch_threshold: float,
-    num_tets: int
+    num_tets: int,
+    blood_amount: float
 ):
     tid = wp.tid()
     if tid >= num_tets:
@@ -32,6 +35,13 @@ def deactivate_tets_by_stretch_kernel(
 
     if max_stretch > stretch_threshold:
         tet_active[tid] = 0
+        tet = tets[tid]
+
+        # Add blood to vertex colors (channel A)
+        for i in range(4):
+            pid = tet.ids[i]
+            color = vertex_colors[pid]
+            vertex_colors[pid] = wp.vec4(color[0], color[1], color[2], wp.clamp(color[3] + blood_amount, 0.0, 1.0))
 
 @wp.kernel
 def deactivate_edges_by_stretch_kernel(
@@ -64,12 +74,15 @@ def stretching_breaking_process(sim):
         dim=sim.model.tetrahedra_wp.shape[0],
         inputs=[
             sim.model.tet_active,
+            sim.model.tetrahedra_wp,
             sim.tet_to_edges,
             sim.model.spring_indices,
             sim.model.spring_rest_length,
             sim.state_0.particle_q,
+            sim.vertex_colors,
             1.5,  # stretch_threshold
-            sim.model.tetrahedra_wp.shape[0]
+            sim.model.tetrahedra_wp.shape[0],
+            0.2   # blood_amount
         ],
         device=wp.get_device()
     )

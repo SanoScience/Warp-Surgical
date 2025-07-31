@@ -5,7 +5,7 @@ import warp as wp
 def heat_conduction_kernel(
     vertex_neighbors: wp.array(dtype=wp.int32, ndim = 2),   # [num_vertices, max_neighbors]
     vertex_neighbor_counts: wp.array(dtype=wp.int32), # [num_vertices]
-    vertex_colors: wp.array(dtype=wp.vec3f),          # [num_vertices] - heat stored in red channel
+    vertex_colors: wp.array(dtype=wp.vec4f),          # [num_vertices] - heat stored in red channel
     heat_diffusion_rate: float,                       # diffusion coefficient (0.0 - 1.0)
     max_neighbors: int,
     vertex_count: int,
@@ -39,11 +39,11 @@ def heat_conduction_kernel(
         # Add heat to neighbor (non-atomic approximation)
         neighbor_color = vertex_colors[neighbor_id]
         new_heat = wp.min(neighbor_color[0] + heat_per_neighbor, 1.0)  # Clamp to max 1.0
-        vertex_colors[neighbor_id] = wp.vec3(new_heat, neighbor_color[1], neighbor_color[2])
+        vertex_colors[neighbor_id] = wp.vec4(new_heat, neighbor_color[1], neighbor_color[2],  neighbor_color[3])
 
 @wp.kernel
 def heat_burn_and_cool_kernel(
-    vertex_colors: wp.array(dtype=wp.vec3f),      # [num_vertices]
+    vertex_colors: wp.array(dtype=wp.vec4f),      # [num_vertices]
     burn_threshold: float,                        # threshold for burning
     burn_rate: float,                             # rate to increase burn (green channel) per step
     passive_cool_rate: float,                     # rate to decrease heat (red channel) per step
@@ -63,13 +63,13 @@ def heat_burn_and_cool_kernel(
 
     # Passive heat loss
     heat = wp.max(heat - passive_cool_rate, 0.0)
-    vertex_colors[vid] = wp.vec3(heat, burn, color[2])
+    vertex_colors[vid] = wp.vec4(heat, burn, color[2], color[3])
 
 @wp.kernel
 def deactivate_tets_by_burn_kernel(
     tet_active: wp.array(dtype=wp.int32),         # [num_tets]
     tets: wp.array(dtype=Tetrahedron),            # [num_tets]
-    vertex_colors: wp.array(dtype=wp.vec3f),      # [num_vertices]
+    vertex_colors: wp.array(dtype=wp.vec4f),      # [num_vertices]
     burn_threshold: float,                        # threshold for deactivation (e.g., 0.95)
     num_tets: int
 ):
@@ -93,9 +93,9 @@ def deactivate_tets_by_burn_kernel(
 def paint_vertices_near_haptic(
     vertex_positions: wp.array(dtype=wp.vec3),
     body_q: wp.array(dtype=wp.transformf),
-    vertex_colors: wp.array(dtype=wp.vec3),
+    vertex_colors: wp.array(dtype=wp.vec4),
     paint_radius: wp.float32,
-    paint_color: wp.array(dtype=wp.vec3),
+    paint_color: wp.array(dtype=wp.vec4),
     paint_strength: wp.array(dtype=wp.float32),
     falloff_power: wp.float32
 ):
@@ -122,10 +122,11 @@ def paint_vertices_near_haptic(
         new_color = current_color + color * falloff * strength
         
         # Clamp to [0, 1] range
-        new_color = wp.vec3(
+        new_color = wp.vec4(
             wp.clamp(new_color[0], 0.0, 1.0),
             wp.clamp(new_color[1], 0.0, 1.0),
-            wp.clamp(new_color[2], 0.0, 1.0)
+            wp.clamp(new_color[2], 0.0, 1.0),
+            wp.clamp(new_color[3], 0.0, 1.0)
         )
         
         vertex_colors[tid] = new_color

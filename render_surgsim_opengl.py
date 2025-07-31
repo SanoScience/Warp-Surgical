@@ -34,7 +34,7 @@ shape_vertex_shader = """
 layout (location = 0) in vec3 aPos;
 layout (location = 1) in vec3 aNormal;
 layout (location = 2) in vec2 aTexCoord;
-layout (location = 3) in vec3 aVertexColor;
+layout (location = 3) in vec4 aVertexColor;
 
 // column vectors of the instance transform matrix
 layout (location = 4) in vec4 aInstanceTransform0;
@@ -49,7 +49,7 @@ uniform mat4 projection;
 out vec3 Normal;
 out vec3 FragPos;
 out vec2 TexCoord;
-out vec3 VertexColor;
+out vec4 VertexColor;
 
 void main()
 {
@@ -63,6 +63,7 @@ void main()
 }
 """
 
+# Update the fragment shader to support up to 8 textures
 shape_fragment_shader = """
 #version 330 core
 out vec4 FragColor;
@@ -70,14 +71,13 @@ out vec4 FragColor;
 in vec3 Normal;
 in vec3 FragPos;
 in vec2 TexCoord;
-in vec3 VertexColor;
+in vec4 VertexColor;
 
 uniform vec3 viewPos;
 uniform vec3 lightColor;
 uniform vec3 sunDirection;
-uniform sampler2D textureSampler;
-uniform sampler2D burnTextureSampler;
-uniform int hasTexture;
+uniform int numTextures;
+uniform sampler2D textures[8];
 
 void main()
 {
@@ -103,19 +103,19 @@ void main()
     spec = pow(max(dot(viewDir, reflectDir), 0.0), 64);
     specular += specularStrength * spec * lightColor * 0.3;
 
-    vec3 vCol = VertexColor;
+    vec4 vCol = VertexColor;
     float burnBlend = vCol.y;
     float mainBlend = 1.0 - burnBlend;
 
-    vec3 baseColor;
-    if (hasTexture == 1) {
-        vec3 baseCol = texture(textureSampler, TexCoord).rgb;
-        vec3 burnCol = texture(burnTextureSampler, TexCoord).rgb;
+    vec3 baseColor = vec3(0.0);
+    if (numTextures > 0)
+    {
+        vec3 baseCol = texture(textures[0], TexCoord).rgb;
+        vec3 burnCol = texture(textures[1], TexCoord).rgb;
 
         baseColor = mix(baseCol, burnCol, burnBlend);
     } else {
-        // Use vertex color or default white if vertex color is black
-        baseColor = length(VertexColor) > 0.01 ? VertexColor : vec3(1.0, 1.0, 1.0);
+        baseColor = length(VertexColor) > 0.01 ? VertexColor.rgb : vec3(1.0, 1.0, 1.0);
     }
 
     vec3 result = (ambient + diffuse + specular) * baseColor;
@@ -129,7 +129,7 @@ def assemble_gfx_vertices_with_colors(
     normals: wp.array(dtype=wp.vec3),
     faces_per_vertex: wp.array(dtype=wp.int32),
     texture_coords: wp.array(dtype=wp.vec2),
-    vertex_colors: wp.array(dtype=wp.vec3),
+    vertex_colors: wp.array(dtype=wp.vec4),
     scale: wp.vec3,
     gfx_vertices: wp.array(dtype=wp.float32, ndim=2)
 ):
@@ -161,13 +161,15 @@ def assemble_gfx_vertices_with_colors(
     gfx_vertices[tid, 8] = color[0]
     gfx_vertices[tid, 9] = color[1]
     gfx_vertices[tid, 10] = color[2]
+    gfx_vertices[tid, 11] = color[3]
+
 
 @wp.kernel
 def compute_gfx_vertices_with_colors(
     indices: wp.array(dtype=wp.int32, ndim=2),
     vertices: wp.array(dtype=wp.vec3),
     texture_coords: wp.array(dtype=wp.vec2),
-    vertex_colors: wp.array(dtype=wp.vec3),
+    vertex_colors: wp.array(dtype=wp.vec4),
     scale: wp.vec3,
     gfx_vertices: wp.array(dtype=wp.float32, ndim=2)
 ):
@@ -214,6 +216,8 @@ def compute_gfx_vertices_with_colors(
     gfx_vertices[base_idx + 0, 8] = color0[0]
     gfx_vertices[base_idx + 0, 9] = color0[1]
     gfx_vertices[base_idx + 0, 10] = color0[2]
+    gfx_vertices[base_idx + 0, 11] = color0[3]
+
     
     # Vertex 1
     gfx_vertices[base_idx + 1, 0] = p1[0]
@@ -227,6 +231,8 @@ def compute_gfx_vertices_with_colors(
     gfx_vertices[base_idx + 1, 8] = color1[0]
     gfx_vertices[base_idx + 1, 9] = color1[1]
     gfx_vertices[base_idx + 1, 10] = color1[2]
+    gfx_vertices[base_idx + 1, 11] = color1[3]
+
     
     # Vertex 2
     gfx_vertices[base_idx + 2, 0] = p2[0]
@@ -240,12 +246,14 @@ def compute_gfx_vertices_with_colors(
     gfx_vertices[base_idx + 2, 8] = color2[0]
     gfx_vertices[base_idx + 2, 9] = color2[1]
     gfx_vertices[base_idx + 2, 10] = color2[2]
+    gfx_vertices[base_idx + 2, 11] = color2[3]
+
 
 @wp.kernel
 def update_mesh_vertices_optimized_with_colors(
     points: wp.array(dtype=wp.vec3),
     texture_coords: wp.array(dtype=wp.vec2),
-    vertex_colors: wp.array(dtype=wp.vec3),
+    vertex_colors: wp.array(dtype=wp.vec4),
     scale: wp.vec3,
     gfx_vertices: wp.array(dtype=wp.float32, ndim=2)
 ):
@@ -266,6 +274,8 @@ def update_mesh_vertices_optimized_with_colors(
     gfx_vertices[tid, 8] = color[0]
     gfx_vertices[tid, 9] = color[1]
     gfx_vertices[tid, 10] = color[2]
+    gfx_vertices[tid, 11] = color[3]
+
 
 
 def check_gl_error():
@@ -392,8 +402,7 @@ def CreateSurgSimRenderer(renderer):
             colors: wp.array = None,
             texture_coords: wp.array = None,
             vertex_colors: wp.array = None,
-            texture: int = None,
-            burn_texture: int = None,
+            textures: list[int] = None,
             pos=(0.0, 0.0, 0.0),
             rot=(0.0, 0.0, 0.0, 1.0),
             scale=(1.0, 1.0, 1.0),
@@ -412,7 +421,7 @@ def CreateSurgSimRenderer(renderer):
                 colors: Warp array of vertex colors (optional, deprecated - use vertex_colors)
                 texture_coords: Warp array of texture coordinates (dtype=wp.vec2 or 1D array with shape=(vertex_count*2,), optional)
                 vertex_colors: Warp array of per-vertex colors (dtype=wp.vec3, optional)
-                texture: OpenGL texture ID (optional)
+                textures: List of OpenGL texture IDs (optional)
                 pos: The position of the mesh
                 rot: The rotation of the mesh
                 scale: The scale of the mesh
@@ -465,8 +474,8 @@ def CreateSurgSimRenderer(renderer):
             # Fast path: update existing shape without topology changes
             if not update_topology and shape_id is not None:
                 self._update_shape_vertices_gpu_direct_with_colors(shape_id, points, texture_coords_2d, vertex_colors, scale)
-                if texture is not None:
-                    self._update_shape_texture(shape_id, texture)
+                if textures is not None:
+                    self._update_shape_texture(shape_id, textures)
                 return shape_id
 
             # Slow path: create new shape or topology changed
@@ -483,8 +492,8 @@ def CreateSurgSimRenderer(renderer):
                     device=self._device,
                 )
 
-                # Assemble vertex data with 11 components: pos(3) + normal(3) + uv(2) + color(3)
-                gfx_vertices = wp.zeros((point_count, 11), dtype=wp.float32, device=self._device)
+                # Assemble vertex data with 12 components: pos(3) + normal(3) + uv(2) + color(4)
+                gfx_vertices = wp.zeros((point_count, 12), dtype=wp.float32, device=self._device)
                 wp.launch(
                     assemble_gfx_vertices_with_colors,
                     dim=point_count,
@@ -495,8 +504,8 @@ def CreateSurgSimRenderer(renderer):
 
                 gfx_indices_wp = indices_reshaped.flatten()
             else:
-                # Generate per-face vertices with 11 components: pos(3) + normal(3) + uv(2) + color(3)
-                gfx_vertices = wp.zeros((idx_count * 3, 11), dtype=wp.float32, device=self._device)
+                # Generate per-face vertices with 12 components: pos(3) + normal(3) + uv(2) + color(4)
+                gfx_vertices = wp.zeros((idx_count * 3, 12), dtype=wp.float32, device=self._device)
                 wp.launch(
                     compute_gfx_vertices_with_colors,
                     dim=idx_count,
@@ -512,11 +521,11 @@ def CreateSurgSimRenderer(renderer):
             if name in self._instances:
                 self.remove_shape_instance(name)
 
-            # Register shape with GPU data, texture, and vertex colors
-            shape_id = self._register_shape_gpu_direct_with_colors(geo_hash, shape_id, gfx_vertices, gfx_indices_wp, texture, burn_texture)
+            # Register shape with GPU data and textures
+            shape_id = self._register_shape_gpu_direct_with_colors(geo_hash, shape_id, gfx_vertices, gfx_indices_wp, textures)
 
-            if texture is not None:
-                self._update_shape_texture(shape_id, texture)
+            if textures is not None:
+                self._update_shape_texture(shape_id, textures)
 
             if not is_template:
                 self.add_shape_instance(
@@ -540,8 +549,7 @@ def CreateSurgSimRenderer(renderer):
             indices: wp.array,
             texture_coords: wp.array = None,
             colors: wp.array = None,
-            texture: int = None,
-            burn_texture: int = None,
+            textures: list[int] = None,
             index_start: int = 0,
             index_count: int = -1,
             pos=(0.0, 0.0, 0.0),
@@ -572,8 +580,7 @@ def CreateSurgSimRenderer(renderer):
                 colors=None,
                 texture_coords=texture_coords,
                 vertex_colors=colors,
-                texture=texture,
-                burn_texture=burn_texture,
+                textures=textures,
                 pos=pos,
                 rot=rot,
                 scale=scale,
@@ -585,7 +592,7 @@ def CreateSurgSimRenderer(renderer):
             )
 
 
-        def _register_shape_gpu_direct_with_colors(self, geo_hash, shape_id, gfx_vertices: wp.array, gfx_indices: wp.array, texture: int = None, burn_texture: int = None):
+        def _register_shape_gpu_direct_with_colors(self, geo_hash, shape_id, gfx_vertices: wp.array, gfx_indices: wp.array, textures: list[int] = None):
             """Register shape using GPU arrays directly with vertex color and texture support"""
             gl = SurgSimRendererOpenGL.gl
             self._switch_context()
@@ -599,8 +606,8 @@ def CreateSurgSimRenderer(renderer):
             color1 = self._get_default_color(len(self._shape_geo_hash))
             color2 = np.clip(np.array(color1) + 0.25, 0.0, 1.0)
             
-            # Store shape data with texture info
-            shape = (None, None, color1, color2, geo_hash, texture, burn_texture)
+            # Store shape data with textures info (list)
+            shape = (None, None, color1, color2, geo_hash, textures)
             if new_shape:
                 self._shapes.append(shape)
             else:
@@ -649,8 +656,8 @@ def CreateSurgSimRenderer(renderer):
             wp.copy(mapped_indices, gfx_indices)
             indices_cuda_buffer.unmap()
 
-            # Set up vertex attributes for 11-component format: pos(3) + normal(3) + uv(2) + color(3)
-            stride = 11 * 4  # 11 floats * 4 bytes per float
+            # Set up vertex attributes for 12-component format: pos(3) + normal(3) + uv(2) + color(4)
+            stride = 12 * 4  # 12 floats * 4 bytes per float
             
             # positions (location 0)
             gl.glVertexAttribPointer(0, 3, gl.GL_FLOAT, gl.GL_FALSE, stride, ctypes.c_void_p(0))
@@ -665,7 +672,7 @@ def CreateSurgSimRenderer(renderer):
             gl.glEnableVertexAttribArray(2)
             
             # vertex colors (location 3)
-            gl.glVertexAttribPointer(3, 3, gl.GL_FLOAT, gl.GL_FALSE, stride, ctypes.c_void_p(32))
+            gl.glVertexAttribPointer(3, 4, gl.GL_FLOAT, gl.GL_FALSE, stride, ctypes.c_void_p(32))
             gl.glEnableVertexAttribArray(3)
 
             gl.glBindVertexArray(0)
@@ -698,19 +705,17 @@ def CreateSurgSimRenderer(renderer):
                     print(f"Warning: Could not update vertices with colors: {e}")
                     return
 
-        def _update_shape_texture(self, shape: int, texture: int):
-            """Update the texture binding for a shape"""
+        def _update_shape_texture(self, shape: int, textures: list[int]):
+            """Update the texture bindings for a shape"""
             if shape >= len(self._shapes):
                 return
-            
-            # Update the stored shape data with new texture
             shape_data = list(self._shapes[shape])
             if len(shape_data) >= 6:
-                shape_data[5] = texture
+                shape_data[5] = textures
             else:
-                shape_data.append(texture)
+                shape_data.append(textures)
             self._shapes[shape] = tuple(shape_data) 
-        
+
         def allocate_shape_instances(self):
                 gl = SurgSimRendererOpenGL.gl
 
@@ -802,7 +807,7 @@ def CreateSurgSimRenderer(renderer):
             except gl.GLException:
                 pass
 
-            _, _, _, _, geo_hash, _, _ = self._shapes[shape]
+            _, _, _, _, geo_hash, _ = self._shapes[shape]
             assert(self._shape_geo_hash[geo_hash] == shape)
 
             del self._shape_geo_hash[geo_hash]
@@ -1037,49 +1042,40 @@ def CreateSurgSimRenderer(renderer):
             for shape, (vao, _, _, tri_count, _) in self._shape_gl_buffers.items():
                 num_instances = len(self._shape_instances[shape])
 
-                # Get texture for this shape (if any)
-                texture_id = None
-                burn_texture_id = None
+                # Get textures for this shape (if any)
+                textures = None
                 if shape < len(self._shapes) and len(self._shapes[shape]) >= 6:
-                    texture_id = self._shapes[shape][5]
-                # Assume you store burn_texture_id at index 6 (add this in your shape registration)
-                if shape < len(self._shapes) and len(self._shapes[shape]) >= 7:
-                    burn_texture_id = self._shapes[shape][6]
+                    textures = self._shapes[shape][5]
 
                 gl.glBindVertexArray(vao)
                 
-                # Bind texture if available, otherwise use a default white texture
-                if texture_id is not None:
-                    self.bind_texture(texture_id, 0)
-                    # Set uniform to indicate texture is available
-                    gl.glUseProgram(self._shape_shader.id)
-                    gl.glUniform1i(gl.glGetUniformLocation(self._shape_shader.id, str_buffer("hasTexture")), 1)
+                # Bind textures if available, otherwise use a default white texture
+                gl.glUseProgram(self._shape_shader.id)
+                if textures and len(textures) > 0:
+                    for i, tex_id in enumerate(textures):
+                        self.bind_texture(tex_id, i)
+                    gl.glUniform1i(gl.glGetUniformLocation(self._shape_shader.id, str_buffer("numTextures")), len(textures))
+                    # Set sampler array uniforms
+                    for i in range(len(textures)):
+                        gl.glUniform1i(gl.glGetUniformLocation(self._shape_shader.id, str_buffer(f"textures[{i}]")), i)
                 else:
-                    # Create or bind a default white texture for objects without textures
                     if not hasattr(self, '_default_white_texture'):
                         from texture_loader import create_solid_texture
                         self._default_white_texture = create_solid_texture(self, color=(1.0, 1.0, 1.0), size=1)
-                    
                     self.bind_texture(self._default_white_texture, 0)
-                    # Set uniform to indicate no texture (use vertex colors/solid color)
-                    gl.glUseProgram(self._shape_shader.id)
-                    gl.glUniform1i(gl.glGetUniformLocation(self._shape_shader.id, str_buffer("hasTexture")), 0)
-
-                # Bind burn texture (unit 1)
-                if burn_texture_id is not None:
-                    self.bind_texture(burn_texture_id, 1)
-                    gl.glUseProgram(self._shape_shader.id)
-                    gl.glUniform1i(gl.glGetUniformLocation(self._shape_shader.id, str_buffer("burnTextureSampler")), 1)
+                    gl.glUniform1i(gl.glGetUniformLocation(self._shape_shader.id, str_buffer("numTextures")), 1)
+                    gl.glUniform1i(gl.glGetUniformLocation(self._shape_shader.id, str_buffer("textures[0]")), 0)
 
                 gl.glDrawElementsInstancedBaseInstance(
                     gl.GL_TRIANGLES, tri_count, gl.GL_UNSIGNED_INT, None, num_instances, start_instance_idx
                 )
 
-                # Unbind texture after rendering
-                self.unbind_texture(0)
-
-                if burn_texture_id is not None:
-                    self.unbind_texture(1)
+                # Unbind textures after rendering
+                if textures and len(textures) > 0:
+                    for i in range(len(textures)):
+                        self.unbind_texture(i)
+                else:
+                    self.unbind_texture(0)
 
                 start_instance_idx += num_instances
 

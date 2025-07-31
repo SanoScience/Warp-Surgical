@@ -180,7 +180,7 @@ class WarpSim:
 
         # Initialize model
         self._build_model()
-        self.vertex_colors = wp.zeros(self.model.particle_count, dtype=wp.vec3f, device=wp.get_device())
+        self.vertex_colors = wp.zeros(self.model.particle_count, dtype=wp.vec4f, device=wp.get_device())
         
         # Connectivity setup
         vertex_count = self.model.particle_count
@@ -209,7 +209,7 @@ class WarpSim:
         self.grasped_particles_counter = wp.zeros(1, dtype=wp.int32, device=wp.get_device())
 
         # Heating setup
-        self.paint_color_buffer = wp.array([wp.vec3(1.0, 0.0, 0.0)], dtype=wp.vec3, device=wp.get_device())
+        self.paint_color_buffer = wp.array([wp.vec4(1.0, 0.0, 0.0, 0.0)], dtype=wp.vec4, device=wp.get_device())
         self.paint_strength_buffer = wp.array([0.0], dtype=wp.float32, device=wp.get_device()) 
         set_paint_strength(self, 0.0)
     
@@ -507,8 +507,7 @@ class WarpSim:
                             points=self.state_0.particle_q,
                             indices=tet_surface_indices,
                             texture_coords=self.uvs_wp,
-                            texture=texture,
-                            burn_texture=burn_texture,
+                            textures=[texture, burn_texture],
                             colors=self.vertex_colors,
                             index_start=0,
                             index_count=num_triangles,

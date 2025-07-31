@@ -708,6 +708,7 @@ def compute_gfx_vertices_with_colors(
     gfx_vertices[base_idx + 0, 8] = color0[0]
     gfx_vertices[base_idx + 0, 9] = color0[1]
     gfx_vertices[base_idx + 0, 10] = color0[2]
+    gfx_vertices[base_idx + 0, 11] = color0[3]
     
     # Vertex 1
     gfx_vertices[base_idx + 1, 0] = p1[0]
@@ -721,6 +722,8 @@ def compute_gfx_vertices_with_colors(
     gfx_vertices[base_idx + 1, 8] = color1[0]
     gfx_vertices[base_idx + 1, 9] = color1[1]
     gfx_vertices[base_idx + 1, 10] = color1[2]
+    gfx_vertices[base_idx + 1, 11] = color1[3]
+
     
     # Vertex 2
     gfx_vertices[base_idx + 2, 0] = p2[0]
@@ -734,6 +737,8 @@ def compute_gfx_vertices_with_colors(
     gfx_vertices[base_idx + 2, 8] = color2[0]
     gfx_vertices[base_idx + 2, 9] = color2[1]
     gfx_vertices[base_idx + 2, 10] = color2[2]
+    gfx_vertices[base_idx + 2, 11] = color2[3]
+    
 
 @wp.kernel
 def copy_rgb_frame_uint8(
