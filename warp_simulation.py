@@ -427,7 +427,7 @@ class WarpSim:
     def update_haptic_position(self, position):
         """Update the haptic device position in the simulation."""
         
-        haptic_pos = wp.vec3(position[0], position[1], position[2] - 500.0)  # Offset to avoid collision with ground;
+        haptic_pos = wp.vec3(position[0], position[1] + 100.0, position[2] - 400.0)  # Offset to avoid collision with ground;
         self.haptic_pos_right = [haptic_pos[0], haptic_pos[1], haptic_pos[2]]
 
         wp.copy(self.integrator.dev_pos_buffer, wp.array([haptic_pos], dtype=wp.vec3, device=wp.get_device()))

@@ -331,7 +331,7 @@ def collide_particles_vs_sphere(
     # Sphere collision detection
     to_sphere = pos - sphere_center[0] * 0.01  # Scale the sphere center if needed
     dist = wp.length(to_sphere)
-    if dist < sphere_radius:
+    if inv_mass > 0 and dist < sphere_radius:
         # Collision response
         penetration = sphere_radius - dist
         # if inv_mass > 0.0:
