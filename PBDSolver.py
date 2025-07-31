@@ -210,7 +210,7 @@ class PBDSolver(XPBDSolver):
                                 outputs=[particle_deltas_accumulator, particle_deltas_count],
                                 device=model.device,
                             )
-
+                            
                             # wp.launch(
                             #     kernel=apply_deltas,
                             #     dim=model.particle_count,
@@ -275,6 +275,7 @@ class PBDSolver(XPBDSolver):
                         #     )
 
                             # # solve volume constraints
+                            
                             if self.volCnstrs:
                                 wp.launch(
                                     solve_volume_constraints,
@@ -283,6 +284,7 @@ class PBDSolver(XPBDSolver):
                                         particle_q,
                                         model.particle_inv_mass,
                                         model.tetrahedra_wp,
+                                        model.tet_active,
                                         0.1  # stiffness
                                     ],
                                     outputs=[
@@ -291,7 +293,7 @@ class PBDSolver(XPBDSolver):
                                     ],
                                     device=model.device,
                                 )
-
+                            
                             wp.launch(
                                 kernel=apply_deltas,
                                 dim=model.particle_count,

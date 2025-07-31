@@ -1,5 +1,6 @@
 from grasping import grasp_end, grasp_process, grasp_start
 from heating import heating_active_process, heating_conduction_process, heating_end, heating_start, paint_vertices_near_haptic_proxy, set_paint_strength
+from stretching import stretching_breaking_process
 from surface_reconstruction import extract_surface_triangles_bucketed
 import warp as wp
 import newton
@@ -80,6 +81,76 @@ def build_vertex_neighbor_table(
                 vertex_neighbors[v, idx] = n
 
 
+@wp.kernel
+def build_tet_edge_table(
+    tets: wp.array(dtype=Tetrahedron),                # [num_tets]
+    springs: wp.array(dtype=wp.int32),                # [num_springs * 2], flat array
+    tet_to_edges: wp.array(dtype=wp.int32, ndim=2),   # [num_tets, 6]
+    tet_edge_counts: wp.array(dtype=wp.int32),        # [num_tets]
+    num_tets: int,
+    num_springs: int,
+):
+    tid = wp.tid()
+    if tid >= num_tets:
+        return
+
+    tet = tets[tid]
+    tet_ids = tet.ids
+    count = int(0)
+    for i in range(num_springs):
+
+        spring_a = springs[i * 2 + 0]
+        spring_b = springs[i * 2 + 1]
+        # Edge 0: (0,1)
+        a = tet_ids[0]
+        b = tet_ids[1]
+        if ((spring_a == a and spring_b == b) or (spring_a == b and spring_b == a)):
+            idx = wp.atomic_add(tet_edge_counts, tid, 1)
+            if idx < 6:
+                tet_to_edges[tid, idx] = i
+            count += 1
+        # Edge 1: (0,2)
+        a = tet_ids[0]
+        b = tet_ids[2]
+        if ((spring_a == a and spring_b == b) or (spring_a == b and spring_b == a)):
+            idx = wp.atomic_add(tet_edge_counts, tid, 1)
+            if idx < 6:
+                tet_to_edges[tid, idx] = i
+            count += 1
+        # Edge 2: (0,3)
+        a = tet_ids[0]
+        b = tet_ids[3]
+        if ((spring_a == a and spring_b == b) or (spring_a == b and spring_b == a)):
+            idx = wp.atomic_add(tet_edge_counts, tid, 1)
+            if idx < 6:
+                tet_to_edges[tid, idx] = i
+            count += 1
+        # Edge 3: (1,2)
+        a = tet_ids[1]
+        b = tet_ids[2]
+        if ((spring_a == a and spring_b == b) or (spring_a == b and spring_b == a)):
+            idx = wp.atomic_add(tet_edge_counts, tid, 1)
+            if idx < 6:
+                tet_to_edges[tid, idx] = i
+            count += 1
+        # Edge 4: (1,3)
+        a = tet_ids[1]
+        b = tet_ids[3]
+        if ((spring_a == a and spring_b == b) or (spring_a == b and spring_b == a)):
+            idx = wp.atomic_add(tet_edge_counts, tid, 1)
+            if idx < 6:
+                tet_to_edges[tid, idx] = i
+            count += 1
+        # Edge 5: (2,3)
+        a = tet_ids[2]
+        b = tet_ids[3]
+        if ((spring_a == a and spring_b == b) or (spring_a == b and spring_b == a)):
+            idx = wp.atomic_add(tet_edge_counts, tid, 1)
+            if idx < 6:
+                tet_to_edges[tid, idx] = i
+            count += 1
+
+
 class WarpSim:
     def __init__(self, stage_path="output.usd", num_frames=300, use_opengl=True):
         self.sim_substeps = 16
@@ -119,6 +190,13 @@ class WarpSim:
         self.vertex_vneighbor_counts = wp.zeros(vertex_count, dtype=wp.int32, device=wp.get_device())
         self.vneighbours_max = vertex_neighbour_count
 
+        # Tetrahedron to edge mapping setup
+        num_tets = self.model.tetrahedra_wp.shape[0]
+        num_springs = self.model.spring_indices.shape[0] // 2
+
+        self.tet_to_edges = wp.zeros((num_tets, 6), dtype=wp.int32, device=wp.get_device())
+        self.tet_edge_counts = wp.zeros(num_tets, dtype=wp.int32, device=wp.get_device())
+
         # Initialize simulation components
         self._setup_simulation()
         
@@ -153,6 +231,20 @@ class WarpSim:
         # Setup CUDA graph if available
         self._setup_cuda_graph()
 
+        wp.launch(
+            build_tet_edge_table,
+            dim=num_tets,
+            inputs=[
+                self.model.tetrahedra_wp,
+                self.model.spring_indices,  # flat int32 array
+                self.tet_to_edges,
+                self.tet_edge_counts,
+                num_tets,
+                num_springs
+            ],
+            device=wp.get_device()
+        )
+
     def _on_key_press(self, symbol, modifiers):
         from pyglet.window import key
         if symbol == key.C:
@@ -178,7 +270,7 @@ class WarpSim:
         """Build the simulation model with mesh and haptic device."""
         builder = newton.ModelBuilder(up_axis=newton.Axis.Y)
         
-        spring_stiffness = 1.0e3
+        spring_stiffness = 1.0
         spring_dampen = 0.2
 
         tetra_stiffness_mu = 1.0e4
@@ -347,6 +439,7 @@ class WarpSim:
 
                 # Heat conduction
                 heating_conduction_process(self)
+                stretching_breaking_process(self)
 
                 for mesh_name, mesh_info in self.mesh_ranges.items():
                     tet_start = mesh_info.get('tet_start', 0)

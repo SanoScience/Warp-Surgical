@@ -90,8 +90,8 @@ def solve_distance_constraints(
     i = spring_indices[tid * 2 + 0]
     j = spring_indices[tid * 2 + 1]
 
-    #ke = spring_stiffness[tid]
-    ke = 1.0
+    ke = spring_stiffness[tid]
+    #ke = 1.0
     kd = spring_damping[tid]
     rest = spring_rest_lengths[tid]
 
@@ -160,11 +160,15 @@ def solve_volume_constraints(
     positions: wp.array(dtype=wp.vec3f),
     invmass: wp.array(dtype=float),
     tetrahedra: wp.array(dtype=Tetrahedron),
+    tetrahedra_active: wp.array(dtype=wp.int32),
     stiffness: wp.float32,
     delta_accumulator: wp.array(dtype=wp.vec3f),
     delta_counter: wp.array(dtype=wp.int32)
 ):
     tid = wp.tid()
+    if tetrahedra_active[tid] == 0:
+        return
+
     tet = tetrahedra[tid]
     ids = tet.ids
 
