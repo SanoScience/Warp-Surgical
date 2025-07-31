@@ -30,7 +30,10 @@ from simulation_kernels import (
     bounds_collision
 )
 
-
+from newton.solvers.vbd.tri_mesh_collision import (
+    TriMeshCollisionDetector,
+    TriMeshCollisionInfo,
+)
 
 
 class PBDSolver(XPBDSolver):
@@ -38,6 +41,7 @@ class PBDSolver(XPBDSolver):
         super().__init__(model, **kwargs)
         self.volCnstrs = True
         self.dev_pos_buffer = None
+        #self.collision_detector = TriMeshCollisionDetector(self.model)
 
     def step(self, model: Model, state_in: State, state_out: State, control: Control, contacts: Contacts, dt: float):
         requires_grad = state_in.requires_grad
@@ -329,6 +333,29 @@ class PBDSolver(XPBDSolver):
                             outputs=[particle_deltas],
                             device=model.device,
                         )
+
+                        
+                        # self.collision_detector.refit(self.state_0.particle_q)
+                        # self.collision_detector.vertex_triangle_collision_detection(self.radius_collision)
+                        # self.collision_detector.edge_edge_collision_detection(self.radius_collision)
+
+                        # # 3. Launch a kernel to resolve mesh self-collisions
+                        # wp.launch(
+                        #     kernel=solve_trimesh_self_contacts,  # you need to implement this kernel
+                        #     dim=collision_detector.vertex_colliding_triangles.shape[0] // 2,
+                        #     inputs=[
+                        #         state_in.particle_q,
+                        #         state_in.particle_qd,
+                        #         model.particle_inv_mass,
+                        #         collision_detector.collision_info,
+                        #         contact_radius,
+                        #         dt,
+                        #         xpbd_relaxation,
+                        #         # ...other needed arrays...
+                        #     ],
+                        #     outputs=[particle_deltas],
+                        #     device=model.device,
+                        # )
 
                         #if haptic_proxy_pos is not None:
                         wp.launch(
