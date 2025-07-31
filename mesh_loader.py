@@ -87,7 +87,7 @@ def load_mesh_component(base_path, offset=0):
 
     return positions, indices, edges, tri_surface_indices, uvs
 
-def load_mesh_and_build_model(builder: newton.ModelBuilder, vertical_offset=0.0, spring_stiffness=1.0e3, spring_dampen=0.0, tetra_stiffness_mu=1.0e3, tetra_stiffness_lambda=1.0e3, tetra_dampen=0.0):
+def load_mesh_and_build_model(builder: newton.ModelBuilder, particle_mass, vertical_offset=0.0, spring_stiffness=1.0e3, spring_dampen=0.0, tetra_stiffness_mu=1.0e3, tetra_stiffness_lambda=1.0e3, tetra_dampen=0.0):
     """Load all mesh components and build the simulation model with ranges."""
     all_positions = []
     all_indices = []
@@ -176,9 +176,6 @@ def load_mesh_and_build_model(builder: newton.ModelBuilder, vertical_offset=0.0,
     all_connectors.extend(gallbladder_fat_connectors)
     
     # Add particles to model
-    mass_total = 10.0
-    #mass = mass_total / len(all_positions)
-    mass = 0.1
 
     for position in all_positions:
         pos = wp.vec3(position)
@@ -187,7 +184,7 @@ def load_mesh_and_build_model(builder: newton.ModelBuilder, vertical_offset=0.0,
         if is_particle_within_radius(pos, [0.5, 1.5, -5.0], 1.0):
             builder.add_particle(pos, wp.vec3(0, 0, 0), mass=0, radius=0.01)
         else:
-            builder.add_particle(pos, wp.vec3(0, 0, 0), mass=mass, radius=0.01)
+            builder.add_particle(pos, wp.vec3(0, 0, 0), mass=particle_mass, radius=0.01)
     
     
     # Add springs

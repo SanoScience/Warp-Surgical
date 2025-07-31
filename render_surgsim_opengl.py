@@ -104,7 +104,7 @@ void main()
     specular += specularStrength * spec * lightColor * 0.3;
 
     vec3 vCol = VertexColor;
-    float burnBlend = vCol.x;
+    float burnBlend = vCol.y;
     float mainBlend = 1.0 - burnBlend;
 
     vec3 baseColor;

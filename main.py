@@ -34,7 +34,7 @@ def run_simulation(args):
     if args.usd:
         # Offline rendering mode
         for _ in range(args.num_frames):
-            # Update haptic position (could be from recorded data)
+            # Update haptic position (could be from recorded dbbbata)
             haptic_pos = haptic_controller.get_scaled_position()
             sim.update_haptic_position(haptic_pos)
             

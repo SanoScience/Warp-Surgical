@@ -1,3 +1,5 @@
+from grasping import grasp_end, grasp_process, grasp_start
+from heating import heating_active_process, heating_conduction_process, heating_end, heating_start, paint_vertices_near_haptic_proxy, set_paint_strength
 from surface_reconstruction import extract_surface_triangles_bucketed
 import warp as wp
 import newton
@@ -15,7 +17,6 @@ from mesh_loader import Tetrahedron, load_mesh_and_build_model
 from render_opengl import CustomOpenGLRenderer
 from simulation_kernels import (
     set_body_position,
-    paint_vertices_near_haptic,
 )
 
 
@@ -78,49 +79,6 @@ def build_vertex_neighbor_table(
             if idx < max_neighbors:
                 vertex_neighbors[v, idx] = n
 
-@wp.kernel
-def heat_conduction_kernel(
-    vertex_neighbors: wp.array(dtype=wp.int32, ndim = 2),   # [num_vertices, max_neighbors]
-    vertex_neighbor_counts: wp.array(dtype=wp.int32), # [num_vertices]
-    vertex_colors: wp.array(dtype=wp.vec3f),          # [num_vertices] - heat stored in red channel
-    heat_diffusion_rate: float,                       # diffusion coefficient (0.0 - 1.0)
-    max_neighbors: int,
-    vertex_count: int,
-    dt: float                                         # time step
-):
-    vid = wp.tid()
-    if vid >= vertex_count:
-        return
-    
-    current_color = vertex_colors[vid]
-    current_heat = current_color[0]  # Heat stored in red channel
-
-    if current_heat <= 0.0:
-        return
-    
-    neighbor_count = vertex_neighbor_counts[vid]
-    if neighbor_count == 0:
-        return
-    
-    heat_per_neighbor = current_heat * heat_diffusion_rate * dt / float(neighbor_count)
-    
-    # Conduct heat to neighbors
-    for i in range(neighbor_count):
-        if i >= max_neighbors:
-            break
-            
-        neighbor_id = vertex_neighbors[vid, i]
-        if neighbor_id < 0 or neighbor_id >= vertex_count:
-            continue
-            
-        # Add heat to neighbor (non-atomic approximation)
-        neighbor_color = vertex_colors[neighbor_id]
-        new_heat = wp.min(neighbor_color[0] + heat_per_neighbor, 1.0)  # Clamp to max 1.0
-        vertex_colors[neighbor_id] = wp.vec3(new_heat, neighbor_color[1], neighbor_color[2])
-    
-    # Reduce heat from current vertex
-    # remaining_heat = current_heat * (1.0 - heat_diffusion_rate * dt)
-    # vertex_colors[vid] = wp.vec3(remaining_heat, current_color[1], current_color[2])
 
 class WarpSim:
     def __init__(self, stage_path="output.usd", num_frames=300, use_opengl=True):
@@ -135,8 +93,16 @@ class WarpSim:
 
         self.haptic_pos_right = None  # Haptic device position in simulation space
 
+        self.radius_collision = 0.1
+        self.radius_heating = 0.35
+        self.radius_cutting = 0.25
+        self.radius_grasping = 0.5
+
+        self.particle_mass = 0.1
+
         self.cutting_active = False
         self.heating_active = False
+        self.grasping_active = False
 
         print(f"Initializing WarpSim with {self.sim_substeps} substeps at {self.fps} FPS")
         print(f"Frame time: {self.frame_dt:.4f}s, Substep time: {self.substep_dt:.4f}s")
@@ -145,6 +111,7 @@ class WarpSim:
         self._build_model()
         self.vertex_colors = wp.zeros(self.model.particle_count, dtype=wp.vec3f, device=wp.get_device())
         
+        # Connectivity setup
         vertex_count = self.model.particle_count
         vertex_neighbour_count = 32
 
@@ -158,9 +125,15 @@ class WarpSim:
         # Initialize rendering
         self._setup_renderer(stage_path, use_opengl)
 
-        self.paint_color_buffer = wp.array([wp.vec3(0.0, 0.0, 0.0)], dtype=wp.vec3, device=wp.get_device())
+        # Grasp setup
+        self.grasp_capacity = 128
+        self.grasped_particles_buffer = wp.zeros(self.grasp_capacity, dtype=wp.int32, device=wp.get_device())
+        self.grasped_particles_counter = wp.zeros(1, dtype=wp.int32, device=wp.get_device())
+
+        # Heating setup
+        self.paint_color_buffer = wp.array([wp.vec3(1.0, 0.0, 0.0)], dtype=wp.vec3, device=wp.get_device())
         self.paint_strength_buffer = wp.array([0.0], dtype=wp.float32, device=wp.get_device()) 
-        self.set_paint_strength(0.0)
+        set_paint_strength(self, 0.0)
     
         # Load textures
         if self.use_opengl and self.renderer:
@@ -185,17 +158,18 @@ class WarpSim:
         if symbol == key.C:
             self.cutting_active = True
         elif symbol == key.V:
-            self.heating_active = True
-            self.set_paint_color([1.0, 0.0, 0.0])
-            self.set_paint_strength(1.0)
+            heating_start(self)
+        elif symbol == key.B:
+            grasp_start(self)
 
     def _on_key_release(self, symbol, modifiers):
         from pyglet.window import key
         if symbol == key.C:
             self.cutting_active = False
         elif symbol == key.V:
-            self.heating_active = False
-            self.set_paint_strength(0.0)
+            heating_end(self)
+        elif symbol == key.B:
+            grasp_end(self)
 
     def _build_model(self):
         """Build the simulation model with mesh and haptic device."""
@@ -209,7 +183,8 @@ class WarpSim:
         tetra_dampen = 0.2
 
         # Import the mesh
-        tri_points_connectors, self.surface_tris, uvs, self.mesh_ranges, tetrahedra_wp = load_mesh_and_build_model(builder, vertical_offset=-3.0, 
+        tri_points_connectors, self.surface_tris, uvs, self.mesh_ranges, tetrahedra_wp = load_mesh_and_build_model(builder,
+            particle_mass=self.particle_mass, vertical_offset=-3.0, 
             spring_stiffness=spring_stiffness, spring_dampen=spring_dampen,
             tetra_stiffness_mu=tetra_stiffness_mu, tetra_stiffness_lambda=tetra_stiffness_lambda, tetra_dampen=tetra_dampen)
         
@@ -245,7 +220,7 @@ class WarpSim:
         builder.add_shape_sphere(
             body=self.haptic_body_id,
             xform=wp.transform([0.0, 0.0, 0.0], wp.quat_identity()),
-            radius=0.1,
+            radius=self.radius_collision,
             cfg=newton.ModelBuilder.ShapeConfig(
                 density=10
             )
@@ -256,37 +231,13 @@ class WarpSim:
         self.model.tet_active = wp.ones(self.model.tetrahedra_wp.shape[0], dtype=wp.int32, device=wp.get_device())
         self.model.tri_points_connectors = tri_points_connectors
 
-    def _paint_vertices_near_haptic_proxy(self, paint_radius=0.25, falloff_power=2.0):
-        """Paint vertex colors near the haptic proxy position."""
-        wp.launch(
-            paint_vertices_near_haptic,
-            dim=self.model.particle_count,
-            inputs=[
-                self.state_0.particle_q,  # vertex positions
-                self.state_0.body_q,      # haptic position
-                self.vertex_colors,       # vertex colors to modify
-                paint_radius,             # paint radius
-                self.paint_color_buffer,  # paint color (from array)
-                self.paint_strength_buffer,  # paint strength (from array)
-                falloff_power             # falloff power for smooth edges
-            ],
-            device=wp.get_device()
-        )
-
-    def set_paint_color(self, color):
-        """Set the paint color from CPU."""
-        self.paint_color_buffer.assign([wp.vec3(color[0], color[1], color[2])])
-
-    def set_paint_strength(self, strength):
-        """Set the paint strength from CPU."""
-        self.paint_strength_buffer.assign([strength])
-
     def _setup_simulation(self):
         """Initialize simulation states and integrator."""
         self.integrator = PBDSolver(self.model, iterations=5)
         
         self.integrator.dev_pos_buffer = wp.array([0.0, 0.0, 0.0], dtype=wp.vec3, device=wp.get_device())
-        
+        self.integrator.dev_pos_prev_buffer = wp.array([0.0, 0.0, 0.0], dtype=wp.vec3, device=wp.get_device())
+
         self.rest = self.model.state()
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
@@ -333,8 +284,6 @@ class WarpSim:
                 device=self.state_0.body_q.device,
             )
 
-           # self._paint_vertices_near_haptic_proxy()
-
             # Run collision detection and integration
             #self.contacts = self.model.collide(self.state_0)
             #if self.contacts:
@@ -371,6 +320,10 @@ class WarpSim:
                     0.1,
                 )
 
+                # Grasping
+                if self.grasping_active:
+                    grasp_process(self)
+
                 # Recompute connectivity
                 wp.copy(self.vertex_vneighbor_counts, wp.zeros(self.model.particle_count, dtype=wp.int32, device=wp.get_device()))
                 wp.launch(
@@ -388,20 +341,7 @@ class WarpSim:
                 )
 
                 # Heat conduction
-                wp.launch(
-                    heat_conduction_kernel,
-                    dim=self.model.particle_count,
-                    inputs=[
-                        self.vertex_to_vneighbours,
-                        self.vertex_vneighbor_counts,
-                        self.vertex_colors,
-                        2.0,  # heat_diffusion_rate
-                        self.vneighbours_max,
-                        self.model.particle_count,
-                        self.frame_dt
-                    ],
-                    device=wp.get_device()
-                )
+                heating_conduction_process(self)
 
                 for mesh_name, mesh_info in self.mesh_ranges.items():
                     tet_start = mesh_info.get('tet_start', 0)
@@ -431,7 +371,7 @@ class WarpSim:
                                 mesh_tets,
                                 self.state_0.particle_q,
                                 self.integrator.dev_pos_buffer,
-                                0.25,  # cutting radius
+                                self.radius_cutting,
                                 tet_count
                             ],
                             device=wp.get_device()
@@ -439,8 +379,7 @@ class WarpSim:
 
                     # Handle heating
                     if self.heating_active:
-                        self._paint_vertices_near_haptic_proxy(paint_radius=0.35, falloff_power=2.0)
-                        self.set_paint_strength(0.05)
+                        heating_active_process(self)
 
                     
                     # Extract surface
@@ -478,6 +417,7 @@ class WarpSim:
                             update_topology=True
                         )
 
+                wp.copy(self.integrator.dev_pos_prev_buffer, self.integrator.dev_pos_buffer)
                 self.renderer.end_frame()
             else:
                 self.renderer.begin_frame(self.sim_time)
