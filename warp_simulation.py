@@ -1,4 +1,4 @@
-from grasping import grasp_end, grasp_process, grasp_start
+from grasping import grasp_end, grasp_process, grasp_start, project_grasping
 from heating import heating_active_process, heating_conduction_process, heating_end, heating_start, paint_vertices_near_haptic_proxy, set_paint_strength
 from stretching import stretching_breaking_process
 from surface_reconstruction import extract_surface_triangles_bucketed
@@ -19,7 +19,6 @@ from render_opengl import CustomOpenGLRenderer
 from simulation_kernels import (
     set_body_position,
 )
-
 
 
 @wp.kernel
@@ -237,6 +236,7 @@ class WarpSim:
         # Grasp setup
         self.grasp_capacity = 1024
         self.grasped_particles_buffer = wp.zeros(self.grasp_capacity, dtype=wp.int32, device=wp.get_device())
+        self.grasped_particles_distances_buffer = wp.zeros(self.grasp_capacity, dtype=wp.float32, device=wp.get_device())
         self.grasped_particles_counter = wp.zeros(1, dtype=wp.int32, device=wp.get_device())
 
         # Heating setup
@@ -398,12 +398,19 @@ class WarpSim:
         self.background_uvs = uvs
         self.background_vertex_colors = vertex_colors
 
+    def grasping_callback(self, model, state_in, state_out, control, contacts, dt):
+        project_grasping(self)
+        #print("Grasping callback called")
+        pass
+ 
+
     def _setup_simulation(self):
         """Initialize simulation states and integrator."""
         self.integrator = PBDSolver(self.model, iterations=5)
         
         self.integrator.dev_pos_buffer = wp.array([0.0, 0.0, 0.0], dtype=wp.vec3, device=wp.get_device())
         self.integrator.dev_pos_prev_buffer = wp.array([0.0, 0.0, 0.0], dtype=wp.vec3, device=wp.get_device())
+        self.integrator.project_grasping_callback = self.grasping_callback
 
         self.rest = self.model.state()
         self.state_0 = self.model.state()
@@ -515,8 +522,8 @@ class WarpSim:
                 # print(f"Vertex-triangle collisions detected: {num_collisions}")
 
                 # Grasping
-                if self.grasping_active:
-                    grasp_process(self)
+                #if self.grasping_active:
+                #    grasp_process(self)
 
                 # Recompute connectivity
                 wp.copy(self.vertex_vneighbor_counts, wp.zeros(self.model.particle_count, dtype=wp.int32, device=wp.get_device()))

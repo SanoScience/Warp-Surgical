@@ -35,6 +35,10 @@ from collision_kernels import (
     vertex_triangle_collision_det,
 )
 
+from grasping import (
+    project_grasping
+)
+
 from newton.solvers.vbd.tri_mesh_collision import (
     TriMeshCollisionDetector,
     TriMeshCollisionInfo,
@@ -67,6 +71,8 @@ class PBDSolver(XPBDSolver):
             self.model.edge_count * NUM_THREADS_PER_COLLISION_PRIMITIVE,
             soft_contact_max,
         )
+
+        self.project_grasping_callback = None
 
     def collison_detection(self, particle_q: wp.array):
         """Perform collision detection for the current particle positions."""
@@ -382,6 +388,8 @@ class PBDSolver(XPBDSolver):
                         )
 
                         
+                        if hasattr(self, "project_grasping_callback") and callable(self.project_grasping_callback):
+                            self.project_grasping_callback(model, state_in, state_out, control, contacts, dt)
 
 
 
