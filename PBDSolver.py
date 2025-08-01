@@ -404,7 +404,7 @@ class PBDSolver(XPBDSolver):
 
                         wp.launch(
                             kernel=collide_triangles_vs_sphere,
-                            dim=model.particle_count,
+                            dim=model.tri_count,
                             inputs=[
                                 particle_q,
                                 particle_qd,
