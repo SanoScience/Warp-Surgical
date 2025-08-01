@@ -190,9 +190,9 @@ class WarpSim:
         self.haptic_pos_right = None  # Haptic device position in simulation space
 
         self.radius_collision = 0.1
-        self.radius_heating = 0.35
-        self.radius_cutting = 0.1
-        self.radius_grasping = 0.1
+        self.radius_heating = 0.1
+        self.radius_cutting = 0.075
+        self.radius_grasping = 0.075
 
         self.particle_mass = 0.1
 
