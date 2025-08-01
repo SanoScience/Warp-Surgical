@@ -235,7 +235,7 @@ class WarpSim:
         self._setup_renderer(stage_path, use_opengl)
 
         # Grasp setup
-        self.grasp_capacity = 128
+        self.grasp_capacity = 1024
         self.grasped_particles_buffer = wp.zeros(self.grasp_capacity, dtype=wp.int32, device=wp.get_device())
         self.grasped_particles_counter = wp.zeros(1, dtype=wp.int32, device=wp.get_device())
 
@@ -405,7 +405,7 @@ class WarpSim:
         self.use_opengl = use_opengl
         
         if self.use_opengl:
-            self.renderer = SurgSimRendererOpenGL(self.model, "Warp Surgical Simulation", scaling=1.0)
+            self.renderer = SurgSimRendererOpenGL(self.model, "Warp Surgical Simulation", scaling=1.0, near_plane=0.05, far_plane = 25)
         elif stage_path:
             self.renderer = newton.render.SimRenderer(self.model, stage_path, scaling=20.0)
         else:

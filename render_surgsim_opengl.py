@@ -24,6 +24,7 @@ import numpy as np
 import warp as wp
 from warp.render import OpenGLRenderer, UsdRenderer
 from warp.render.utils import solidify_mesh, tab10_color_map
+from pyglet.graphics.shader import Shader, ShaderProgram
 
 import newton
 
@@ -66,7 +67,6 @@ void main()
 }
 """
 
-# Update the fragment shader to support up to 8 textures
 shape_fragment_shader = """
 #version 330 core
 out vec4 FragColor;
@@ -164,7 +164,7 @@ void main()
     spec = pow(max(dot(viewDir, reflectDir), 0.0), 64);
     specular += specularStrength * spec * lightColor * 0.3;
 
-    vec3 baseColor = vec3(0.0);
+    vec3 baseColor = vec3(1.0);
     if (numTextures > 0)
     {
         vec3 baseCol =      texture(diffuseMaps[0], TexCoord).rgb;
@@ -177,12 +177,201 @@ void main()
             burnBlend    * burnCol +
             stretchBlend * stretchCol +
             bloodBlend   * bloodCol;
-    } else {
-        baseColor = length(VertexColor) > 0.01 ? VertexColor.rgb : vec3(1.0, 1.0, 1.0);
     }
 
     vec3 result = (ambient + diffuse + specular) * baseColor;
     FragColor = vec4(result, 1.0);
+}
+"""
+
+post_vertex_shader = """
+#version 330 core
+layout (location = 0) in vec3 aPos;
+layout (location = 1) in vec2 aTexCoord;
+
+out vec2 TexCoord;
+
+void main() {
+    gl_Position = vec4(aPos, 1.0);
+    TexCoord = aTexCoord;
+}
+"""
+
+post_fragment_shader = """
+#version 330 core
+in vec2 TexCoord;
+out vec4 FragColor;
+
+uniform sampler2D colorTexture;
+uniform sampler2D depthTexture;
+uniform mat4 invProjection;
+uniform vec2 screenSize;
+
+vec3 aces_tonemap(vec3 x) {
+    const float a = 2.51;
+    const float b = 0.03;
+    const float c = 2.43;
+    const float d = 0.59;
+    const float e = 0.14;
+    return clamp((x*(a*x+b))/(x*(c*x+d)+e), 0.0, 1.0);
+}
+
+vec3 agx_tonemap(vec3 x) {
+    const float agx_a = 0.8;
+    const float agx_b = 0.15;
+    const float agx_c = 0.5;
+    x = max(x, 0.0);
+    vec3 t = pow(x, vec3(agx_a));
+    t = t / (t + vec3(agx_b));
+    t = pow(t, vec3(agx_c));
+    return clamp(t, 0.0, 1.0);
+}
+
+float sample_depth(vec2 uv)
+{
+    return texture(depthTexture, uv).r;
+}
+
+float linearize_depth(float depth) {
+    float near = 0.05;
+    float far = 25;
+    
+    float z = depth * 2.0 - 1.0;
+    return (2.0 * near * far) / (far + near - z * (far - near));
+}
+
+vec3 getViewPosition(vec2 uv, float depth) {
+    float z = depth * 2.0 - 1.0;
+    vec4 clipPos = vec4(uv * 2.0 - 1.0, z, 1.0);
+    vec4 viewPos = invProjection * clipPos;
+    return viewPos.xyz / viewPos.w;
+}
+
+vec3 reconstructNormal(vec2 uv, float depth) {
+    float dx = 1.0 / screenSize.x;
+    float dy = 1.0 / screenSize.y;
+
+    // Sample neighboring depths
+    float depthC = depth;
+    float depthR = sample_depth(uv + vec2(dx, 0.0));
+    float depthU = sample_depth(uv + vec2(0.0, dy));
+
+    // Reconstruct view-space positions
+    vec3 pC = getViewPosition(uv, depthC);
+    vec3 pR = getViewPosition(uv + vec2(dx, 0.0), depthR);
+    vec3 pU = getViewPosition(uv + vec2(0.0, dy), depthU);
+
+    // Compute normal from cross product of tangent vectors
+    vec3 dX = pR - pC;
+    vec3 dY = pU - pC;
+    vec3 normal = normalize(cross(dX, dY));
+    return normal;
+}
+
+float computeSSAO1(vec2 uv, float depth) {
+    float radius = 4.0; // pixel radius
+    float occlusion = 0.0;
+    int samples = 8;
+    float total = 0.0;
+
+    for (int i = 0; i < samples; ++i) {
+        float angle = 6.2831853 * float(i) / float(samples);
+        vec2 offset = vec2(cos(angle), sin(angle)) * radius / screenSize;
+        float sampleDepth = sample_depth(uv + offset);
+        float rangeCheck = smoothstep(0.0, 1.0, radius / abs(depth - sampleDepth + 0.0001));
+        if (sampleDepth < depth)
+            occlusion += rangeCheck;
+        total += 1.0;
+    }
+    return 1.0 - (occlusion / total) * 0.5; // 0.5 = strength
+}
+
+float computeSSAO2(vec2 uv, float depth) {
+    float radius = 8.0; // pixel radius
+    int samples = 8;
+    float occlusion = 0.0;
+    float total = 0.0;
+
+    vec3 normal = reconstructNormal(uv, depth);
+
+    for (int i = 0; i < samples; ++i) {
+        float angle = 6.2831853 * float(i) / float(samples);
+        vec2 offset = vec2(cos(angle), sin(angle)) * radius / screenSize;
+        float sampleDepth = sample_depth(uv + offset);
+        vec3 sampleNormal = reconstructNormal(uv + offset, sampleDepth);
+
+        // Reconstruct view-space positions
+        vec3 p = getViewPosition(uv, depth);
+        vec3 pSample = getViewPosition(uv + offset, sampleDepth);
+
+        float dist = length(pSample - p);
+        float rangeCheck = smoothstep(0.0, radius * 0.02, dist);
+
+        // Angle between normals (optional, for smoother occlusion)
+        float normalWeight = max(dot(normal, sampleNormal), 0.0);
+
+        if (sampleDepth < depth && normalWeight > 0.5)
+            occlusion += rangeCheck * normalWeight;
+        total += 1.0;
+    }
+    return 1.0 - (occlusion / total) * 0.5; // 0.5 = strength
+}
+
+float random(vec2 uv) {
+    // Simple hash based on UV
+    return fract(sin(dot(uv, vec2(12.9898,78.233))) * 43758.5453);
+}
+
+float computeSSAO3(vec2 uv, float depth) {
+    float base_radius = 32.0;
+    float radius = base_radius * depth;
+    int samples = 8;
+    float occlusion = 0.0;
+    float total = 0.0;
+    vec3 normal = reconstructNormal(uv, depth);
+
+    // Random rotation per pixel
+    float rand = random(uv);
+    float angle_offset = rand * 6.2831853; // [0, 2pi]
+
+    for (int i = 0; i < samples; ++i) {
+        float phi = float(i) * 2.399963229728653 + angle_offset; // golden angle + random offset
+        float r = radius * sqrt(float(i) / float(samples));
+        vec2 offset = vec2(cos(phi), sin(phi)) * r / screenSize;
+        float sampleDepth = sample_depth(uv + offset);
+        vec3 sampleNormal = reconstructNormal(uv + offset, sampleDepth);
+        vec3 p = getViewPosition(uv, depth);
+        vec3 pSample = getViewPosition(uv + offset, sampleDepth);
+        float dist = length(pSample - p);
+        float rangeCheck = smoothstep(0.0, radius * 0.02, dist);
+        float normalWeight = max(dot(normal, sampleNormal), 0.0);
+        if (sampleDepth < depth && normalWeight > 0.5)
+            occlusion += rangeCheck * normalWeight;
+        total += 1.0;
+    }
+    return 1.0 - (occlusion / total);
+}
+
+void main() {
+    vec3 color = texture(colorTexture, TexCoord).rgb;
+    float depth = sample_depth(TexCoord);
+
+    float ao = 1.0;
+    if(depth < 0.999)
+    {
+        ao = computeSSAO3(TexCoord, depth);
+        float contrast = 4.5;
+        ao = pow(ao, contrast);
+
+        color *= ao;
+    }
+
+
+    color = aces_tonemap(color);
+
+
+    //color = pow(color, vec3(1.0/2.2));
+    FragColor = vec4(color, 1.0);
 }
 """
 
@@ -461,6 +650,16 @@ def CreateSurgSimRenderer(renderer):
 
             self._contact_points0 = None
             self._contact_points1 = None
+
+            gl = self.gl
+            self._postprocess_shader = ShaderProgram(
+                Shader(post_vertex_shader, "vertex"),
+                Shader(post_fragment_shader, "fragment")
+            )
+            self._loc_postprocess_color = gl.glGetUniformLocation(self._postprocess_shader.id, str_buffer("colorTexture"))
+            self._loc_postprocess_depth = gl.glGetUniformLocation(self._postprocess_shader.id, str_buffer("depthTexture"))
+            self._loc_postprocess_invproj = gl.glGetUniformLocation(self._postprocess_shader.id, str_buffer("invProjection"))
+            self._loc_postprocess_screensize = gl.glGetUniformLocation(self._postprocess_shader.id, str_buffer("screenSize"))
 
         def set_input_callbacks(self, on_key_press=None, on_key_release=None):
             """Set callback functions for input events."""
@@ -1223,7 +1422,7 @@ def CreateSurgSimRenderer(renderer):
                         from texture_loader import create_solid_texture
                         self._default_white_texture = create_solid_texture(self, color=(1.0, 1.0, 1.0), size=1)
                     self.bind_texture(self._default_white_texture, 0)
-                    gl.glUniform1i(gl.glGetUniformLocation(self._shape_shader.id, str_buffer("numTextures")), 1)
+                    gl.glUniform1i(gl.glGetUniformLocation(self._shape_shader.id, str_buffer("numTextures")), 0)
                     gl.glUniform1i(gl.glGetUniformLocation(self._shape_shader.id, str_buffer("diffuseMaps[0]")), 0)
 
 
@@ -1247,6 +1446,72 @@ def CreateSurgSimRenderer(renderer):
                 instancer.render()
 
             gl.glBindVertexArray(0)
+            self._render_post()
+
+        def _render_post(self):
+            gl = self.gl
+            
+            # Create a temporary texture to hold the original color buffer
+            if not hasattr(self, '_temp_color_texture'):
+                self._temp_color_texture = gl.GLuint()
+                gl.glGenTextures(1, self._temp_color_texture)
+                gl.glBindTexture(gl.GL_TEXTURE_2D, self._temp_color_texture)
+                gl.glTexImage2D(
+                    gl.GL_TEXTURE_2D, 0, gl.GL_RGB,
+                    self.screen_width, self.screen_height, 0,
+                    gl.GL_RGB, gl.GL_UNSIGNED_BYTE, None
+                )
+                gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MIN_FILTER, gl.GL_LINEAR)
+                gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MAG_FILTER, gl.GL_LINEAR)
+            
+            # Create a temporary depth texture to hold the current depth buffer
+            if not hasattr(self, '_temp_depth_texture'):
+                self._temp_depth_texture = gl.GLuint()
+                gl.glGenTextures(1, self._temp_depth_texture)
+                gl.glBindTexture(gl.GL_TEXTURE_2D, self._temp_depth_texture)
+                gl.glTexImage2D(
+                    gl.GL_TEXTURE_2D, 0, gl.GL_DEPTH_COMPONENT24,
+                    self.screen_width, self.screen_height, 0,
+                    gl.GL_DEPTH_COMPONENT, gl.GL_FLOAT, None
+                )
+                gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MIN_FILTER, gl.GL_LINEAR)
+                gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MAG_FILTER, gl.GL_LINEAR)
+            
+            # Copy current color buffer to temporary texture
+            gl.glBindTexture(gl.GL_TEXTURE_2D, self._temp_color_texture)
+            gl.glCopyTexImage2D(gl.GL_TEXTURE_2D, 0, gl.GL_RGB, 0, 0, self.screen_width, self.screen_height, 0)
+            
+            # Copy current depth buffer to temporary texture
+            gl.glBindTexture(gl.GL_TEXTURE_2D, self._temp_depth_texture)
+            gl.glCopyTexImage2D(gl.GL_TEXTURE_2D, 0, gl.GL_DEPTH_COMPONENT, 0, 0, self.screen_width, self.screen_height, 0)
+            
+            # Clear the current framebuffer
+            gl.glClear(gl.GL_COLOR_BUFFER_BIT)
+            
+            # Render post-processed result back to the FBO
+            gl.glUseProgram(self._postprocess_shader.id)
+            gl.glActiveTexture(gl.GL_TEXTURE0)
+            gl.glBindTexture(gl.GL_TEXTURE_2D, self._temp_color_texture)
+            gl.glUniform1i(self._loc_postprocess_color, 0)
+            gl.glActiveTexture(gl.GL_TEXTURE1)
+            gl.glBindTexture(gl.GL_TEXTURE_2D, self._temp_depth_texture)
+            gl.glUniform1i(self._loc_postprocess_depth, 1)
+
+            inv_proj = np.linalg.inv(self._projection_matrix.reshape(4, 4)).astype(np.float32)
+            gl.glUniformMatrix4fv(self._loc_postprocess_invproj, 1, gl.GL_FALSE, inv_proj.ctypes.data_as(ctypes.POINTER(ctypes.c_float)))
+            gl.glUniform2f(self._loc_postprocess_screensize, float(self.screen_width), float(self.screen_height))
+
+            gl.glBindVertexArray(self._frame_vao)
+            gl.glDrawElements(gl.GL_TRIANGLES, 6, gl.GL_UNSIGNED_INT, None)
+            gl.glBindVertexArray(0)
+
+            # Clean up state
+            gl.glActiveTexture(gl.GL_TEXTURE1)
+            gl.glBindTexture(gl.GL_TEXTURE_2D, 0)
+            gl.glActiveTexture(gl.GL_TEXTURE0)
+            gl.glBindTexture(gl.GL_TEXTURE_2D, 0)
+            gl.glUseProgram(0)
+
 
         def render(self, state: newton.State):
             """
