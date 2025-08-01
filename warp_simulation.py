@@ -369,6 +369,8 @@ class WarpSim:
     def simulate(self):
         """Run one simulation step with all substeps."""
 
+        self.integrator.collison_detection(self.state_0.particle_q)
+
         for _ in range(self.sim_substeps):
             self.state_0.clear_forces()
             self.state_1.clear_forces()
@@ -401,6 +403,7 @@ class WarpSim:
 
         self.sim_time += self.frame_dt
 
+    
     def render(self):
         """Render the current simulation state."""
         if self.renderer is None:
@@ -416,6 +419,10 @@ class WarpSim:
                     [0.0, 0.0, 0.0, 1.0],
                     0.1,
                 )
+
+                detector = self.integrator.trimesh_collision_detector
+                num_collisions = int(detector.vertex_colliding_triangles_count.numpy().sum())
+                print(f"Vertex-triangle collisions detected: {num_collisions}")
 
                 # Grasping
                 if self.grasping_active:
@@ -514,6 +521,8 @@ class WarpSim:
                             update_topology=True
                         )
 
+                    
+
                 wp.copy(self.integrator.dev_pos_prev_buffer, self.integrator.dev_pos_buffer)
                 self.renderer.end_frame()
             else:
@@ -537,3 +546,4 @@ class WarpSim:
         """Save the simulation results."""
         if self.renderer:
             self.renderer.save()
+

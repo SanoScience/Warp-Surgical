@@ -26,8 +26,12 @@ from simulation_kernels import (
     apply_deltas,
     apply_deltas_and_zero_accumulators,
     clear_jacobian_accumulator,
-    collide_particles_vs_sphere,
     bounds_collision
+)
+
+from collision_kernels import (
+    collide_particles_vs_sphere,
+    vertex_triangle_collision_det,
 )
 
 from newton.solvers.vbd.tri_mesh_collision import (
@@ -42,8 +46,8 @@ class PBDSolver(XPBDSolver):
         super().__init__(model, **kwargs)
         self.volCnstrs = True
         self.dev_pos_buffer = None
-        self.self_contact_radius: float = 0.2,
-        self.self_contact_margin: float = 0.2,
+        self.self_contact_radius: float = 0.002
+        self.self_contact_margin: float = 0.002
         
         self.trimesh_collision_detector = TriMeshCollisionDetector(
             self.model,
@@ -62,6 +66,40 @@ class PBDSolver(XPBDSolver):
             self.model.edge_count * NUM_THREADS_PER_COLLISION_PRIMITIVE,
             soft_contact_max,
         )
+
+    def collison_detection(self, particle_q: wp.array):
+        """Perform collision detection for the current particle positions."""
+        # Update trimesh collision detector with new particle positions
+        self.trimesh_collision_detector.refit(particle_q)
+        
+        # Perform vertex-triangle collision detection
+        #self.trimesh_collision_detector.vertex_triangle_collision_detection(self.self_contact_margin)
+        query_radius = self.self_contact_margin
+        self.trimesh_collision_detector.triangle_colliding_vertices_min_dist.fill_(query_radius)
+        wp.launch(
+            kernel=vertex_triangle_collision_det,
+            inputs=[
+                query_radius,
+                self.trimesh_collision_detector.bvh_tris.id,
+                self.trimesh_collision_detector.vertex_positions,
+                self.model.tri_indices,
+                self.trimesh_collision_detector.vertex_colliding_triangles_offsets,
+                self.trimesh_collision_detector.vertex_colliding_triangles_buffer_sizes,
+            ],
+            outputs=[
+                self.trimesh_collision_detector.vertex_colliding_triangles,
+                self.trimesh_collision_detector.vertex_colliding_triangles_count,
+                self.trimesh_collision_detector.vertex_colliding_triangles_min_dist,
+                self.trimesh_collision_detector.triangle_colliding_vertices_min_dist,
+                self.trimesh_collision_detector.resize_flags,
+            ],
+            dim=self.model.particle_count,
+            device=self.model.device,
+            block_dim=self.trimesh_collision_detector.collision_detection_block_size,
+        )
+        
+        # Perform edge-edge collision detection
+        #self.trimesh_collision_detector.edge_edge_collision_detection(self.self_contact_margin)
 
     def step(self, model: Model, state_in: State, state_out: State, control: Control, contacts: Contacts, dt: float):
         requires_grad = state_in.requires_grad
@@ -346,18 +384,15 @@ class PBDSolver(XPBDSolver):
                         wp.launch(
                             apply_tri_points_constraints_jacobian,
                             dim=len(model.tri_points_connectors),
-                            inputs=[
-                                particle_q,
-                                model.tri_points_connectors
-                            ],
+                            inputs=[particle_q,model.tri_points_connectors],
                             outputs=[particle_deltas],
                             device=model.device,
                         )
 
                         
-                       # self.trimesh_collision_detector.refit(state_in.particle_q)
-                       # self.trimesh_collision_detector.vertex_triangle_collision_detection(self.self_contact_margin)
-                       # self.trimesh_collision_detector.edge_edge_collision_detection(self.self_contact_margin)
+
+
+   
 
                         # # 3. Launch a kernel to resolve mesh self-collisions
                         # wp.launch(

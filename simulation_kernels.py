@@ -331,37 +331,3 @@ def bounds_collision(
     positions[tid] = pos
     velocities[tid] = vel
 
-@wp.kernel
-def collide_particles_vs_sphere(
-    positions: wp.array(dtype=wp.vec3f),
-    velocities: wp.array(dtype=wp.vec3f),
-    inv_masses: wp.array(dtype=wp.float32),
-    sphere_center: wp.array(dtype=wp.vec3f),
-    sphere_radius: wp.float32,
-    restitution: wp.float32,
-    dt: wp.float32,
-    deltas: wp.array(dtype=wp.vec3f)
-):
-    tid = wp.tid()
-    if tid >= len(positions):
-        return
-    pos = positions[tid]
-    #vel = velocities[tid]
-    inv_mass = inv_masses[tid]
-
-    # Sphere collision detection
-    to_sphere = pos - sphere_center[0] * 0.01  # Scale the sphere center if needed
-    dist = wp.length(to_sphere)
-    if inv_mass > 0 and dist < sphere_radius:
-        # Collision response
-        penetration = sphere_radius - dist
-        # if inv_mass > 0.0:
-        #     # Apply restitution
-        #     vel += wp.normalize(to_sphere) * penetration * restitution
-        # else:
-        # Static body, just move it out of the sphere
-        #pos += wp.normalize(to_sphere) * penetration
-        deltas[tid] += wp.normalize(to_sphere) * penetration
-    # Update positions and velocities
-    #positions[tid] = pos
-    #velocities[tid] = vel

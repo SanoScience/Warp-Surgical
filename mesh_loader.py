@@ -191,6 +191,12 @@ def load_mesh_and_build_model(builder: newton.ModelBuilder, particle_mass, verti
     for i in range(0, len(all_edges), 2):
         builder.add_spring(all_edges[i], all_edges[i + 1], spring_stiffness, spring_dampen, 0)
     
+    
+    # Add triangles
+    for i in range(0, len(all_tri_surface_indices), 3):
+        ids = [all_tri_surface_indices[i], all_tri_surface_indices[i + 1], all_tri_surface_indices[i + 2]]
+        builder.add_triangle(ids[0], ids[1], ids[2])
+
     all_tetrahedra = []
 
     # Add tetrahedrons (neo-hookean + custom volume constraint)    
