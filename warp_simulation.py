@@ -426,7 +426,7 @@ class WarpSim:
     def simulate(self):
         """Run one simulation step with all substeps."""
 
-        self.integrator.collison_detection(self.state_0.particle_q)
+        #self.integrator.collison_detection(self.state_0.particle_q)
 
         for _ in range(self.sim_substeps):
             self.state_0.clear_forces()

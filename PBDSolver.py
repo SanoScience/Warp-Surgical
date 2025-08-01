@@ -50,16 +50,16 @@ class PBDSolver(XPBDSolver):
         self.self_contact_radius: float = 0.002
         self.self_contact_margin: float = 0.002
         
-        self.trimesh_collision_detector = TriMeshCollisionDetector(
-            self.model,
-            vertex_collision_buffer_pre_alloc=32,
-            edge_collision_buffer_pre_alloc=64,
-            edge_edge_parallel_epsilon=1e-5,
-        )
+        # self.trimesh_collision_detector = TriMeshCollisionDetector(
+        #     self.model,
+        #     vertex_collision_buffer_pre_alloc=32,
+        #     edge_collision_buffer_pre_alloc=64,
+        #     edge_edge_parallel_epsilon=1e-5,
+        # )
 
-        self.trimesh_collision_info = wp.array(
-            [self.trimesh_collision_detector.collision_info], dtype=TriMeshCollisionInfo, device=self.device
-        )
+        # self.trimesh_collision_info = wp.array(
+        #     [self.trimesh_collision_detector.collision_info], dtype=TriMeshCollisionInfo, device=self.device
+        # )
         
         soft_contact_max = model.shape_count * model.particle_count
         self.collision_evaluation_kernel_launch_size = max(
