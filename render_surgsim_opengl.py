@@ -179,6 +179,10 @@ void main()
             bloodBlend   * bloodCol;
     }
 
+    // Environment hack
+    if (numTextures == 1)
+        baseColor *= 0.5;
+
     vec3 result = (ambient + diffuse + specular) * baseColor;
     FragColor = vec4(result, 1.0);
 }
@@ -325,7 +329,7 @@ float random(vec2 uv) {
 float computeSSAO3(vec2 uv, float depth) {
     float base_radius = 32.0;
     float radius = base_radius * depth;
-    int samples = 8;
+    int samples = 12;
     float occlusion = 0.0;
     float total = 0.0;
     vec3 normal = reconstructNormal(uv, depth);
@@ -360,7 +364,7 @@ void main() {
     if(depth < 0.999)
     {
         ao = computeSSAO3(TexCoord, depth);
-        float contrast = 4.5;
+        float contrast = 2.5;
         ao = pow(ao, contrast);
 
         color *= ao;

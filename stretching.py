@@ -101,20 +101,28 @@ def update_vertex_stretch_blend_kernel(
 
     avg_stretch = stretch_sum / float(edge_count)
 
-    # Normalize: 1.0 = no stretch, 2.0 = max stretch, clamp to [0,1]
-    blend = wp.clamp((avg_stretch - 1.0), 0.0, 1.0)
+    # Normalize: 1.0 = no stretch, 1.5 = max stretch, clamp to [0,1]
+    blend = wp.clamp((avg_stretch - 1.0) * 2.0, 0.0, 1.0)
     color = vertex_colors[vid]
     vertex_colors[vid] = wp.vec4(color[0], color[1], blend, color[3])
 
 def stretching_breaking_process(sim):
+
+    gallbladder_range = sim.mesh_ranges["fat"]
+    tet_start = gallbladder_range["tet_start"]
+    tet_count = gallbladder_range["tet_count"]
+
+    edge_start = gallbladder_range["edge_start"]
+    edge_count = gallbladder_range["edge_count"]
+
     # Tetrahedrons
     wp.launch(
         deactivate_tets_by_stretch_kernel,
-        dim=sim.model.tetrahedra_wp.shape[0],
+        dim=tet_count,
         inputs=[
-            sim.model.tet_active,
-            sim.model.tetrahedra_wp,
-            sim.tet_to_edges,
+            sim.model.tet_active[tet_start:tet_start+tet_count],
+            sim.model.tetrahedra_wp[tet_start:tet_start+tet_count],
+            sim.tet_to_edges[tet_start:tet_start+tet_count],
             sim.model.spring_indices,
             sim.model.spring_rest_length,
             sim.state_0.particle_q,
@@ -129,11 +137,11 @@ def stretching_breaking_process(sim):
     num_springs = sim.model.spring_indices.shape[0] // 2
     wp.launch(
         deactivate_edges_by_stretch_kernel,
-        dim=num_springs,
+        dim=edge_count,
         inputs=[
-            sim.model.spring_stiffness,
-            sim.model.spring_indices,
-            sim.model.spring_rest_length,
+            sim.model.spring_stiffness[edge_start:edge_start+edge_count],
+            sim.model.spring_indices[edge_start*2:(edge_start+edge_count)*2],
+            sim.model.spring_rest_length[edge_start:edge_start+edge_count],
             sim.state_0.particle_q,
             1.5,  # stretch_threshold
             num_springs

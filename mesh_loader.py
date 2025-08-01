@@ -105,6 +105,7 @@ def load_mesh_and_build_model(builder: newton.ModelBuilder, particle_mass, verti
     # Track current offsets
     current_vertex_offset = 0
     current_index_offset = 0
+    current_edge_offset = 0
     current_tet_offset = 0
     
     # Liver
@@ -114,6 +115,8 @@ def load_mesh_and_build_model(builder: newton.ModelBuilder, particle_mass, verti
         'vertex_count': len(liver_positions),
         'index_start': current_index_offset,
         'index_count': len(liver_tris),
+        'edge_start': current_edge_offset // 2,
+        'edge_count': len(liver_edges) // 2,
         'tet_start': current_tet_offset,
         'tet_count': len(liver_indices) // 4
     }
@@ -125,6 +128,7 @@ def load_mesh_and_build_model(builder: newton.ModelBuilder, particle_mass, verti
     all_uvs.extend(liver_uvs)
     
     current_vertex_offset = len(all_positions)
+    current_edge_offset = len(all_edges)
     current_index_offset = len(all_tri_surface_indices)
     current_tet_offset = len(all_indices) // 4
     
@@ -136,6 +140,8 @@ def load_mesh_and_build_model(builder: newton.ModelBuilder, particle_mass, verti
         'vertex_count': len(fat_positions),
         'index_start': current_index_offset,
         'index_count': len(fat_tris),
+        'edge_start': current_edge_offset // 2,
+        'edge_count': len(fat_edges) // 2,
         'tet_start': current_tet_offset,
         'tet_count': len(fat_indices) // 4
     }
@@ -147,6 +153,7 @@ def load_mesh_and_build_model(builder: newton.ModelBuilder, particle_mass, verti
     all_uvs.extend(fat_uvs)
     
     current_vertex_offset = len(all_positions)
+    current_edge_offset = len(all_edges)
     current_index_offset = len(all_tri_surface_indices)
     current_tet_offset = len(all_indices) // 4
     
@@ -159,6 +166,8 @@ def load_mesh_and_build_model(builder: newton.ModelBuilder, particle_mass, verti
         'vertex_count': len(gallbladder_positions),
         'index_start': current_index_offset,
         'index_count': len(gallbladder_tris),
+        'edge_start': current_edge_offset // 2,
+        'edge_count': len(gallbladder_edges) // 2,
         'tet_start': current_tet_offset,
         'tet_count': len(gallbladder_indices) // 4
     }
@@ -219,6 +228,38 @@ def load_mesh_and_build_model(builder: newton.ModelBuilder, particle_mass, verti
 
     return wp.array(all_connectors, dtype=TriPointsConnector, device=wp.get_device()), all_tri_surface_indices, all_uvs, mesh_ranges, wp.array(all_tetrahedra, dtype=Tetrahedron, device=wp.get_device())
 
+def load_background_mesh():
+    positions = []
+    tri_indices = []
+    uvs = []
+    
+    base_path = "meshes/cavity/"
+    vertices_file = base_path + "cavity.vertices"
+    surface_indices_file = base_path + "cavity.tris"
+    uvs_file = base_path + "cavity.uvs"
+    
+     # Load vertices
+    with open(vertices_file, 'r') as f:
+        for line in f:
+            pos = [float(x) for x in line.split()]
+            pos[0] += 0.5
+            pos[1] -= 3.6
+            positions.append(pos)
+    
+
+    # Load surface triangle indices
+    offset = 0
+    with open(surface_indices_file, 'r') as f:
+        for line in f:
+            tri_indices.extend([int(x) + offset for x in line.split()])
+    
+    # Load uvs
+    with open(uvs_file, 'r') as f:
+        for line in f:
+            uv = [float(x) for x in line.split()]
+            uvs.append(uv)
+
+    return wp.array(positions, dtype=wp.vec3f, device=wp.get_device()),  wp.array(tri_indices, dtype=wp.int32, device=wp.get_device()), wp.array(uvs, dtype=wp.vec2f, device=wp.get_device()),  wp.zeros(len(positions), dtype=wp.vec4f, device=wp.get_device())
 
 def is_particle_within_radius(particle_pos, centre, radius):
     pos = wp.vec3(particle_pos[0], particle_pos[1], particle_pos[2])

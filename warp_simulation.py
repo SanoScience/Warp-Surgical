@@ -14,7 +14,7 @@ import math
 from PBDSolver import PBDSolver
 from render_surgsim_opengl import SurgSimRendererOpenGL
 
-from mesh_loader import Tetrahedron, load_mesh_and_build_model
+from mesh_loader import Tetrahedron, load_background_mesh, load_mesh_and_build_model
 from render_opengl import CustomOpenGLRenderer
 from simulation_kernels import (
     set_body_position,
@@ -244,8 +244,15 @@ class WarpSim:
         self.paint_strength_buffer = wp.array([0.0], dtype=wp.float32, device=wp.get_device()) 
         set_paint_strength(self, 0.0)
     
+        self._load_background_mesh()
+
         # Load textures
         if self.use_opengl and self.renderer:
+
+            self.background_diffuse = [self.renderer.load_texture("textures/cavity_diffuse.tga")]
+            self.background_normal = [self.renderer.load_texture("textures/cavity_normals.tga")]
+            self.background_spec = [self.renderer.load_texture("textures/cavity_spec.png")]
+
 
             for mesh_name, _ in self.mesh_ranges.items():
                 setattr(self, f"{mesh_name}_diffuse_maps", [self.renderer.load_texture(f"textures/{mesh_name}/diffuse-base.png"),
@@ -384,6 +391,13 @@ class WarpSim:
 
         self.model.particle_max_velocity = 10.0
 
+    def _load_background_mesh(self):
+        positions, tri_indices, uvs, vertex_colors = load_background_mesh()
+        self.background_mesh = positions
+        self.background_tri_indices = tri_indices
+        self.background_uvs = uvs
+        self.background_vertex_colors = vertex_colors
+
     def _setup_simulation(self):
         """Initialize simulation states and integrator."""
         self.integrator = PBDSolver(self.model, iterations=5)
@@ -476,6 +490,25 @@ class WarpSim:
                     [0.0, 0.0, 0.0, 1.0],
                     0.025,
                 )
+
+                # Render background mesh
+                if self.background_mesh is not None and self.background_tri_indices is not None:
+                    self.renderer.render_mesh_warp(
+                        name="background_mesh",
+                        points=self.background_mesh,
+                        indices=self.background_tri_indices,
+                        texture_coords=self.background_uvs,
+                        vertex_colors=self.background_vertex_colors,
+                        diffuse_maps=self.background_diffuse,
+                        normal_maps=self.background_normal,
+                        specular_maps=self.background_spec,
+                        pos=(0.0, 1.0, -5.4),
+                        rot=(0.0, 0.0, 0.0, 1.0),
+                        scale=(1.2, 1.2, 1.2),
+                        update_topology=True, # TODO: Disable update-topology once it works properly
+                        smooth_shading=True,
+                        visible=True
+                    )
 
                 # detector = self.integrator.trimesh_collision_detector
                 # num_collisions = int(detector.vertex_colliding_triangles_count.numpy().sum())
