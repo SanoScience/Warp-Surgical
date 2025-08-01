@@ -151,6 +151,30 @@ def build_tet_edge_table(
             count += 1
 
 
+@wp.kernel
+def build_vertex_edge_table(
+    spring_indices: wp.array(dtype=wp.int32),              # [num_springs * 2]
+    vertex_to_edges: wp.array(dtype=wp.int32, ndim=2),     # [num_vertices, max_edges]
+    vertex_edge_counts: wp.array(dtype=wp.int32),           # [num_vertices]
+    num_springs: int,
+    max_edges: int
+):
+    eid = wp.tid()
+    if eid >= num_springs:
+        return
+
+    a = spring_indices[eid * 2 + 0]
+    b = spring_indices[eid * 2 + 1]
+
+    idx_a = wp.atomic_add(vertex_edge_counts, a, 1)
+    if idx_a < max_edges:
+        vertex_to_edges[a, idx_a] = eid
+
+    idx_b = wp.atomic_add(vertex_edge_counts, b, 1)
+    if idx_b < max_edges:
+        vertex_to_edges[b, idx_b] = eid
+
+
 class WarpSim:
     def __init__(self, stage_path="output.usd", num_frames=300, use_opengl=True):
         self.sim_substeps = 16
@@ -190,6 +214,12 @@ class WarpSim:
         self.vertex_vneighbor_counts = wp.zeros(vertex_count, dtype=wp.int32, device=wp.get_device())
         self.vneighbours_max = vertex_neighbour_count
 
+        # Vertex to edge mapping setup
+        vertex_edge_count = 32
+        self.vertex_to_edges = wp.zeros((vertex_count, vertex_edge_count), dtype=wp.int32, device=wp.get_device())
+        self.vertex_edge_counts = wp.zeros(vertex_count, dtype=wp.int32, device=wp.get_device())
+        self.vertex_edges_max = vertex_edge_count
+
         # Tetrahedron to edge mapping setup
         num_tets = self.model.tetrahedra_wp.shape[0]
         num_springs = self.model.spring_indices.shape[0] // 2
@@ -215,13 +245,23 @@ class WarpSim:
     
         # Load textures
         if self.use_opengl and self.renderer:
-            self.liver_texture = self.renderer.load_texture("textures/liver-base.png")
-            self.fat_texture = self.renderer.load_texture("textures/fat-base.png") 
-            self.gallbladder_texture = self.renderer.load_texture("textures/gallbladder-base.png")
 
-            self.liver_burn_texture = self.renderer.load_texture("textures/liver-burn.png")
-            self.fat_burn_texture = self.renderer.load_texture("textures/fat-burn.png")
-            self.gallbladder_burn_texture = self.renderer.load_texture("textures/gallbladder-burn.png")
+            for mesh_name, _ in self.mesh_ranges.items():
+                setattr(self, f"{mesh_name}_diffuse_maps", [self.renderer.load_texture(f"textures/{mesh_name}/diffuse-base.png"),
+                                                            self.renderer.load_texture(f"textures/{mesh_name}/diffuse-coag.png"),
+                                                            self.renderer.load_texture(f"textures/{mesh_name}/diffuse-damage.png"),
+                                                            self.renderer.load_texture(f"textures/{mesh_name}/diffuse-blood.png")])
+                
+                setattr(self, f"{mesh_name}_normal_maps", [self.renderer.load_texture(f"textures/{mesh_name}/normal-base.png"),
+                                                            self.renderer.load_texture(f"textures/{mesh_name}/normal-coag.png"),
+                                                            self.renderer.load_texture(f"textures/{mesh_name}/normal-damage.png"),
+                                                            self.renderer.load_texture(f"textures/{mesh_name}/normal-blood.png")])
+                
+                setattr(self, f"{mesh_name}_specular_maps", [self.renderer.load_texture(f"textures/{mesh_name}/spec-base.png"),
+                                                            self.renderer.load_texture(f"textures/{mesh_name}/spec-coag.png"),
+                                                            self.renderer.load_texture(f"textures/{mesh_name}/spec-damage.png"),
+                                                            self.renderer.load_texture(f"textures/{mesh_name}/spec-blood.png")])
+
 
             self.renderer.set_input_callbacks(
                 on_key_press=self._on_key_press,
@@ -241,6 +281,20 @@ class WarpSim:
                 self.tet_edge_counts,
                 num_tets,
                 num_springs
+            ],
+            device=wp.get_device()
+        )
+
+        # Build vertex to edge table
+        wp.launch(
+            build_vertex_edge_table,
+            dim=num_springs,
+            inputs=[
+                self.model.spring_indices,
+                self.vertex_to_edges,
+                self.vertex_edge_counts,
+                num_springs,
+                self.vertex_edges_max
             ],
             device=wp.get_device()
         )
@@ -506,15 +560,19 @@ class WarpSim:
 
                     num_triangles = int(tet_surface_counter.numpy()[0])
                     if num_triangles > 0:
-                        texture = getattr(self, f"{mesh_name}_texture", None)
-                        burn_texture = getattr(self, f"{mesh_name}_burn_texture", None)
+                        diffuse_maps = getattr(self, f"{mesh_name}_diffuse_maps", None)
+                        normal_maps = getattr(self, f"{mesh_name}_normal_maps", None)
+                        specular_maps = getattr(self, f"{mesh_name}_specular_maps", None)
+
 
                         self.renderer.render_mesh_warp_range(
                             name=f"{mesh_name}_mesh",
                             points=self.state_0.particle_q,
                             indices=tet_surface_indices,
                             texture_coords=self.uvs_wp,
-                            textures=[texture, burn_texture],
+                            diffuse_maps=diffuse_maps,
+                            normal_maps=normal_maps,
+                            specular_maps=specular_maps,
                             colors=self.vertex_colors,
                             index_start=0,
                             index_count=num_triangles,

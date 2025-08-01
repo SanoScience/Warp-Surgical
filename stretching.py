@@ -67,6 +67,45 @@ def deactivate_edges_by_stretch_kernel(
     if stretch > stretch_threshold:
         spring_stiffness[eid] = 0.0
 
+@wp.kernel
+def update_vertex_stretch_blend_kernel(
+    vertex_to_edges: wp.array(dtype=wp.int32, ndim=2),   # [num_vertices, max_edges]
+    vertex_edge_counts: wp.array(dtype=wp.int32),        # [num_vertices]
+    spring_indices: wp.array(dtype=wp.int32),            # [num_springs * 2]
+    spring_rest_length: wp.array(dtype=wp.float32),      # [num_springs]
+    particle_q: wp.array(dtype=wp.vec3f),                # [num_particles]
+    vertex_colors: wp.array(dtype=wp.vec4f),             # [num_particles]
+    num_vertices: int,
+    max_edges: int
+):
+    vid = wp.tid()
+    if vid >= num_vertices:
+        return
+
+    edge_count = vertex_edge_counts[vid]
+    if edge_count == 0:
+        vertex_colors[vid] = wp.vec4(0.0, 0.0, 0.0, vertex_colors[vid][3])
+        return
+
+    stretch_sum = float(0.0)
+    for i in range(edge_count):
+        eid = vertex_to_edges[vid, i]
+        a = spring_indices[eid * 2 + 0]
+        b = spring_indices[eid * 2 + 1]
+        pos_a = particle_q[a]
+        pos_b = particle_q[b]
+        current_length = wp.length(pos_a - pos_b)
+        rest_length = spring_rest_length[eid]
+        stretch = current_length / rest_length
+        stretch_sum += stretch
+
+    avg_stretch = stretch_sum / float(edge_count)
+
+    # Normalize: 1.0 = no stretch, 2.0 = max stretch, clamp to [0,1]
+    blend = wp.clamp((avg_stretch - 1.0), 0.0, 1.0)
+    color = vertex_colors[vid]
+    vertex_colors[vid] = wp.vec4(color[0], color[1], blend, color[3])
+
 def stretching_breaking_process(sim):
     # Tetrahedrons
     wp.launch(
@@ -98,6 +137,22 @@ def stretching_breaking_process(sim):
             sim.state_0.particle_q,
             1.5,  # stretch_threshold
             num_springs
+        ],
+        device=wp.get_device()
+    )
+    # Update vertex stretch blend
+    wp.launch(
+        update_vertex_stretch_blend_kernel,
+        dim=sim.model.particle_count,
+        inputs=[
+            sim.vertex_to_edges,
+            sim.vertex_edge_counts,
+            sim.model.spring_indices,
+            sim.model.spring_rest_length,
+            sim.state_0.particle_q,
+            sim.vertex_colors,
+            sim.model.particle_count,
+            sim.vertex_edges_max
         ],
         device=wp.get_device()
     )
