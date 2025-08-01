@@ -33,20 +33,22 @@ shape_vertex_shader = """
 #version 330 core
 layout (location = 0) in vec3 aPos;
 layout (location = 1) in vec3 aNormal;
-layout (location = 2) in vec2 aTexCoord;
-layout (location = 3) in vec4 aVertexColor;
+layout (location = 2) in vec3 aTangent;
+layout (location = 3) in vec2 aTexCoord;
+layout (location = 4) in vec4 aVertexColor;
 
 // column vectors of the instance transform matrix
-layout (location = 4) in vec4 aInstanceTransform0;
-layout (location = 5) in vec4 aInstanceTransform1;
-layout (location = 6) in vec4 aInstanceTransform2;
-layout (location = 7) in vec4 aInstanceTransform3;
+layout (location = 5) in vec4 aInstanceTransform0;
+layout (location = 6) in vec4 aInstanceTransform1;
+layout (location = 7) in vec4 aInstanceTransform2;
+layout (location = 8) in vec4 aInstanceTransform3;
 
 uniform mat4 view;
 uniform mat4 model;
 uniform mat4 projection;
 
 out vec3 Normal;
+out vec3 Tangent;
 out vec3 FragPos;
 out vec2 TexCoord;
 out vec4 VertexColor;
@@ -58,6 +60,7 @@ void main()
     gl_Position = projection * view * worldPos;
     FragPos = vec3(worldPos);
     Normal = mat3(transpose(inverse(transform))) * aNormal;
+    Tangent = mat3(transpose(inverse(transform))) * aTangent;
     TexCoord = aTexCoord;
     VertexColor = aVertexColor;
 }
@@ -69,6 +72,7 @@ shape_fragment_shader = """
 out vec4 FragColor;
 
 in vec3 Normal;
+in vec3 Tangent;
 in vec3 FragPos;
 in vec2 TexCoord;
 in vec4 VertexColor;
@@ -77,43 +81,102 @@ uniform vec3 viewPos;
 uniform vec3 lightColor;
 uniform vec3 sunDirection;
 uniform int numTextures;
-uniform sampler2D textures[8];
+uniform sampler2D diffuseMaps[4];
+uniform sampler2D normalMaps[4];
+uniform sampler2D specularMaps[4];
 
 void main()
 {
     float ambientStrength = 0.3;
     vec3 ambient = ambientStrength * lightColor;
+
+    // Construct TBN matrix
     vec3 norm = normalize(Normal);
-
-    float diff = max(dot(norm, sunDirection), 0.0);
-    vec3 diffuse = diff * lightColor;
-
-    vec3 lightDir2 = normalize(vec3(1.0, 0.3, -0.3));
-    diff = max(dot(norm, lightDir2), 0.0);
-    diffuse += diff * lightColor * 0.3;
-
-    float specularStrength = 0.5;
-    vec3 viewDir = normalize(viewPos - FragPos);
-
-    vec3 reflectDir = reflect(-sunDirection, norm);
-    float spec = pow(max(dot(viewDir, reflectDir), 0.0), 32);
-    vec3 specular = specularStrength * spec * lightColor;
-
-    reflectDir = reflect(-lightDir2, norm);
-    spec = pow(max(dot(viewDir, reflectDir), 0.0), 64);
-    specular += specularStrength * spec * lightColor * 0.3;
+    vec3 tangent = normalize(Tangent);
+    vec3 bitangent = normalize(cross(norm, tangent));
+    mat3 TBN = mat3(tangent, bitangent, norm);
 
     vec4 vCol = VertexColor;
     float burnBlend = vCol.y;
-    float mainBlend = 1.0 - burnBlend;
+    float stretchBlend = vCol.z;
+    float bloodBlend = vCol.w;
+    float mainBlend   = max(0.0, 1.0 - (burnBlend + stretchBlend + bloodBlend));
+
+    // Normalize if sum > 1
+    float total = burnBlend + stretchBlend + bloodBlend + mainBlend;
+    if (total > 1.0)
+    {
+        burnBlend    /= total;
+        stretchBlend /= total;
+        bloodBlend   /= total;
+        mainBlend    /= total;
+    }
+    
+
+    // Sample normal map and transform to world space
+    vec3 n = norm;
+    if (numTextures > 0)
+    {
+        vec3 baseNorm =      texture(normalMaps[0], TexCoord).rgb;
+        vec3 burnNorm =      texture(normalMaps[1], TexCoord).rgb;
+        vec3 stretchNorm =   texture(normalMaps[2], TexCoord).rgb;
+        vec3 bloodNorm =     texture(normalMaps[3], TexCoord).rgb;
+
+        vec3 sampledNormal = mainBlend * baseNorm +
+            burnBlend    * burnNorm +
+            stretchBlend * stretchNorm +
+            bloodBlend   * bloodNorm;
+
+        sampledNormal = normalize(sampledNormal * 2.0 - 1.0); // [-1,1] range
+        n = normalize(TBN * sampledNormal);
+    }
+
+    float diff = max(dot(n, sunDirection), 0.0);
+    vec3 diffuse = diff * lightColor;
+
+    vec3 lightDir2 = normalize(vec3(1.0, 0.3, -0.3));
+    diff = max(dot(n, lightDir2), 0.0);
+    diffuse += diff * lightColor * 0.3;
+
+    float specularStrength = 1.0;
+    if (numTextures > 0)
+    {
+        float baseSpec =      texture(specularMaps[0], TexCoord).r;
+        float burnSpec =      texture(specularMaps[1], TexCoord).r * 0.5;
+        float stretchSpec =   texture(specularMaps[2], TexCoord).r;
+        float bloodSpec =     texture(specularMaps[3], TexCoord).r * 2;
+
+
+        float specVal = mainBlend * baseSpec +
+            burnBlend    * burnSpec +
+            stretchBlend * stretchSpec +
+            bloodBlend   * bloodSpec;
+        specularStrength *= specVal;
+    }
+
+    vec3 viewDir = normalize(viewPos - FragPos);
+
+    vec3 reflectDir = reflect(-sunDirection, n);
+    float spec = pow(max(dot(viewDir, reflectDir), 0.0), 32);
+    vec3 specular = specularStrength * spec * lightColor;
+
+    reflectDir = reflect(-lightDir2, n);
+    spec = pow(max(dot(viewDir, reflectDir), 0.0), 64);
+    specular += specularStrength * spec * lightColor * 0.3;
 
     vec3 baseColor = vec3(0.0);
     if (numTextures > 0)
     {
-        vec3 baseCol = texture(textures[0], TexCoord).rgb;
-        vec3 burnCol = texture(textures[1], TexCoord).rgb;
+        vec3 baseCol =      texture(diffuseMaps[0], TexCoord).rgb;
+        vec3 burnCol =      texture(diffuseMaps[1], TexCoord).rgb;
+        vec3 stretchCol =   texture(diffuseMaps[2], TexCoord).rgb;
+        vec3 bloodCol =     texture(diffuseMaps[3], TexCoord).rgb;
 
-        baseColor = mix(baseCol, burnCol, burnBlend);
+
+        baseColor = mainBlend * baseCol +
+            burnBlend    * burnCol +
+            stretchBlend * stretchCol +
+            bloodBlend   * bloodCol;
     } else {
         baseColor = length(VertexColor) > 0.01 ? VertexColor.rgb : vec3(1.0, 1.0, 1.0);
     }
@@ -127,6 +190,7 @@ void main()
 def assemble_gfx_vertices_with_colors(
     vertices: wp.array(dtype=wp.vec3),
     normals: wp.array(dtype=wp.vec3),
+    tangents: wp.array(dtype=wp.vec3),
     faces_per_vertex: wp.array(dtype=wp.int32),
     texture_coords: wp.array(dtype=wp.vec2),
     vertex_colors: wp.array(dtype=wp.vec4),
@@ -139,30 +203,34 @@ def assemble_gfx_vertices_with_colors(
         
     pos = vertices[tid]
     normal = normals[tid]
+    tangent = tangents[tid]
     
-    # Normalize normal
+    # Normalize normal and tangent
     if faces_per_vertex[tid] > 0:
         normal = normal / wp.float32(faces_per_vertex[tid])
         normal = wp.normalize(normal)
+        tangent = tangent / wp.float32(faces_per_vertex[tid])
+        tangent = wp.normalize(tangent)
     
-    # Get texture coordinates and vertex color
     uv = texture_coords[tid]
     color = vertex_colors[tid]
     
-    # Pack vertex data: position (3) + normal (3) + texture coords (2) + vertex color (3)
+    # Pack vertex data: position (3) + normal (3) + tangent (3) + uv (2) + color (4)
     gfx_vertices[tid, 0] = pos[0] * scale[0]
     gfx_vertices[tid, 1] = pos[1] * scale[1]
     gfx_vertices[tid, 2] = pos[2] * scale[2]
     gfx_vertices[tid, 3] = normal[0]
     gfx_vertices[tid, 4] = normal[1]
     gfx_vertices[tid, 5] = normal[2]
-    gfx_vertices[tid, 6] = uv[0]
-    gfx_vertices[tid, 7] = uv[1]
-    gfx_vertices[tid, 8] = color[0]
-    gfx_vertices[tid, 9] = color[1]
-    gfx_vertices[tid, 10] = color[2]
-    gfx_vertices[tid, 11] = color[3]
-
+    gfx_vertices[tid, 6] = tangent[0]
+    gfx_vertices[tid, 7] = tangent[1]
+    gfx_vertices[tid, 8] = tangent[2]
+    gfx_vertices[tid, 9] = uv[0]
+    gfx_vertices[tid, 10] = uv[1]
+    gfx_vertices[tid, 11] = color[0]
+    gfx_vertices[tid, 12] = color[1]
+    gfx_vertices[tid, 13] = color[2]
+    gfx_vertices[tid, 14] = color[3]
 
 @wp.kernel
 def compute_gfx_vertices_with_colors(
@@ -197,6 +265,13 @@ def compute_gfx_vertices_with_colors(
     uv1 = texture_coords[i1]
     uv2 = texture_coords[i2]
     
+    # Tangent
+    deltaUV1 = uv1 - uv0
+    deltaUV2 = uv2 - uv0
+    f = 1.0 / (deltaUV1[0] * deltaUV2[1] - deltaUV2[0] * deltaUV1[1] + 1e-8)
+    tangent = f * (deltaUV2[1] * edge1 - deltaUV1[1] * edge2)
+    tangent = wp.normalize(tangent)
+    
     color0 = vertex_colors[i0]
     color1 = vertex_colors[i1]
     color2 = vertex_colors[i2]
@@ -211,14 +286,16 @@ def compute_gfx_vertices_with_colors(
     gfx_vertices[base_idx + 0, 3] = normal[0]
     gfx_vertices[base_idx + 0, 4] = normal[1]
     gfx_vertices[base_idx + 0, 5] = normal[2]
-    gfx_vertices[base_idx + 0, 6] = uv0[0]
-    gfx_vertices[base_idx + 0, 7] = uv0[1]
-    gfx_vertices[base_idx + 0, 8] = color0[0]
-    gfx_vertices[base_idx + 0, 9] = color0[1]
-    gfx_vertices[base_idx + 0, 10] = color0[2]
-    gfx_vertices[base_idx + 0, 11] = color0[3]
+    gfx_vertices[base_idx + 0, 6] = tangent[0]
+    gfx_vertices[base_idx + 0, 7] = tangent[1]
+    gfx_vertices[base_idx + 0, 8] = tangent[2]
+    gfx_vertices[base_idx + 0, 9] = uv0[0]
+    gfx_vertices[base_idx + 0, 10] = uv0[1]
+    gfx_vertices[base_idx + 0, 11] = color0[0]
+    gfx_vertices[base_idx + 0, 12] = color0[1]
+    gfx_vertices[base_idx + 0, 13] = color0[2]
+    gfx_vertices[base_idx + 0, 14] = color0[3]
 
-    
     # Vertex 1
     gfx_vertices[base_idx + 1, 0] = p1[0]
     gfx_vertices[base_idx + 1, 1] = p1[1]
@@ -226,14 +303,16 @@ def compute_gfx_vertices_with_colors(
     gfx_vertices[base_idx + 1, 3] = normal[0]
     gfx_vertices[base_idx + 1, 4] = normal[1]
     gfx_vertices[base_idx + 1, 5] = normal[2]
-    gfx_vertices[base_idx + 1, 6] = uv1[0]
-    gfx_vertices[base_idx + 1, 7] = uv1[1]
-    gfx_vertices[base_idx + 1, 8] = color1[0]
-    gfx_vertices[base_idx + 1, 9] = color1[1]
-    gfx_vertices[base_idx + 1, 10] = color1[2]
-    gfx_vertices[base_idx + 1, 11] = color1[3]
+    gfx_vertices[base_idx + 1, 6] = tangent[0]
+    gfx_vertices[base_idx + 1, 7] = tangent[1]
+    gfx_vertices[base_idx + 1, 8] = tangent[2]
+    gfx_vertices[base_idx + 1, 9] = uv1[0]
+    gfx_vertices[base_idx + 1, 10] = uv1[1]
+    gfx_vertices[base_idx + 1, 11] = color1[0]
+    gfx_vertices[base_idx + 1, 12] = color1[1]
+    gfx_vertices[base_idx + 1, 13] = color1[2]
+    gfx_vertices[base_idx + 1, 14] = color1[3]
 
-    
     # Vertex 2
     gfx_vertices[base_idx + 2, 0] = p2[0]
     gfx_vertices[base_idx + 2, 1] = p2[1]
@@ -241,12 +320,15 @@ def compute_gfx_vertices_with_colors(
     gfx_vertices[base_idx + 2, 3] = normal[0]
     gfx_vertices[base_idx + 2, 4] = normal[1]
     gfx_vertices[base_idx + 2, 5] = normal[2]
-    gfx_vertices[base_idx + 2, 6] = uv2[0]
-    gfx_vertices[base_idx + 2, 7] = uv2[1]
-    gfx_vertices[base_idx + 2, 8] = color2[0]
-    gfx_vertices[base_idx + 2, 9] = color2[1]
-    gfx_vertices[base_idx + 2, 10] = color2[2]
-    gfx_vertices[base_idx + 2, 11] = color2[3]
+    gfx_vertices[base_idx + 2, 6] = tangent[0]
+    gfx_vertices[base_idx + 2, 7] = tangent[1]
+    gfx_vertices[base_idx + 2, 8] = tangent[2]
+    gfx_vertices[base_idx + 2, 9] = uv2[0]
+    gfx_vertices[base_idx + 2, 10] = uv2[1]
+    gfx_vertices[base_idx + 2, 11] = color2[0]
+    gfx_vertices[base_idx + 2, 12] = color2[1]
+    gfx_vertices[base_idx + 2, 13] = color2[2]
+    gfx_vertices[base_idx + 2, 14] = color2[3]
 
 
 @wp.kernel
@@ -265,16 +347,16 @@ def update_mesh_vertices_optimized_with_colors(
     uv = texture_coords[tid]
     color = vertex_colors[tid]
     
-    # Update position, texture coordinates, and vertex colors (keep existing normals)
+    # Update position, texture coordinates, and vertex colors (keep existing normals + tangents)
     gfx_vertices[tid, 0] = pos[0] * scale[0]
     gfx_vertices[tid, 1] = pos[1] * scale[1]
     gfx_vertices[tid, 2] = pos[2] * scale[2]
-    gfx_vertices[tid, 6] = uv[0]
-    gfx_vertices[tid, 7] = uv[1]
-    gfx_vertices[tid, 8] = color[0]
-    gfx_vertices[tid, 9] = color[1]
-    gfx_vertices[tid, 10] = color[2]
-    gfx_vertices[tid, 11] = color[3]
+    gfx_vertices[tid, 9] = uv[0]
+    gfx_vertices[tid, 10] = uv[1]
+    gfx_vertices[tid, 11] = color[0]
+    gfx_vertices[tid, 12] = color[1]
+    gfx_vertices[tid, 13] = color[2]
+    gfx_vertices[tid, 14] = color[3]
 
 
 
@@ -310,6 +392,44 @@ def compute_average_normals(
     wp.atomic_add(faces_per_vertex, j, 1)
     wp.atomic_add(normals, k, n)
     wp.atomic_add(faces_per_vertex, k, 1)
+
+@wp.kernel
+def compute_average_tangents(
+    indices: wp.array(dtype=int, ndim=2),
+    vertices: wp.array(dtype=wp.vec3),
+    texture_coords: wp.array(dtype=wp.vec2),
+    scale: wp.vec3,
+    # outputs
+    tangents: wp.array(dtype=wp.vec3),
+    faces_per_vertex: wp.array(dtype=int),
+):
+    tid = wp.tid()
+    i = indices[tid, 0]
+    j = indices[tid, 1]
+    k = indices[tid, 2]
+    v0 = vertices[i] * scale[0]
+    v1 = vertices[j] * scale[1]
+    v2 = vertices[k] * scale[2]
+    uv0 = texture_coords[i]
+    uv1 = texture_coords[j]
+    uv2 = texture_coords[k]
+
+    edge1 = v1 - v0
+    edge2 = v2 - v0
+    deltaUV1 = uv1 - uv0
+    deltaUV2 = uv2 - uv0
+
+    f = 1.0 / (deltaUV1[0] * deltaUV2[1] - deltaUV2[0] * deltaUV1[1] + 1e-8)
+    tangent = f * (deltaUV2[1] * edge1 - deltaUV1[1] * edge2)
+
+    tangent = wp.normalize(tangent)
+    wp.atomic_add(tangents, i, tangent)
+    wp.atomic_add(faces_per_vertex, i, 1)
+    wp.atomic_add(tangents, j, tangent)
+    wp.atomic_add(faces_per_vertex, j, 1)
+    wp.atomic_add(tangents, k, tangent)
+    wp.atomic_add(faces_per_vertex, k, 1)
+
 
 def CreateSurgSimRenderer(renderer):
     class SimRenderer(renderer):
@@ -402,7 +522,9 @@ def CreateSurgSimRenderer(renderer):
             colors: wp.array = None,
             texture_coords: wp.array = None,
             vertex_colors: wp.array = None,
-            textures: list[int] = None,
+            diffuse_maps: list[int] = None,
+            normal_maps: list[int] = None,
+            specular_maps: list[int] = None,
             pos=(0.0, 0.0, 0.0),
             rot=(0.0, 0.0, 0.0, 1.0),
             scale=(1.0, 1.0, 1.0),
@@ -471,11 +593,13 @@ def CreateSurgSimRenderer(renderer):
             else:
                 shape_id = None
 
+            textures = [diffuse_maps, normal_maps, specular_maps]
+
             # Fast path: update existing shape without topology changes
             if not update_topology and shape_id is not None:
                 self._update_shape_vertices_gpu_direct_with_colors(shape_id, points, texture_coords_2d, vertex_colors, scale)
-                if textures is not None:
-                    self._update_shape_texture(shape_id, textures)
+                if diffuse_maps is not None:
+                    self._update_shape_texture(shape_id, diffuse_maps)
                 return shape_id
 
             # Slow path: create new shape or topology changed
@@ -492,20 +616,29 @@ def CreateSurgSimRenderer(renderer):
                     device=self._device,
                 )
 
-                # Assemble vertex data with 12 components: pos(3) + normal(3) + uv(2) + color(4)
-                gfx_vertices = wp.zeros((point_count, 12), dtype=wp.float32, device=self._device)
+                tangents = wp.zeros(point_count, dtype=wp.vec3, device=self._device)
+                wp.launch(
+                    compute_average_tangents,
+                    dim=idx_count,
+                    inputs=[indices_reshaped, points, texture_coords_2d, wp.vec3(scale)],
+                    outputs=[tangents, faces_per_vertex],
+                    device=self._device,
+                )
+
+                # Assemble vertex data with 15 components: pos(3) + normal(3) + tangent(3) + uv(2) + color(4)
+                gfx_vertices = wp.zeros((point_count, 15), dtype=wp.float32, device=self._device)
                 wp.launch(
                     assemble_gfx_vertices_with_colors,
                     dim=point_count,
-                    inputs=[points, normals, faces_per_vertex, texture_coords_2d, vertex_colors, wp.vec3(scale)],
+                    inputs=[points, normals, tangents, faces_per_vertex, texture_coords_2d, vertex_colors, wp.vec3(scale)],
                     outputs=[gfx_vertices],
                     device=self._device,
                 )
 
                 gfx_indices_wp = indices_reshaped.flatten()
             else:
-                # Generate per-face vertices with 12 components: pos(3) + normal(3) + uv(2) + color(4)
-                gfx_vertices = wp.zeros((idx_count * 3, 12), dtype=wp.float32, device=self._device)
+                # Generate per-face vertices with 15 components: pos(3) + normal(3) + tangent(3) + uv(2) + color(4)
+                gfx_vertices = wp.zeros((idx_count * 3, 15), dtype=wp.float32, device=self._device)
                 wp.launch(
                     compute_gfx_vertices_with_colors,
                     dim=idx_count,
@@ -549,7 +682,9 @@ def CreateSurgSimRenderer(renderer):
             indices: wp.array,
             texture_coords: wp.array = None,
             colors: wp.array = None,
-            textures: list[int] = None,
+            diffuse_maps: list[int] = None,
+            normal_maps: list[int] = None,
+            specular_maps: list[int] = None,
             index_start: int = 0,
             index_count: int = -1,
             pos=(0.0, 0.0, 0.0),
@@ -580,7 +715,9 @@ def CreateSurgSimRenderer(renderer):
                 colors=None,
                 texture_coords=texture_coords,
                 vertex_colors=colors,
-                textures=textures,
+                diffuse_maps=diffuse_maps,
+                normal_maps=normal_maps,
+                specular_maps=specular_maps,
                 pos=pos,
                 rot=rot,
                 scale=scale,
@@ -592,7 +729,7 @@ def CreateSurgSimRenderer(renderer):
             )
 
 
-        def _register_shape_gpu_direct_with_colors(self, geo_hash, shape_id, gfx_vertices: wp.array, gfx_indices: wp.array, textures: list[int] = None):
+        def _register_shape_gpu_direct_with_colors(self, geo_hash, shape_id, gfx_vertices: wp.array, gfx_indices: wp.array, textures: list[list[int]] = None):
             """Register shape using GPU arrays directly with vertex color and texture support"""
             gl = SurgSimRendererOpenGL.gl
             self._switch_context()
@@ -656,8 +793,8 @@ def CreateSurgSimRenderer(renderer):
             wp.copy(mapped_indices, gfx_indices)
             indices_cuda_buffer.unmap()
 
-            # Set up vertex attributes for 12-component format: pos(3) + normal(3) + uv(2) + color(4)
-            stride = 12 * 4  # 12 floats * 4 bytes per float
+            # Set up vertex attributes for 15-component format: pos(3) + normal(3) + tangent(3) + uv(2) + color(4)
+            stride = 15 * 4  # 15 floats * 4 bytes per float
             
             # positions (location 0)
             gl.glVertexAttribPointer(0, 3, gl.GL_FLOAT, gl.GL_FALSE, stride, ctypes.c_void_p(0))
@@ -666,14 +803,19 @@ def CreateSurgSimRenderer(renderer):
             # normals (location 1)
             gl.glVertexAttribPointer(1, 3, gl.GL_FLOAT, gl.GL_FALSE, stride, ctypes.c_void_p(12))
             gl.glEnableVertexAttribArray(1)
-            
-            # texture coordinates (location 2)
-            gl.glVertexAttribPointer(2, 2, gl.GL_FLOAT, gl.GL_FALSE, stride, ctypes.c_void_p(24))
+     
+            # tangents (location 2)
+            gl.glVertexAttribPointer(2, 3, gl.GL_FLOAT, gl.GL_FALSE, stride, ctypes.c_void_p(24))
             gl.glEnableVertexAttribArray(2)
             
-            # vertex colors (location 3)
-            gl.glVertexAttribPointer(3, 4, gl.GL_FLOAT, gl.GL_FALSE, stride, ctypes.c_void_p(32))
+            
+            # texture coordinates (location 3)
+            gl.glVertexAttribPointer(3, 2, gl.GL_FLOAT, gl.GL_FALSE, stride, ctypes.c_void_p(36))
             gl.glEnableVertexAttribArray(3)
+            
+            # vertex colors (location 4)
+            gl.glVertexAttribPointer(4, 4, gl.GL_FLOAT, gl.GL_FALSE, stride, ctypes.c_void_p(44))
+            gl.glEnableVertexAttribArray(4)
 
             gl.glBindVertexArray(0)
 
@@ -689,8 +831,8 @@ def CreateSurgSimRenderer(renderer):
                 vertex_count = points.shape[0]
                 
                 try:
-                    # Map with 11 components: pos(3) + normal(3) + uv(2) + color(3)
-                    vbo_vertices = cuda_buffer.map(dtype=wp.float32, shape=(vertex_count, 11))
+                    # Map with 15 components: pos(3) + normal(3) + tangent(3) + uv(2) + color(4)
+                    vbo_vertices = cuda_buffer.map(dtype=wp.float32, shape=(vertex_count, 15))
                     
                     wp.launch(
                         update_mesh_vertices_optimized_with_colors,
@@ -705,7 +847,7 @@ def CreateSurgSimRenderer(renderer):
                     print(f"Warning: Could not update vertices with colors: {e}")
                     return
 
-        def _update_shape_texture(self, shape: int, textures: list[int]):
+        def _update_shape_texture(self, shape: int, textures: list[list[int]]):
             """Update the texture bindings for a shape"""
             if shape >= len(self._shapes):
                 return
@@ -765,13 +907,13 @@ def CreateSurgSimRenderer(renderer):
                     gl.glBindBuffer(gl.GL_ARRAY_BUFFER, self._instance_transform_gl_buffer)
 
                     # we can only send vec4s to the shader, so we need to split the instance transforms matrix into its column vectors
-                    # Updated to use locations 4-7 for instance transforms
+                    # locations 5-8 for instance transforms
                     for i in range(4):
                         gl.glVertexAttribPointer(
-                            4 + i, 4, gl.GL_FLOAT, gl.GL_FALSE, matrix_size, ctypes.c_void_p(i * matrix_size // 4)
+                            5 + i, 4, gl.GL_FLOAT, gl.GL_FALSE, matrix_size, ctypes.c_void_p(i * matrix_size // 4)
                         )
-                        gl.glEnableVertexAttribArray(4 + i)
-                        gl.glVertexAttribDivisor(4 + i, 1)
+                        gl.glEnableVertexAttribArray(5 + i)
+                        gl.glVertexAttribDivisor(5 + i, 1)
 
                     instance_ids.extend(self._shape_instances[shape])
                     for i in self._shape_instances[shape]:
@@ -1050,29 +1192,48 @@ def CreateSurgSimRenderer(renderer):
                 gl.glBindVertexArray(vao)
                 
                 # Bind textures if available, otherwise use a default white texture
-                gl.glUseProgram(self._shape_shader.id)
-                if textures and len(textures) > 0:
-                    for i, tex_id in enumerate(textures):
-                        self.bind_texture(tex_id, i)
-                    gl.glUniform1i(gl.glGetUniformLocation(self._shape_shader.id, str_buffer("numTextures")), len(textures))
-                    # Set sampler array uniforms
-                    for i in range(len(textures)):
-                        gl.glUniform1i(gl.glGetUniformLocation(self._shape_shader.id, str_buffer(f"textures[{i}]")), i)
+                slot = int(0)
+                if textures:
+                    diffuse_maps = textures[0]
+                    normal_maps = textures[1]
+                    specular_maps = textures[2]
+
+                    gl.glUseProgram(self._shape_shader.id)
+                    if diffuse_maps and len(diffuse_maps) > 0:
+                        for i, tex_id in enumerate(diffuse_maps):
+                            self.bind_texture(tex_id, slot)
+                            gl.glUniform1i(gl.glGetUniformLocation(self._shape_shader.id, str_buffer(f"diffuseMaps[{i}]")), slot)
+                            slot += 1
+
+                        gl.glUniform1i(gl.glGetUniformLocation(self._shape_shader.id, str_buffer("numTextures")), len(diffuse_maps))
+                    
+                    if normal_maps:
+                        for i, tex_id in enumerate(normal_maps):
+                            self.bind_texture(tex_id, slot)
+                            gl.glUniform1i(gl.glGetUniformLocation(self._shape_shader.id, str_buffer(f"normalMaps[{i}]")), slot)
+                            slot += 1
+
+                    if specular_maps:
+                        for i, tex_id in enumerate(specular_maps):
+                            self.bind_texture(tex_id, slot)
+                            gl.glUniform1i(gl.glGetUniformLocation(self._shape_shader.id, str_buffer(f"specularMaps[{i}]")), slot)
+                            slot += 1
                 else:
                     if not hasattr(self, '_default_white_texture'):
                         from texture_loader import create_solid_texture
                         self._default_white_texture = create_solid_texture(self, color=(1.0, 1.0, 1.0), size=1)
                     self.bind_texture(self._default_white_texture, 0)
                     gl.glUniform1i(gl.glGetUniformLocation(self._shape_shader.id, str_buffer("numTextures")), 1)
-                    gl.glUniform1i(gl.glGetUniformLocation(self._shape_shader.id, str_buffer("textures[0]")), 0)
+                    gl.glUniform1i(gl.glGetUniformLocation(self._shape_shader.id, str_buffer("diffuseMaps[0]")), 0)
+
 
                 gl.glDrawElementsInstancedBaseInstance(
                     gl.GL_TRIANGLES, tri_count, gl.GL_UNSIGNED_INT, None, num_instances, start_instance_idx
                 )
 
                 # Unbind textures after rendering
-                if textures and len(textures) > 0:
-                    for i in range(len(textures)):
+                if slot > 0:
+                    for i in range(0, slot):
                         self.unbind_texture(i)
                 else:
                     self.unbind_texture(0)
