@@ -31,6 +31,7 @@ from simulation_kernels import (
 
 from collision_kernels import (
     collide_particles_vs_sphere,
+    collide_triangles_vs_sphere,
     vertex_triangle_collision_det,
 )
 
@@ -357,7 +358,7 @@ class PBDSolver(XPBDSolver):
                                 )
                             
                             wp.launch(
-                                kernel=apply_deltas,
+                                kernel=apply_deltas_and_zero_accumulators,
                                 dim=model.particle_count,
                                 inputs=[
                                     particle_deltas_accumulator,
@@ -367,16 +368,7 @@ class PBDSolver(XPBDSolver):
                                 device=model.device,
                             )
 
-                            
-                            wp.launch(
-                                kernel=clear_jacobian_accumulator,
-                                dim=model.particle_count,
-                                inputs=[
-                                    particle_deltas_accumulator,
-                                    particle_deltas_count,
-                                ],
-                                device=model.device,
-                            )
+
 
 
                         # CUSTOM CONSTRAINTS
@@ -392,38 +384,50 @@ class PBDSolver(XPBDSolver):
                         
 
 
-   
 
-                        # # 3. Launch a kernel to resolve mesh self-collisions
+                        #if haptic_proxy_pos is not None:
                         # wp.launch(
-                        #     kernel=solve_trimesh_self_contacts,  # you need to implement this kernel
-                        #     dim=collision_detector.vertex_colliding_triangles.shape[0] // 2,
+                        #     kernel=collide_particles_vs_sphere,
+                        #     dim=model.particle_count,
                         #     inputs=[
-                        #         state_in.particle_q,
-                        #         state_in.particle_qd,
+                        #         particle_q,
+                        #         particle_qd,
                         #         model.particle_inv_mass,
-                        #         collision_detector.collision_info,
-                        #         contact_radius,
-                        #         dt,
-                        #         xpbd_relaxation,
-                        #         # ...other needed arrays...
+                        #         self.dev_pos_buffer,  # sphere position
+                        #         0.2,  # sphere radius
+                        #         0.0,  # sphere restitution
+                        #         dt
                         #     ],
                         #     outputs=[particle_deltas],
                         #     device=model.device,
                         # )
 
-                        #if haptic_proxy_pos is not None:
                         wp.launch(
-                            kernel=collide_particles_vs_sphere,
+                            kernel=collide_triangles_vs_sphere,
                             dim=model.particle_count,
                             inputs=[
                                 particle_q,
                                 particle_qd,
                                 model.particle_inv_mass,
+                                model.tri_indices,
                                 self.dev_pos_buffer,  # sphere position
-                                0.2,  # sphere radius
+                                0.05,  # sphere radius
                                 0.0,  # sphere restitution
                                 dt
+                            ],
+                            outputs=[
+                                particle_deltas_accumulator,
+                                particle_deltas_count,
+                            ],
+                            device=model.device,
+                        )
+
+                        wp.launch(
+                            kernel=apply_deltas_and_zero_accumulators,
+                            dim=model.particle_count,
+                            inputs=[
+                                particle_deltas_accumulator,
+                                particle_deltas_count,
                             ],
                             outputs=[particle_deltas],
                             device=model.device,

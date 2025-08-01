@@ -152,6 +152,7 @@ def build_tet_edge_table(
 
 
 class WarpSim:
+    #region Initialization
     def __init__(self, stage_path="output.usd", num_frames=300, use_opengl=True):
         self.sim_substeps = 16
         self.num_frames = num_frames
@@ -166,8 +167,8 @@ class WarpSim:
 
         self.radius_collision = 0.1
         self.radius_heating = 0.35
-        self.radius_cutting = 0.25
-        self.radius_grasping = 0.5
+        self.radius_cutting = 0.1
+        self.radius_grasping = 0.1
 
         self.particle_mass = 0.1
 
@@ -244,7 +245,7 @@ class WarpSim:
             ],
             device=wp.get_device()
         )
-
+#endregion
     def _on_key_press(self, symbol, modifiers):
         from pyglet.window import key
         if symbol == key.C:
@@ -265,7 +266,7 @@ class WarpSim:
             heating_end(self)
         elif symbol == key.B:
             grasp_end(self)
-
+#region  Model Setup
     def _build_model(self):
         """Build the simulation model with mesh and haptic device."""
         builder = newton.ModelBuilder(up_axis=newton.Axis.Y)
@@ -365,7 +366,8 @@ class WarpSim:
             with wp.ScopedCapture() as capture:
                 self.simulate()
             self.graph = capture.graph
-
+#endregion
+#region Simulation Loop
     def simulate(self):
         """Run one simulation step with all substeps."""
 
@@ -402,8 +404,8 @@ class WarpSim:
                 self.simulate()
 
         self.sim_time += self.frame_dt
-
-    
+#endregion
+    # region Rendering
     def render(self):
         """Render the current simulation state."""
         if self.renderer is None:
@@ -417,12 +419,12 @@ class WarpSim:
                     "haptic_proxy_sphere",
                     [self.haptic_pos_right[0] * 0.01, self.haptic_pos_right[1] * 0.01, self.haptic_pos_right[2] * 0.01],
                     [0.0, 0.0, 0.0, 1.0],
-                    0.1,
+                    0.025,
                 )
 
-                detector = self.integrator.trimesh_collision_detector
-                num_collisions = int(detector.vertex_colliding_triangles_count.numpy().sum())
-                print(f"Vertex-triangle collisions detected: {num_collisions}")
+                # detector = self.integrator.trimesh_collision_detector
+                # num_collisions = int(detector.vertex_colliding_triangles_count.numpy().sum())
+                # print(f"Vertex-triangle collisions detected: {num_collisions}")
 
                 # Grasping
                 if self.grasping_active:
@@ -529,7 +531,7 @@ class WarpSim:
                 self.renderer.begin_frame(self.sim_time)
                 self.renderer.render(self.state_0)
                 self.renderer.end_frame()
-
+#endregion
     def update_haptic_position(self, position):
         """Update the haptic device position in the simulation."""
         

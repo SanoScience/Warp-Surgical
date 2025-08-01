@@ -14,6 +14,24 @@ from newton.geometry.kernels import (
 
 )
 
+@wp.func
+def triangle_normal(v0: wp.vec3f, v1: wp.vec3f, v2: wp.vec3f) -> wp.vec3f:
+    """
+    Calculate the normal vector of a triangle from three vertices.
+    
+    Args:
+        v0: First vertex of the triangle
+        v1: Second vertex of the triangle  
+        v2: Third vertex of the triangle
+        
+    Returns:
+        Normalized normal vector of the triangle
+    """
+    edge1 = v1 - v0
+    edge2 = v2 - v0
+    normal = wp.cross(edge1, edge2)
+    return wp.normalize(normal)
+
 @wp.kernel
 def collide_particles_vs_sphere(
     positions: wp.array(dtype=wp.vec3f),
@@ -49,7 +67,75 @@ def collide_particles_vs_sphere(
     #positions[tid] = pos
     #velocities[tid] = vel
 
+@wp.kernel
+def collide_triangles_vs_sphere(
+    positions: wp.array(dtype=wp.vec3f),
+    velocities: wp.array(dtype=wp.vec3f),
+    inv_masses: wp.array(dtype=wp.float32),
+    tri_indices: wp.array(dtype=wp.int32, ndim=2),
+    sphere_center: wp.array(dtype=wp.vec3f),
+    sphere_radius: wp.float32,
+    restitution: wp.float32,
+    dt: wp.float32,
+    delta_accumulator: wp.array(dtype=wp.vec3f),
+    delta_counter: wp.array(dtype=wp.int32)
+):
+    tid = wp.tid()
+    if tid >= tri_indices.shape[0]:
+        return
+    
+    t1 = tri_indices[tid, 0]
+    t2 = tri_indices[tid, 1]
+    t3 = tri_indices[tid, 2]
 
+    p1 = positions[t1]
+    p2 = positions[t2]
+    p3 = positions[t3]
+
+    w1 = inv_masses[t1]
+    w2 = inv_masses[t2]
+    w3 = inv_masses[t3]
+    w = w1 + w2 + w3
+
+    # Skip if all vertices are static (infinite mass)
+    if w <= 0.0:
+        return
+
+    sp = sphere_center[0] * 0.01
+
+    closest_p, bary, feature_type = triangle_closest_point(p1, p2, p3, sp)
+    
+    to_sphere = closest_p - sp
+    dist = wp.length(to_sphere)
+    
+    if dist < sphere_radius:
+        penetration = sphere_radius - dist
+        
+        # Avoid division by zero
+        if dist > 1e-8:
+            correction_dir = to_sphere / dist  # Normalized direction from sphere to triangle
+        else:
+            # Use triangle normal as fallback if closest point is exactly at sphere center
+            tri_normal = triangle_normal(p1, p2, p3)
+            correction_dir = tri_normal
+        
+        # Distribute correction based on barycentric coordinates and masses
+        # Barycentric coordinates from triangle_closest_point: bary = (u, v, w) where u+v+w=1
+        # p = u*p1 + v*p2 + w*p3, but we need to extract individual weights
+        
+        # For now, distribute evenly weighted by inverse mass
+        total_correction = correction_dir * penetration
+        d1 = total_correction * (w1 / w)
+        d2 = total_correction * (w2 / w)
+        d3 = total_correction * (w3 / w)
+
+        wp.atomic_add(delta_accumulator, t1, d1)
+        wp.atomic_add(delta_accumulator, t2, d2)
+        wp.atomic_add(delta_accumulator, t3, d3)
+
+        wp.atomic_add(delta_counter, t1, 1)
+        wp.atomic_add(delta_counter, t2, 1)
+        wp.atomic_add(delta_counter, t3, 1)
 
 @wp.kernel
 def vertex_triangle_collision_det(
