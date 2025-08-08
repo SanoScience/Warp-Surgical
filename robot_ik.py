@@ -17,50 +17,212 @@ from simulation_kernels import (
 )
 
 @wp.kernel
-def compute_ik_jacobian(
-    body_q: wp.array(dtype=wp.transform),
+def compute_ik_jacobian_fk(
     joint_q: wp.array(dtype=float),
-    joint_qd: wp.array(dtype=float),
-    end_effector_body_id: int,
-    target_pos: wp.vec3,
-    joint_targets: wp.array(dtype=float),
-    ik_damping: float,
-    dt: float
+    joint_target: wp.array(dtype=float),
+    target_pos: wp.array(dtype=wp.vec3f),
+    joint_type: wp.array(dtype=int),
+    joint_X_p: wp.array(dtype=wp.transform),
+    joint_X_c: wp.array(dtype=wp.transform),
+    joint_axis: wp.array(dtype=wp.vec3f),
+    joint_q_start: wp.array(dtype=int),
+    joint_qd_start: wp.array(dtype=int),
+    end_effector_joint_id: int,
+    ik_gain: float,
+    dt: float,
+    # Workspace arrays for intermediate calculations
+    joint_world_transforms: wp.array(dtype=wp.transform),
+    joint_world_positions: wp.array(dtype=wp.vec3f),
+    joint_world_axes: wp.array(dtype=wp.vec3f)
 ):
-    # Simple analytical IK for 6-DOF robot arm
-    # This is a simplified version - you may need more sophisticated IK
+    """
+    Compute IK using forward kinematic and Jacobian transpose method.
+    """
     tid = wp.tid()
     
     if tid == 0:
-        # Get current end-effector position
-        current_transform = body_q[end_effector_body_id]
-        current_pos = wp.transform_get_translation(current_transform)
+        num_joints = 7 # Assuming a 7-DOF arm
+
+        # --- 1. Forward Kinematics Pass ---
+        # Compute world transforms for each joint from base to end-effector
         
-        # Position error
-        pos_error = target_pos - current_pos
-        error_magnitude = wp.length(pos_error)
+        # The first joint's parent is the base, so its transform is relative to the world
+        current_transform = wp.transform_identity()
+
+        for i in range(num_joints):
+            q_start = joint_q_start[i]
+            qd_start = joint_qd_start[i]
+            
+            # Get local joint transform based on current angle/position
+            joint_local_transform = wp.transform_identity()
+            joint_t = joint_type[i]
+
+            if joint_t == newton.JOINT_REVOLUTE:
+                angle = joint_q[q_start]
+                axis = joint_axis[qd_start]
+                q_rot = wp.quat_from_axis_angle(axis, angle)
+                joint_local_transform = wp.transform(wp.vec3(0.0, 0.0, 0.0), q_rot)
+            elif joint_t == newton.JOINT_PRISMATIC:
+                displacement = joint_q[q_start]
+                axis = joint_axis[qd_start]
+                translation = axis * displacement
+                joint_local_transform = wp.transform(translation, wp.quat_identity())
+
+            # World transform of the joint is: parent_world_transform * local_joint_frame * joint_actuation
+            # Note: URDF parser combines parent and joint frames into joint_X_p
+            parent_world_transform = current_transform
+            joint_frame_transform = joint_X_p[i]
+            
+            # Transform of the joint frame in world space
+            world_joint_frame_transform = wp.transform_multiply(parent_world_transform, joint_frame_transform)
+            
+            # Transform of the actuated joint in world space
+            world_actuated_transform = wp.transform_multiply(world_joint_frame_transform, joint_local_transform)
+            
+            # The 'current_transform' for the next iteration is the transform of this joint's child body
+            current_transform = world_actuated_transform
+
+            # Store results for Jacobian calculation
+            joint_world_transforms[i] = world_joint_frame_transform
+            joint_world_positions[i] = wp.transform_get_translation(world_joint_frame_transform)
+            joint_world_axes[i] = wp.quat_rotate(wp.transform_get_rotation(world_joint_frame_transform), joint_axis[qd_start])
+
+        # Compute final end-effector position
+        ee_local_transform = joint_X_c[end_effector_joint_id]
+        ee_world_transform = wp.transform_multiply(current_transform, ee_local_transform)
+        current_ee_pos = wp.transform_get_translation(ee_world_transform)
+
+        # --- 2. Jacobian Transpose IK ---
+        pos_error = target_pos[0] - current_ee_pos
         
-        # Simple proportional control with damping
-        if error_magnitude > 1e-6:
-            # Normalize error
-            pos_error_norm = pos_error / error_magnitude
+        # Iterate backwards from end-effector to base to apply updates
+        for i in range(num_joints - 1, -1, -1):
+            qd_start = joint_qd_start[i]
+            if qd_start >= len(joint_target):
+                continue
+
+            joint_t = joint_type[i]
             
-            # Simple joint space mapping (this is very basic - real IK would use Jacobian)
-            # Map position error to joint space changes
-            joint_delta = wp.vec3(0.0, 0.0, 0.0)
+            # Vector from current joint to end-effector
+            r = current_ee_pos - joint_world_positions[i]
             
-            # Basic mapping for first 3 joints (simplified)
-            joint_delta[0] = pos_error_norm[0] * error_magnitude * 0.1
-            joint_delta[1] = pos_error_norm[1] * error_magnitude * 0.1  
-            joint_delta[2] = pos_error_norm[2] * error_magnitude * 0.1
+            jacobian_col = wp.vec3()
+            if joint_t == newton.JOINT_REVOLUTE:
+                # Jacobian for revolute joint: Jv = world_axis x (p_ee - p_joint)
+                jacobian_col = wp.cross(joint_world_axes[i], r)
+            elif joint_t == newton.JOINT_PRISMATIC:
+                # Jacobian for prismatic joint: Jv = world_axis
+                jacobian_col = joint_world_axes[i]
+
+            # Jacobian transpose method: delta_q = alpha * J^T * error
+            joint_contribution = wp.dot(jacobian_col, pos_error)
+            delta_q = ik_gain * joint_contribution
+
+            # Update joint target
+            current_target = joint_target[qd_start]
+            new_target = current_target + delta_q * dt
             
-            # Update joint targets with damping
-            for i in range(min(3, len(joint_targets))):
-                current_target = joint_targets[i]
-                new_target = current_target + joint_delta[i] * dt
-                # Apply limits (simple clamp)
-                new_target = wp.clamp(new_target, -3.14, 3.14)
-                joint_targets[i] = current_target + (new_target - current_target) * ik_damping
+            # Apply joint limits
+            # new_target = wp.clamp(new_target, -3.14, 3.14)
+            joint_target[qd_start] = new_target
+
+@wp.kernel
+def compute_debug_fk(
+    joint_q: wp.array(dtype=float),
+    joint_parent: wp.array(dtype=int),
+    joint_child: wp.array(dtype=int),
+    joint_type: wp.array(dtype=int),
+    joint_X_p: wp.array(dtype=wp.transform),
+    joint_X_c: wp.array(dtype=wp.transform),
+    joint_axis: wp.array(dtype=wp.vec3f),
+    joint_q_start: wp.array(dtype=int),
+    joint_qd_start: wp.array(dtype=int),
+    body_q: wp.array(dtype=wp.transform),
+    # Debug outputs
+    debug_joint_positions: wp.array(dtype=wp.vec3f),
+    debug_joint_rotations: wp.array(dtype=wp.quatf),
+    debug_joint_axes: wp.array(dtype=wp.vec3f),
+    debug_ee_position: wp.array(dtype=wp.vec3f),
+    debug_transforms: wp.array(dtype=wp.transform),
+    end_effector_joint_id: int
+):
+    """
+    Compute forward kinematics for debug visualization
+    """
+    tid = wp.tid()
+    
+    if tid == 0:
+        # Initialize all debug arrays
+        for i in range(len(debug_joint_positions)):
+            debug_joint_positions[i] = wp.vec3(0.0, 0.0, 0.0)
+            debug_joint_rotations[i] = wp.quat_identity()
+            debug_joint_axes[i] = wp.vec3(0.0, 0.0, 0.0)
+            debug_transforms[i] = wp.transform_identity()
+        
+        # Start from the base and work forward
+        # Find the root joint (joint with parent = -1)
+        root_joint = int(-1)
+        for i in range(len(joint_parent)):
+            if joint_parent[i] == -1:
+                root_joint = i
+                break
+        
+        if root_joint == -1:
+            return
+        
+        # Build forward kinematics chain
+        current_transform = wp.transform_identity()
+        
+        # Forward traversal (assuming sequential joint ordering)
+        for joint_idx in range(min(7, len(joint_parent))):  # First 7 joints
+            if joint_idx >= len(joint_q_start):
+                break
+                
+            # Get joint configuration
+            q_start = joint_q_start[joint_idx]
+            qd_start = joint_qd_start[joint_idx]
+            
+            # Get joint transform in parent frame
+            joint_transform_p = joint_X_p[joint_idx]
+            
+            # Apply joint transformation based on joint type
+            joint_t = joint_type[joint_idx]
+            joint_local_transform = wp.transform_identity()
+            
+            if joint_t == newton.JOINT_REVOLUTE:
+                if q_start < len(joint_q) and qd_start < len(joint_axis):
+                    angle = joint_q[q_start]
+                    axis = joint_axis[qd_start]
+                    # Create rotation transform
+                    q_rot = wp.quat_from_axis_angle(axis, angle)
+                    joint_local_transform = wp.transform(wp.vec3(0.0, 0.0, 0.0), q_rot)
+            elif joint_t == newton.JOINT_PRISMATIC:
+                if q_start < len(joint_q) and qd_start < len(joint_axis):
+                    displacement = joint_q[q_start]
+                    axis = joint_axis[qd_start]
+                    translation = axis * displacement
+                    joint_local_transform = wp.transform(translation, wp.quat_identity())
+            
+            # Combine transforms
+            joint_world_transform = wp.transform_multiply(joint_transform_p, joint_local_transform)
+            current_transform = wp.transform_multiply(current_transform, joint_world_transform)
+            
+            # Store debug info
+            debug_transforms[joint_idx] = current_transform
+            debug_joint_positions[joint_idx] = wp.transform_get_translation(current_transform)
+            debug_joint_rotations[joint_idx] = wp.transform_get_rotation(current_transform)
+            
+            if qd_start < len(joint_axis):
+                # Transform axis to world coordinates
+                world_axis = wp.quat_rotate(wp.transform_get_rotation(current_transform), joint_axis[qd_start])
+                debug_joint_axes[joint_idx] = world_axis
+        
+        # Compute end-effector position
+        if end_effector_joint_id >= 0 and end_effector_joint_id < len(debug_transforms):
+            ee_local_transform = joint_X_c[end_effector_joint_id]
+            ee_world_transform = wp.transform_multiply(debug_transforms[end_effector_joint_id], ee_local_transform)
+            debug_ee_position[0] = wp.transform_get_translation(ee_world_transform)
+
 
 class Example:
     def __init__(self, stage_path="example_quadruped.usd", num_envs=8):
@@ -88,14 +250,25 @@ class Example:
         )
         
         # Set initial joint configuration
-        articulation_builder2.joint_q[:7] = [0.0, 0.0, 0.0, -1.57, 0.0, 1.57, 0.0]
-        articulation_builder2.joint_target[:7] = articulation_builder2.joint_q[:7]
+        # articulation_builder2.joint_q[:7] = [0.0, 0.0, 0.0, -1.57, 0.0, 1.57, 0.0]
+        # articulation_builder2.joint_target[:7] = articulation_builder2.joint_q[:7]
         
+        stiffness = 75
+        damping = 2.0 * math.sqrt(stiffness)
+
         # Configure joint control
         for i in range(7):  # First 7 joints are the arm
-            articulation_builder2.joint_cfg[i].mode = newton.JointMode.TARGET_POSITION
-            articulation_builder2.joint_cfg[i].target_ke = 1000.0
-            articulation_builder2.joint_cfg[i].target_kd = 50.0
+            articulation_builder2.joint_dof_mode[i] = newton.JOINT_MODE_TARGET_POSITION
+            #articulation_builder2.joint_dof_mode[i] = newton.JOINT_MODE_TARGET_VELOCITY
+            #articulation_builder2.joint_dof_mode[i] = newton.JOINT_MODE_NONE
+            articulation_builder2.joint_target[i] = 0.0
+
+            articulation_builder2.joint_target_ke[i] = stiffness
+            articulation_builder2.joint_target_kd[i] = damping
+
+        for i in range(len(articulation_builder2.body_mass)):
+            articulation_builder2.body_mass[i] = 0
+
         
         builder = newton.ModelBuilder()
         
@@ -116,23 +289,46 @@ class Example:
         self.num_envs = num_envs
 
         builder.add_builder(articulation_builder2, xform=wp.transform([0.0, 0.0, 0.0], wp.quat_identity()))
-        builder.add_ground_plane()
+        plane_body_id = builder.add_body(
+            xform=wp.transform([0.0, 0.0, 0.0], wp.quat_identity()),
+            mass=0.0,
+            armature=0.0
+        )
+        builder.add_shape_plane(body=plane_body_id)
 
         np.set_printoptions(suppress=True)
         # finalize model
         self.model = builder.finalize()
         
-        # Find end-effector body ID (typically the last link)
-        self.end_effector_body_id = len(self.model.body_mass) - 2  # -1 for ground, -1 for last body
+        # Find end-effector body ID 
+        self.end_effector_joint_id = 6
         
         # IK parameters
-        self.ik_damping = 0.1
+        self.ik_damping = 0.95
         self.ik_enabled = True
         
         # Joint target buffer for IK
         self.joint_targets = wp.array(self.model.joint_target, dtype=float, device=wp.get_device())
 
-        self.solver = newton.solvers.XPBDSolver(self.model, iterations=16)
+        # self.solver = newton.solvers.XPBDSolver(self.model, iterations=16)
+        self.solver = newton.solvers.FeatherstoneSolver(self.model)
+
+        max_joints = 10
+        self.debug_joint_positions = wp.array([wp.vec3(0.0, 0.0, 0.0)] * max_joints, dtype=wp.vec3, device=wp.get_device())
+        self.debug_joint_rotations = wp.array([wp.quat_identity()] * max_joints, dtype=wp.quat, device=wp.get_device())
+        self.debug_joint_axes = wp.array([wp.vec3(0.0, 0.0, 0.0)] * max_joints, dtype=wp.vec3, device=wp.get_device())
+        self.debug_ee_position = wp.array([wp.vec3(0.0, 0.0, 0.0)], dtype=wp.vec3, device=wp.get_device())
+        self.debug_transforms = wp.array([wp.transform_identity()] * max_joints, dtype=wp.transform, device=wp.get_device())
+        
+        # Workspace arrays for IK kernel
+        self.ik_joint_world_transforms = wp.empty(shape=(max_joints,), dtype=wp.transform, device=wp.get_device())
+        self.ik_joint_world_positions = wp.empty(shape=(max_joints,), dtype=wp.vec3, device=wp.get_device())
+        self.ik_joint_world_axes = wp.empty(shape=(max_joints,), dtype=wp.vec3, device=wp.get_device())
+        
+        # Add debug flags
+        self.show_joint_debug = False
+        self.show_fk_chain = False
+        self.show_ik_debug = True
 
         if stage_path:
             self.renderer = newton.utils.SimRendererOpenGL(self.model, path=stage_path)
@@ -188,26 +384,58 @@ class Example:
                 device=self.state_0.body_q.device,
             )
             
+            wp.launch(
+                compute_debug_fk,
+                dim=1,
+                inputs=[
+                    self.state_0.joint_q,
+                    self.model.joint_parent,
+                    self.model.joint_child,
+                    self.model.joint_type,
+                    self.model.joint_X_p,
+                    self.model.joint_X_c,
+                    self.model.joint_axis,
+                    self.model.joint_q_start,
+                    self.model.joint_qd_start,
+                    self.state_0.body_q,
+                    self.debug_joint_positions,
+                    self.debug_joint_rotations,
+                    self.debug_joint_axes,
+                    self.debug_ee_position,
+                    self.debug_transforms,
+                    self.end_effector_joint_id
+                ],
+                device=self.state_0.joint_q.device,
+            )
+
             # Perform IK if enabled
             if self.ik_enabled:
                 wp.launch(
-                    compute_ik_jacobian,
+                    compute_ik_jacobian_fk,
                     dim=1,
                     inputs=[
-                        self.state_0.body_q,
                         self.state_0.joint_q,
-                        self.state_0.joint_qd,
-                        self.end_effector_body_id,
-                        self.ik_target_buffer.data[0],
                         self.joint_targets,
-                        self.ik_damping,
-                        self.sim_dt
+                        self.ik_target_buffer,
+                        self.model.joint_type,
+                        self.model.joint_X_p,
+                        self.model.joint_X_c,
+                        self.model.joint_axis,
+                        self.model.joint_q_start,
+                        self.model.joint_qd_start,
+                        self.end_effector_joint_id,
+                        self.ik_damping * 1.0,
+                        self.sim_dt,
+                        # Workspace arrays
+                        self.ik_joint_world_transforms,
+                        self.ik_joint_world_positions,
+                        self.ik_joint_world_axes,
                     ],
-                    device=self.state_0.body_q.device,
+                    device=self.state_0.joint_q.device,
                 )
                 
-                # Copy computed targets to control
-                wp.copy(self.control.joint_target, self.joint_targets)
+            # Copy computed targets to control
+            wp.copy(self.control.joint_target, self.joint_targets)
 
             self.contacts = self.model.collide(self.state_0)
             self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
@@ -223,6 +451,8 @@ class Example:
             else:
                 self.simulate()
         self.sim_time += self.frame_dt
+
+        self.print_debug_info()
 
         if self.recorder:
             if self.renderer:
@@ -242,20 +472,32 @@ class Example:
                 
                 self.renderer.render_sphere(
                     "haptic_proxy_sphere",
-                    [self.haptic_pos_right[0], self.haptic_pos_right[1], self.haptic_pos_right[2]],
-                    [0.0, 1.0, 0.0, 1.0],  # Green for haptic position
-                    0.5,
+                    pos=[self.haptic_pos_right[0], self.haptic_pos_right[1], self.haptic_pos_right[2]],
+                    rot=wp.quat_identity(),
+                    color=[0.0, 1.0, 0.0],  # Green for haptic position
+                    radius=0.5,
                 )
                 
                 # Render IK target position
                 ik_target = self.ik_target_buffer.numpy()[0]
                 self.renderer.render_sphere(
                     "ik_target_sphere",
-                    [ik_target[0], ik_target[1], ik_target[2]],
-                    [1.0, 0.0, 0.0, 1.0],  # Red for IK target
-                    0.3,
+                    pos=[ik_target[0], ik_target[1], ik_target[2]],
+                    rot=wp.quat_identity(),
+                    color=[1.0, 0.0, 0.0],  # Red for IK target
+                    radius=1.0,
                 )
+
+                # Debug visualization for IK and kinematics
+                if self.show_joint_debug:
+                    self.render_joint_debug()
                 
+                if self.show_fk_chain:
+                    self.render_fk_chain()
+                
+                if self.show_ik_debug:
+                    self.render_ik_debug()
+
                 self.renderer.render(self.state_0)
 
             else:
@@ -272,7 +514,7 @@ class Example:
         wp.copy(self.dev_pos_buffer, wp.array([haptic_pos], dtype=wp.vec3, device=wp.get_device()))
         
         # Update IK target based on haptic position with offset
-        ik_target = wp.vec3(haptic_pos[0], haptic_pos[1] + 5.0, haptic_pos[2] + 10.0)  # Offset for reachable workspace
+        ik_target = wp.vec3(haptic_pos[0], haptic_pos[1] + 3.0, haptic_pos[2] + 3.0)  # Offset for reachable workspace
         wp.copy(self.ik_target_buffer, wp.array([ik_target], dtype=wp.vec3, device=wp.get_device()))
 
     def toggle_ik(self):
@@ -284,6 +526,136 @@ class Example:
         """Set IK damping factor (0.0 to 1.0)."""
         self.ik_damping = max(0.0, min(1.0, damping))
         print(f"IK damping set to: {self.ik_damping}")
+
+    def render_joint_debug(self):
+        """Render detailed joint information"""
+        joint_q = self.state_0.joint_q.numpy()
+        joint_targets = self.joint_targets.numpy()
+        debug_positions = self.debug_joint_positions.numpy()
+        debug_axes = self.debug_joint_axes.numpy()
+        
+        # Render each joint
+        for i in range(min(7, len(debug_positions))):  # First 7 joints
+            pos = debug_positions[i]
+            
+            # Joint position sphere
+            color = [0.0, 0.0, 1.0] if i < len(joint_q) else [0.5, 0.5, 0.5]
+            self.renderer.render_sphere(
+                f"debug_joint_{i}",
+                pos=pos,
+                rot=wp.quat_identity(),
+                color=color,
+                radius=1.0,
+            )
+            
+            # Joint axis
+            if i < len(debug_axes):
+                axis = debug_axes[i]
+                axis_end = pos + axis * 3.0
+                self.renderer.render_line_strip(
+                    f"debug_joint_axis_{i}",
+                    vertices=[pos, axis_end],
+                    color=[1.0, 1.0, 0.0],  # Yellow
+                    radius=0.3,
+                )
+            
+            # Current vs target joint angle (for revolute joints)
+            if i < len(joint_q) and i < len(joint_targets):
+                current_angle = joint_q[i] if i < len(joint_q) else 0.0
+                target_angle = joint_targets[i] if i < len(joint_targets) else 0.0
+                
+                # Visual indicator of joint angle difference
+                angle_diff = abs(target_angle - current_angle)
+                error_color = [min(1.0, angle_diff), max(0.0, 1.0 - angle_diff), 0.0]
+                
+                self.renderer.render_sphere(
+                    f"debug_joint_error_{i}",
+                    pos=pos + [0, 0, 2],  # Offset above joint
+                    rot=wp.quat_identity(),
+                    color=error_color,
+                    radius=0.5,
+                )
+
+    def render_fk_chain(self):
+        """Render forward kinematics chain"""
+        debug_positions = self.debug_joint_positions.numpy()
+        
+        # Draw lines connecting joints in the kinematic chain
+        for i in range(min(6, len(debug_positions) - 1)):
+            start_pos = debug_positions[i]
+            end_pos = debug_positions[i + 1]
+            
+            self.renderer.render_line_strip(
+                f"fk_chain_{i}",
+                vertices=[start_pos, end_pos],
+                color=[0.0, 1.0, 1.0],  # Cyan
+                radius=0.5,
+            )
+        
+        # Render computed end-effector position
+        ee_pos = self.debug_ee_position.numpy()[0]
+        self.renderer.render_sphere(
+            "debug_ee_position",
+            pos=ee_pos,
+            rot=wp.quat_identity(),
+            color=[1.0, 0.0, 1.0],  # Magenta
+            radius=1.0,
+        )
+        
+        # Draw line from last joint to end-effector
+        if len(debug_positions) > 0:
+            last_joint_pos = debug_positions[min(6, len(debug_positions) - 1)]
+            self.renderer.render_line_strip(
+                "ee_link",
+                vertices=[last_joint_pos, ee_pos],
+                color=[1.0, 0.0, 1.0],  # Magenta
+                radius=0.7,
+            )
+
+    def render_ik_debug(self):
+        """Render IK-specific debug information"""
+        ik_target = self.ik_target_buffer.numpy()[0]
+        ee_pos = self.debug_ee_position.numpy()[0]
+        
+        # Draw error vector from end-effector to target
+        self.renderer.render_line_strip(
+            "ik_error_vector",
+            vertices=[ee_pos, ik_target],
+            color=[1.0, 0.5, 0.0],  # Orange
+            radius=0.4,
+        )
+        
+        # Display numerical debug info as spheres with different colors
+        error_magnitude = np.linalg.norm(ik_target - ee_pos)
+        
+        # Error magnitude visualization
+        error_normalized = min(1.0, error_magnitude / 10.0)  # Normalize to 0-1 range
+        error_color = [error_normalized, 1.0 - error_normalized, 0.0]
+        
+        self.renderer.render_sphere(
+            "ik_error_magnitude",
+            pos=ee_pos + [0, 0, 5],
+            rot=wp.quat_identity(),
+            color=error_color,
+            radius=1.0,
+        )
+
+    def print_debug_info(self):
+        """Print detailed debug information to console"""
+        if self.sim_time % 1.0 < self.frame_dt:  # Print once per second
+            joint_q = self.state_0.joint_q.numpy()
+            joint_targets = self.joint_targets.numpy()
+            ee_pos = self.debug_ee_position.numpy()[0]
+            ik_target = self.ik_target_buffer.numpy()[0]
+            
+            print(f"\n=== Debug Info at t={self.sim_time:.2f} ===")
+            print(f"Joint angles: {joint_q[:7]}")
+            print(f"Joint targets: {joint_targets[:7]}")
+            print(f"EE position: {ee_pos}")
+            print(f"IK target: {ik_target}")
+            print(f"Error magnitude: {np.linalg.norm(ik_target - ee_pos):.3f}")
+            print(f"IK enabled: {self.ik_enabled}")
+
 
 
 if __name__ == "__main__":

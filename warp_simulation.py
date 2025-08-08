@@ -460,6 +460,26 @@ class WarpSim:
             #    print(f"Contacts detected: {self.contacts.soft_contact_normal}")
 
             self.integrator.step(self.model, self.state_0, self.state_1, None, self.contacts, self.substep_dt)
+
+            # Recompute connectivity
+            wp.copy(self.vertex_vneighbor_counts, wp.zeros(self.model.particle_count, dtype=wp.int32, device=wp.get_device()))
+            wp.launch(
+                build_vertex_neighbor_table,
+                dim=self.model.tetrahedra_wp.shape[0],
+                inputs=[
+                    self.model.tet_active,
+                    self.model.tetrahedra_wp,
+                    self.vertex_to_vneighbours,
+                    self.vertex_vneighbor_counts,
+                    self.model.tetrahedra_wp.shape[0],
+                    self.vneighbours_max
+                ],
+                device=wp.get_device()
+            )
+
+            # Heat conduction
+            heating_conduction_process(self)
+            stretching_breaking_process(self)
             
             # Swap states
             (self.state_0, self.state_1) = (self.state_1, self.state_0)
@@ -517,26 +537,6 @@ class WarpSim:
                 # Grasping
                 if self.grasping_active:
                     grasp_process(self)
-
-                # Recompute connectivity
-                wp.copy(self.vertex_vneighbor_counts, wp.zeros(self.model.particle_count, dtype=wp.int32, device=wp.get_device()))
-                wp.launch(
-                    build_vertex_neighbor_table,
-                    dim=self.model.tetrahedra_wp.shape[0],
-                    inputs=[
-                        self.model.tet_active,
-                        self.model.tetrahedra_wp,
-                        self.vertex_to_vneighbours,
-                        self.vertex_vneighbor_counts,
-                        self.model.tetrahedra_wp.shape[0],
-                        self.vneighbours_max
-                    ],
-                    device=wp.get_device()
-                )
-
-                # Heat conduction
-                heating_conduction_process(self)
-                stretching_breaking_process(self)
 
                 for mesh_name, mesh_info in self.mesh_ranges.items():
                     tet_start = mesh_info.get('tet_start', 0)
