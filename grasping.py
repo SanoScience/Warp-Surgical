@@ -48,7 +48,7 @@ def move_and_lock_grasped_particles(
 def project_grasping_constraints(
     particle_q: wp.array(dtype=wp.vec3f),           # [num_particles]
     particle_qd: wp.array(dtype=wp.vec3f),          # [num_particles]
-    particle_inv_mass: wp.array(dtype=wp.float32),  # [num_particles]
+    particle_inv_mass: wp.array(dtype=wp.float32),  # [num_particles] 
     grasped_ids: wp.array(dtype=wp.int32),          # [num_grasped]
     grasped_distances: wp.array(dtype=wp.float32),  # [num_grasped]
     grasped_count: int,
@@ -67,7 +67,9 @@ def project_grasping_constraints(
     dist = wp.length(dir)
     if dist > 1e-6:
         correction = (dist - target_dist) * (dir / dist)
-        particle_q[pid] -= correction
+        #particle_q[pid] -= correction
+
+    particle_q[pid] -= (0.0, 0.000005, 0.0)
 
 
 @wp.kernel
@@ -141,18 +143,18 @@ def grasp_process(sim):
     )
 
 def project_grasping(sim):
-    grasped_count = min(int(sim.grasped_particles_counter.numpy()[0]), sim.grasp_capacity)
+    #grasped_count = min(int(sim.grasped_particles_counter.numpy()[0]), sim.grasp_capacity)
 
     wp.launch(
         project_grasping_constraints,
-        dim=grasped_count,
+        dim=sim.grasp_capacity,
         inputs=[
             sim.state_0.particle_q,
             sim.state_0.particle_qd,
             sim.model.particle_inv_mass,
             sim.grasped_particles_buffer,
             sim.grasped_particles_distances_buffer,
-            grasped_count,
+            sim.grasp_capacity,
             sim.integrator.dev_pos_buffer,
             sim.integrator.dev_pos_prev_buffer
         ],

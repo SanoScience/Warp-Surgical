@@ -399,9 +399,11 @@ class WarpSim:
         self.background_vertex_colors = vertex_colors
 
     def grasping_callback(self, model, state_in, state_out, control, contacts, dt):
-        project_grasping(self)
-        #print("Grasping callback called")
-        pass
+
+        if self.grasping_active:
+            project_grasping(self)
+            print("Grasping callback called")
+
  
 
     def _setup_simulation(self):
