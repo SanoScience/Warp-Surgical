@@ -1,3 +1,4 @@
+from centrelines import CentrelinePointInfo, ClampConstraint
 import warp as wp
 import newton
 
@@ -260,6 +261,77 @@ def load_background_mesh():
             uvs.append(uv)
 
     return wp.array(positions, dtype=wp.vec3f, device=wp.get_device()),  wp.array(tri_indices, dtype=wp.int32, device=wp.get_device()), wp.array(uvs, dtype=wp.vec2f, device=wp.get_device()),  wp.zeros(len(positions), dtype=wp.vec4f, device=wp.get_device())
+
+def parse_centreline_file(filepath, point_offset, edge_offset):
+    """
+    Parse a centreline file and return:
+      - a list of CentrelinePointInfo
+      - a flat list of all point ids (int)
+      - a flat list of all point dists (float)
+      - a flat list of all edge ids (int)
+    """
+    centreline_infos = []
+    all_point_cnstrs = []
+    all_edge_ids = []
+
+    with open(filepath, 'r') as f:
+        point_start_id = 0
+        edge_start_id = 0
+        for line in f:
+            parts = line.strip().split()
+            if not parts:
+                continue
+
+            idx = 0
+            # Point ids and dists
+            point_count = int(parts[idx])
+            idx += 1
+            point_cnstr = []
+            for _ in range(point_count):
+                id = int(parts[idx]) + point_offset
+                idx += 1
+                dist = float(parts[idx])
+                idx += 1
+
+                cnstr = ClampConstraint()
+                cnstr.id = id
+                cnstr.dist = dist
+                point_cnstr.append(cnstr)
+
+            # Edge ids
+            edge_count = int(parts[idx])
+            idx += 1
+            edge_ids = []
+            for _ in range(edge_count):
+                edge_ids.append(int(parts[idx]) + edge_offset)
+                idx += 1
+
+            # Stiffness, rest_length_mul, radius
+            stiffness = float(parts[idx])
+            idx += 1
+            rest_length_mul = float(parts[idx])
+            idx += 1
+            radius = float(parts[idx])
+            idx += 1
+
+            info = CentrelinePointInfo()
+            info.point_start_id = point_start_id
+            info.point_count = point_count
+            info.edge_start_id = edge_start_id
+            info.edge_count = edge_count
+            info.stiffness = stiffness
+            info.rest_length_mul = rest_length_mul
+            info.radius = radius
+
+
+            centreline_infos.append(info)
+            all_point_cnstrs.extend(point_cnstr)
+            all_edge_ids.extend(edge_ids)
+
+            point_start_id += point_count
+            edge_start_id += edge_count
+
+    return centreline_infos, all_point_cnstrs, all_edge_ids
 
 def is_particle_within_radius(particle_pos, centre, radius):
     pos = wp.vec3(particle_pos[0], particle_pos[1], particle_pos[2])

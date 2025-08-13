@@ -1,3 +1,4 @@
+from centrelines import CentrelinePointInfo, ClampConstraint, attach_clip_to_nearest_centreline, compute_centreline_positions
 from grasping import grasp_end, grasp_process, grasp_start
 from heating import heating_active_process, heating_conduction_process, heating_end, heating_start, paint_vertices_near_haptic_proxy, set_paint_strength
 from stretching import stretching_breaking_process
@@ -14,7 +15,7 @@ import math
 from PBDSolver import PBDSolver
 from render_surgsim_opengl import SurgSimRendererOpenGL
 
-from mesh_loader import Tetrahedron, load_background_mesh, load_mesh_and_build_model
+from mesh_loader import Tetrahedron, load_background_mesh, load_mesh_and_build_model, parse_centreline_file
 from render_opengl import CustomOpenGLRenderer
 from simulation_kernels import (
     set_body_position,
@@ -199,6 +200,8 @@ class WarpSim:
         self.cutting_active = False
         self.heating_active = False
         self.grasping_active = False
+        self.clipping = False
+
 
         print(f"Initializing WarpSim with {self.sim_substeps} substeps at {self.fps} FPS")
         print(f"Frame time: {self.frame_dt:.4f}s, Substep time: {self.substep_dt:.4f}s")
@@ -227,6 +230,11 @@ class WarpSim:
 
         self.tet_to_edges = wp.zeros((num_tets, 6), dtype=wp.int32, device=wp.get_device())
         self.tet_edge_counts = wp.zeros(num_tets, dtype=wp.int32, device=wp.get_device())
+
+        self.max_clips = 64
+        self.clip_attached = wp.zeros(self.centreline_points.shape[0], dtype=wp.int32, device=wp.get_device())
+        self.clip_indices = wp.zeros(self.max_clips, dtype=wp.int32, device=wp.get_device())
+        self.clip_count = wp.zeros(1, dtype=wp.int32, device=wp.get_device())
 
         # Initialize simulation components
         self._setup_simulation()
@@ -316,6 +324,8 @@ class WarpSim:
             heating_start(self)
         elif symbol == key.B:
             grasp_start(self)
+        elif symbol == key.G:
+            self.clipping = True
         elif symbol == key.Y:
             self.integrator.volCnstrs = not self.integrator.volCnstrs
 
@@ -367,6 +377,28 @@ class WarpSim:
                 setattr(self, f'{mesh_name}_bucket_size', bucket_size)
                 setattr(self, f'{mesh_name}_bucket_counters', wp.zeros(num_buckets, dtype=wp.int32, device=wp.get_device()))
                 setattr(self, f'{mesh_name}_bucket_storage', wp.zeros((num_buckets, bucket_size, 3), dtype=wp.int32, device=wp.get_device()))
+
+        # Centrelines
+        cntr1_points, cntr1_clamp_cnstr, cntr1_edge_cnstr = parse_centreline_file(
+            'meshes/centrelines/cystic_artery.cntr',
+            self.mesh_ranges['gallbladder']['vertex_start'],
+            self.mesh_ranges['gallbladder']['edge_start']
+        )
+        cntr2_points, cntr2_clamp_cnstr, cntr2_edge_cnstr = parse_centreline_file(
+            'meshes/centrelines/cystic_duct.cntr',
+            self.mesh_ranges['gallbladder']['vertex_start'],
+            self.mesh_ranges['gallbladder']['edge_start']
+        )
+
+        # Merge lists
+        merged_points = cntr1_points + cntr2_points
+        merged_clamp_cnstr = cntr1_clamp_cnstr + cntr2_clamp_cnstr
+        merged_edge_cnstr = cntr1_edge_cnstr + cntr2_edge_cnstr
+
+        self.centreline_points = wp.array(merged_points, dtype=CentrelinePointInfo, device=wp.get_device())
+        self.centreline_clamp_cnstr = wp.array(merged_clamp_cnstr, dtype=ClampConstraint, device=wp.get_device())
+        self.centreline_edge_conn = wp.array(merged_edge_cnstr, dtype=wp.int32, device=wp.get_device())
+        self.centreline_avg_positions = wp.zeros(self.centreline_points.shape[0], dtype=wp.vec3f, device=wp.get_device())
 
         # Add haptic device collision body
         self.haptic_body_id = builder.add_body(
@@ -537,6 +569,64 @@ class WarpSim:
                 # Grasping
                 if self.grasping_active:
                     grasp_process(self)
+
+
+                # Centreline update
+                wp.launch(
+                    compute_centreline_positions,
+                    dim=self.centreline_points.shape[0],
+                    inputs=[
+                        self.centreline_points,
+                        self.centreline_clamp_cnstr,
+                        self.state_0.particle_q,
+                        self.centreline_avg_positions
+                    ],
+                    device=wp.get_device()
+                )
+
+                if self.clipping:
+                    wp.launch(
+                        attach_clip_to_nearest_centreline,
+                        dim=1,
+                        inputs=[
+                            self.centreline_points,
+                            self.centreline_avg_positions,
+                            self.integrator.dev_pos_buffer,
+                            self.clip_attached,
+                            self.clip_indices,
+                            self.clip_count,
+                            self.max_clips
+                        ],
+                        device=wp.get_device()
+                    )
+                    self.clipping = False
+
+                # Draw centrelines
+                clip_count = int(self.clip_count.numpy()[0])
+                clip_indices = self.clip_indices.numpy()[:clip_count]
+                centreline_positions = self.centreline_avg_positions.numpy()
+                for i in range(self.max_clips):
+                    # Minor hack: for some reason, rendering warp meshes breaks registering instances,
+                    # so all instances registered after the warp mesh is rendered for the first time are broken.
+                    # To get around this, always render the instance (so they're registered from the start)
+                    if i < clip_count:
+                        idx = clip_indices[i]
+                        pos = centreline_positions[idx]
+                        self.renderer.render_sphere(
+                            name=f"clip_{i}",
+                            pos=[pos[0], pos[1], pos[2]],
+                            rot=[0.0, 0.0, 0.0, 1.0],
+                            color=[1.0, 0.2, 0.2], 
+                            radius=0.018
+                        )
+                    else:
+                        self.renderer.render_sphere(
+                            name=f"clip_{i}",
+                            pos=[0.0, 0.0, 0.0],
+                            rot=[0.0, 0.0, 0.0, 1.0],
+                            color=[1.0, 0.2, 0.2], 
+                            radius=0.018
+                        )
 
                 for mesh_name, mesh_info in self.mesh_ranges.items():
                     tet_start = mesh_info.get('tet_start', 0)
