@@ -1,4 +1,4 @@
-from centrelines import CentrelinePointInfo, ClampConstraint, attach_clip_to_nearest_centreline, compute_centreline_positions
+from centrelines import CentrelinePointInfo, ClampConstraint, attach_clip_to_nearest_centreline, compute_centreline_positions, cut_centrelines_near_haptic, emit_bleed_particles, update_bleed_particles, update_centreline_leaks
 from grasping import grasp_end, grasp_process, grasp_start
 from heating import heating_active_process, heating_conduction_process, heating_end, heating_start, paint_vertices_near_haptic_proxy, set_paint_strength
 from stretching import stretching_breaking_process
@@ -175,6 +175,60 @@ def build_vertex_edge_table(
     if idx_b < max_edges:
         vertex_to_edges[b, idx_b] = eid
 
+def check_centreline_leaks(states, num_points, device=None):
+    """
+    Launch the update_centreline_leaks kernel and return results as Python values.
+
+    Args:
+        states: wp.array(dtype=wp.int32), shape=[num_points]
+        num_points: int
+        device: Warp device (optional)
+
+    Returns:
+        {
+            "clipping_ready_to_cut": bool,
+            "clipping_done": bool,
+            "clipping_error": bool,
+            "valid_ids_to_cut": list of int
+        }
+    """
+    if device is None:
+        device = wp.get_device()
+
+    out_clipping_ready_to_cut = wp.zeros(1, dtype=wp.int32, device=device)
+    out_clipping_done = wp.zeros(1, dtype=wp.int32, device=device)
+    out_clipping_error = wp.zeros(1, dtype=wp.int32, device=device)
+    out_valid_ids_to_cut = wp.zeros(num_points, dtype=wp.int32, device=device)
+    out_valid_ids_count = wp.zeros(1, dtype=wp.int32, device=device)
+
+    wp.launch(
+        update_centreline_leaks,
+        dim=1,
+        inputs=[
+            states,
+            num_points,
+            out_clipping_ready_to_cut,
+            out_clipping_done,
+            out_clipping_error,
+            out_valid_ids_to_cut,
+            out_valid_ids_count
+        ],
+        device=device
+    )
+
+    # Pull results to CPU
+    ready = bool(out_clipping_ready_to_cut.numpy()[0])
+    done = bool(out_clipping_done.numpy()[0])
+    error = bool(out_clipping_error.numpy()[0])
+    count = int(out_valid_ids_count.numpy()[0])
+    valid_ids = out_valid_ids_to_cut.numpy()[:count].tolist()
+
+    return {
+        "clipping_ready_to_cut": ready,
+        "clipping_done": done,
+        "clipping_error": error,
+        "valid_ids_to_cut": valid_ids
+    }
 
 class WarpSim:
     #region Initialization
@@ -192,6 +246,7 @@ class WarpSim:
 
         self.radius_collision = 0.1
         self.radius_heating = 0.1
+        self.radius_clipping = 0.1
         self.radius_cutting = 0.075
         self.radius_grasping = 0.075
 
@@ -235,6 +290,15 @@ class WarpSim:
         self.clip_attached = wp.zeros(self.centreline_points.shape[0], dtype=wp.int32, device=wp.get_device())
         self.clip_indices = wp.zeros(self.max_clips, dtype=wp.int32, device=wp.get_device())
         self.clip_count = wp.zeros(1, dtype=wp.int32, device=wp.get_device())
+
+        self.centreline_cut_flags = wp.zeros(self.centreline_points.shape[0], dtype=wp.int32, device=wp.get_device())
+
+        self.max_bleed_particles = 512
+        self.bleed_positions = wp.zeros(self.max_bleed_particles, dtype=wp.vec3f, device=wp.get_device())
+        self.bleed_velocities = wp.zeros(self.max_bleed_particles, dtype=wp.vec3f, device=wp.get_device())
+        self.bleed_lifetimes = wp.zeros(self.max_bleed_particles, dtype=wp.float32, device=wp.get_device())
+        self.bleed_active = wp.zeros(self.max_bleed_particles, dtype=wp.int32, device=wp.get_device())
+        self.bleed_next_id = wp.zeros(1, dtype=wp.int32, device=wp.get_device())
 
         # Initialize simulation components
         self._setup_simulation()
@@ -396,6 +460,7 @@ class WarpSim:
         merged_edge_cnstr = cntr1_edge_cnstr + cntr2_edge_cnstr
 
         self.centreline_points = wp.array(merged_points, dtype=CentrelinePointInfo, device=wp.get_device())
+        self.centreline_states = wp.zeros(len(merged_points), dtype=wp.int32, device=wp.get_device())
         self.centreline_clamp_cnstr = wp.array(merged_clamp_cnstr, dtype=ClampConstraint, device=wp.get_device())
         self.centreline_edge_conn = wp.array(merged_edge_cnstr, dtype=wp.int32, device=wp.get_device())
         self.centreline_avg_positions = wp.zeros(self.centreline_points.shape[0], dtype=wp.vec3f, device=wp.get_device())
@@ -595,11 +660,20 @@ class WarpSim:
                             self.clip_attached,
                             self.clip_indices,
                             self.clip_count,
-                            self.max_clips
+                            self.max_clips,
+                            self.radius_clipping
                         ],
                         device=wp.get_device()
                     )
                     self.clipping = False
+
+                results = check_centreline_leaks(self.centreline_states, self.centreline_points.shape[0])
+                if results["clipping_ready_to_cut"]:
+                    print("Ready to cut between:", results["valid_ids_to_cut"])
+                if results["clipping_done"]:
+                    print("Clipping done!")
+                if results["clipping_error"]:
+                    print("Clipping error detected!")
 
                 # Draw centrelines
                 clip_count = int(self.clip_count.numpy()[0])
@@ -662,11 +736,77 @@ class WarpSim:
                             device=wp.get_device()
                         )
 
+                        print("Cutting")
+                        wp.launch(
+                            cut_centrelines_near_haptic,
+                            dim=self.centreline_points.shape[0],
+                            inputs=[
+                                self.centreline_points,
+                                self.centreline_avg_positions,
+                                self.integrator.dev_pos_buffer,
+                                self.centreline_cut_flags,
+                                self.radius_cutting
+                            ],
+                            device=wp.get_device()
+                        )
+
                     # Handle heating
                     if self.heating_active:
                         heating_active_process(self)
 
-                    
+                    # Emit new bleed particles from cut centrelines
+                    wp.launch(
+                        emit_bleed_particles,
+                        dim=self.centreline_points.shape[0],
+                        inputs=[
+                            self.centreline_avg_positions,
+                            self.centreline_cut_flags,
+                            self.bleed_positions,
+                            self.bleed_velocities,
+                            self.bleed_lifetimes,
+                            self.bleed_active,
+                            self.bleed_next_id,
+                            self.max_bleed_particles,
+                            self.frame_dt
+                        ],
+                        device=wp.get_device()
+                    )
+
+                    # Update all bleed particles
+                    wp.launch(
+                        update_bleed_particles,
+                        dim=self.max_bleed_particles,
+                        inputs=[
+                            self.bleed_positions,
+                            self.bleed_velocities,
+                            self.bleed_lifetimes,
+                            self.bleed_active,
+                            self.max_bleed_particles,
+                            self.frame_dt
+                        ],
+                        device=wp.get_device()
+                    )
+
+                    bleed_pos = self.bleed_positions.numpy()
+                    bleed_active = self.bleed_active.numpy()
+                    for i in range(self.max_bleed_particles):
+                        if bleed_active[i]:
+                            self.renderer.render_sphere(
+                                name=f"bleed_{i}",
+                                pos=bleed_pos[i],
+                                rot=[0.0, 0.0, 0.0, 1.0],
+                                color=[0.8, 0.0, 0.0],
+                                radius=0.008
+                            )
+                        else:
+                            self.renderer.render_sphere(
+                                name=f"bleed_{i}",
+                                pos=[0.0, 0.0, 0.0],
+                                rot=[0.0, 0.0, 0.0, 1.0],
+                                color=[0.8, 0.0, 0.0],
+                                radius=0.008
+                            )
+                                        
                     # Extract surface
                     bucket_counters = getattr(self, f'{mesh_name}_bucket_counters')
                     bucket_storage = getattr(self, f'{mesh_name}_bucket_storage')
