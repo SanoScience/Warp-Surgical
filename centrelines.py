@@ -213,6 +213,7 @@ def emit_bleed_particles(
     bleed_active: wp.array(dtype=wp.int32),           # [max_bleed_particles]
     bleed_next_id: wp.array(dtype=wp.int32),          # [1]
     max_bleed_particles: int,
+    total_time: float,
     dt: float
 ):
     tid = wp.tid()
@@ -225,8 +226,9 @@ def emit_bleed_particles(
         bleed_positions[idx] = centreline_positions[tid]
 
         # Randomized velocity
-        bleed_velocities[idx] = wp.vec3f(0.0, 0.2, 0.0) + 0.05 * wp.vec3f(float(tid % 3 - 1), 1.0, float((tid * 7) % 3 - 1))
-        bleed_lifetimes[idx] = 1.5  # seconds
+        tid_modified = int(float(tid) * total_time * 10.0) # Add some time-based randomness
+        bleed_velocities[idx] = wp.vec3f(0.0, 0.2, 0.0) + 0.05 * wp.vec3f(float(tid_modified % 3 - 1), 1.0, float((tid_modified * 7) % 3 - 1))
+        bleed_lifetimes[idx] = 0.4  # seconds
         bleed_active[idx] = 1
 
 

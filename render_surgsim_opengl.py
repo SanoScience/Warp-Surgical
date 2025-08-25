@@ -81,6 +81,8 @@ uniform vec3 viewPos;
 uniform vec3 lightColor;
 uniform vec3 sunDirection;
 uniform int numTextures;
+uniform vec3 startColor;
+
 uniform sampler2D diffuseMaps[4];
 uniform sampler2D normalMaps[4];
 uniform sampler2D specularMaps[4];
@@ -164,7 +166,7 @@ void main()
     spec = pow(max(dot(viewDir, reflectDir), 0.0), 64);
     specular += specularStrength * spec * lightColor * 0.3;
 
-    vec3 baseColor = vec3(1.0);
+    vec3 baseColor = startColor;
     if (numTextures > 0)
     {
         vec3 baseCol =      texture(diffuseMaps[0], TexCoord).rgb;
@@ -183,7 +185,7 @@ void main()
     if (numTextures == 1)
         baseColor *= 0.5;
 
-    vec3 result = (ambient + diffuse + specular) * baseColor;
+    vec3 result = (ambient + diffuse + specular) * baseColor; // Commented out previous formula for debugging, irrelevant
     FragColor = vec4(result, 1.0);
 }
 """
@@ -722,7 +724,6 @@ def CreateSurgSimRenderer(renderer):
             name: str,
             points: wp.array,
             indices: wp.array,
-            colors: wp.array = None,
             texture_coords: wp.array = None,
             vertex_colors: wp.array = None,
             diffuse_maps: list[int] = None,
@@ -731,6 +732,7 @@ def CreateSurgSimRenderer(renderer):
             pos=(0.0, 0.0, 0.0),
             rot=(0.0, 0.0, 0.0, 1.0),
             scale=(1.0, 1.0, 1.0),
+            basic_color = (1.0, 1.0, 1.0),
             update_topology=False,
             parent_body: str | None = None,
             is_template: bool = False,
@@ -743,9 +745,8 @@ def CreateSurgSimRenderer(renderer):
                 name: A name for the mesh instance
                 points: Warp array of mesh vertices (dtype=wp.vec3)
                 indices: Warp array of mesh face indices (dtype=int, shape=(-1, 3) or flat)
-                colors: Warp array of vertex colors (optional, deprecated - use vertex_colors)
                 texture_coords: Warp array of texture coordinates (dtype=wp.vec2 or 1D array with shape=(vertex_count*2,), optional)
-                vertex_colors: Warp array of per-vertex colors (dtype=wp.vec3, optional)
+                vertex_colors: Warp array of per-vertex colors (dtype=wp.vec4, optional)
                 textures: List of OpenGL texture IDs (optional)
                 pos: The position of the mesh
                 rot: The rotation of the mesh
@@ -771,7 +772,7 @@ def CreateSurgSimRenderer(renderer):
             
             # Create default vertex colors if not provided
             if vertex_colors is None:
-                vertex_colors = wp.zeros(point_count, dtype=wp.vec3, device=self._device)
+                vertex_colors = wp.zeros(point_count, dtype=wp.vec4, device=self._device)
             
             # Create default texture coordinates if not provided
             if texture_coords is None:
@@ -783,7 +784,7 @@ def CreateSurgSimRenderer(renderer):
 
             if len(indices.shape) == 1:
                 # Flat array, reshape to (-1, 3)
-                assert indices.shape[0] % 3 == 0, "Flat indices array must be divisible by 3"
+                assert indices.shape[0] % 3 == 0, "Flat indices array must be divisible by 3. Actual count: " + str(indices.shape[0])
                 indices_reshaped = indices.reshape((indices.shape[0] // 3, 3))
 
             idx_count = indices_reshaped.shape[0]
@@ -858,7 +859,7 @@ def CreateSurgSimRenderer(renderer):
                 self.remove_shape_instance(name)
 
             # Register shape with GPU data and textures
-            shape_id = self._register_shape_gpu_direct_with_colors(geo_hash, shape_id, gfx_vertices, gfx_indices_wp, textures)
+            shape_id = self._register_shape_gpu_direct_with_colors(geo_hash, shape_id, gfx_vertices, gfx_indices_wp, textures, basic_color)
 
             if textures is not None:
                 self._update_shape_texture(shape_id, textures)
@@ -871,8 +872,8 @@ def CreateSurgSimRenderer(renderer):
                     pos=pos,
                     rot=rot,
                     scale=scale,
-                    color1=colors,
-                    color2=colors,
+                    color1=basic_color,
+                    color2=basic_color,
                     visible=visible,
                 )
 
@@ -893,6 +894,7 @@ def CreateSurgSimRenderer(renderer):
             pos=(0.0, 0.0, 0.0),
             rot=(0.0, 0.0, 0.0, 1.0),
             scale=(1.0, 1.0, 1.0),
+            basic_color=(1.0, 1.0, 1.0),
             update_topology=False,
             parent_body: str | None = None,
             is_template: bool = False,
@@ -915,7 +917,6 @@ def CreateSurgSimRenderer(renderer):
                 name=name,
                 points=points,
                 indices=indices_range,
-                colors=None,
                 texture_coords=texture_coords,
                 vertex_colors=colors,
                 diffuse_maps=diffuse_maps,
@@ -924,6 +925,7 @@ def CreateSurgSimRenderer(renderer):
                 pos=pos,
                 rot=rot,
                 scale=scale,
+                basic_color=basic_color,
                 update_topology=update_topology,
                 parent_body=parent_body,
                 is_template=is_template,
@@ -932,7 +934,7 @@ def CreateSurgSimRenderer(renderer):
             )
 
 
-        def _register_shape_gpu_direct_with_colors(self, geo_hash, shape_id, gfx_vertices: wp.array, gfx_indices: wp.array, textures: list[list[int]] = None):
+        def _register_shape_gpu_direct_with_colors(self, geo_hash, shape_id, gfx_vertices: wp.array, gfx_indices: wp.array, textures: list[list[int]] = None, color = None):
             """Register shape using GPU arrays directly with vertex color and texture support"""
             gl = SurgSimRendererOpenGL.gl
             self._switch_context()
@@ -943,9 +945,13 @@ def CreateSurgSimRenderer(renderer):
             else:
                 new_shape = False
 
-            color1 = self._get_default_color(len(self._shape_geo_hash))
-            color2 = np.clip(np.array(color1) + 0.25, 0.0, 1.0)
-            
+            if color is None:
+                color1 = self._get_default_color(len(self._shape_geo_hash))
+                color2 = np.clip(np.array(color1) + 0.25, 0.0, 1.0)
+            else:
+                color1 = color
+                color2 = color
+
             # Store shape data with textures info (list)
             shape = (None, None, color1, color2, geo_hash, textures)
             if new_shape:
@@ -1396,12 +1402,14 @@ def CreateSurgSimRenderer(renderer):
                 
                 # Bind textures if available, otherwise use a default white texture
                 slot = int(0)
+                gl.glUseProgram(self._shape_shader.id)
+                gl.glUniform1i(gl.glGetUniformLocation(self._shape_shader.id, str_buffer("numTextures")), 0)
+
                 if textures:
                     diffuse_maps = textures[0]
                     normal_maps = textures[1]
                     specular_maps = textures[2]
 
-                    gl.glUseProgram(self._shape_shader.id)
                     if diffuse_maps and len(diffuse_maps) > 0:
                         for i, tex_id in enumerate(diffuse_maps):
                             self.bind_texture(tex_id, slot)
@@ -1421,14 +1429,9 @@ def CreateSurgSimRenderer(renderer):
                             self.bind_texture(tex_id, slot)
                             gl.glUniform1i(gl.glGetUniformLocation(self._shape_shader.id, str_buffer(f"specularMaps[{i}]")), slot)
                             slot += 1
-                else:
-                    if not hasattr(self, '_default_white_texture'):
-                        from texture_loader import create_solid_texture
-                        self._default_white_texture = create_solid_texture(self, color=(1.0, 1.0, 1.0), size=1)
-                    self.bind_texture(self._default_white_texture, 0)
-                    gl.glUniform1i(gl.glGetUniformLocation(self._shape_shader.id, str_buffer("numTextures")), 0)
-                    gl.glUniform1i(gl.glGetUniformLocation(self._shape_shader.id, str_buffer("diffuseMaps[0]")), 0)
 
+                start_color = self._shapes[shape][2]
+                gl.glUniform3f(gl.glGetUniformLocation(self._shape_shader.id, str_buffer("startColor")), start_color[0], start_color[1], start_color[2])
 
                 gl.glDrawElementsInstancedBaseInstance(
                     gl.GL_TRIANGLES, tri_count, gl.GL_UNSIGNED_INT, None, num_instances, start_instance_idx
@@ -1438,8 +1441,6 @@ def CreateSurgSimRenderer(renderer):
                 if slot > 0:
                     for i in range(0, slot):
                         self.unbind_texture(i)
-                else:
-                    self.unbind_texture(0)
 
                 start_instance_idx += num_instances
 

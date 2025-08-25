@@ -175,6 +175,111 @@ def build_vertex_edge_table(
     if idx_b < max_edges:
         vertex_to_edges[b, idx_b] = eid
 
+@wp.kernel
+def fill_float32_3d(arr: wp.array(dtype=wp.float32, ndim=3), value: float):
+    i, j, k = wp.tid()
+    if i < arr.shape[0] and j < arr.shape[1] and k < arr.shape[2]:
+        arr[i, j, k] = value
+
+@wp.kernel
+def reverse_triangle_winding(
+    indices: wp.array(dtype=wp.int32),
+    triangle_count: int
+):
+    tid = wp.tid()
+    if tid >= triangle_count:
+        return
+    
+    base_idx = tid * 3
+    temp = indices[base_idx + 1]
+    indices[base_idx + 1] = indices[base_idx + 2]
+    indices[base_idx + 2] = temp
+
+@wp.kernel
+def compute_aabb_from_particles(
+    positions: wp.array(dtype=wp.vec3f),
+    active: wp.array(dtype=wp.int32),
+    num_particles: int,
+    aabb_min: wp.array(dtype=wp.float32),  # [3] - separate x,y,z components required for atomic_min/max
+    aabb_max: wp.array(dtype=wp.float32)   # [3] - ^ as above
+):
+    tid = wp.tid()
+    if tid >= num_particles:
+        return
+    
+    if active[tid] == 0:
+        return
+    
+    pos = positions[tid]
+    
+    # Atomic min/max operations on individual components
+    wp.atomic_min(aabb_min, 0, pos[0])
+    wp.atomic_min(aabb_min, 1, pos[1])
+    wp.atomic_min(aabb_min, 2, pos[2])
+    
+    wp.atomic_max(aabb_max, 0, pos[0])
+    wp.atomic_max(aabb_max, 1, pos[1])
+    wp.atomic_max(aabb_max, 2, pos[2])
+
+@wp.kernel
+def compute_sdf_field(
+    field: wp.array(dtype=wp.float32, ndim=3),
+    field_dims: wp.vec3i,
+    field_origin: wp.vec3f,
+    field_spacing: wp.float32,
+    particle_positions: wp.array(dtype=wp.vec3f),
+    particle_active: wp.array(dtype=wp.int32),
+    num_particles: int,
+    particle_radius: wp.float32
+):
+    i, j, k = wp.tid()
+    
+    if i >= field_dims[0] or j >= field_dims[1] or k >= field_dims[2]:
+        return
+    
+    # Convert grid coordinates to world position
+    world_pos = field_origin + wp.vec3f(
+        wp.float32(i) * field_spacing,
+        wp.float32(j) * field_spacing,
+        wp.float32(k) * field_spacing
+    )
+    
+    # Find minimum distance to any active particle
+    min_distance = float(1e6)
+    
+    for p in range(num_particles):
+        if particle_active[p] == 0:
+            continue
+            
+        particle_pos = particle_positions[p]
+        dist = wp.length(world_pos - particle_pos)
+        
+        # SDF of sphere: distance to surface
+        sdf_dist = dist - particle_radius
+        
+        if sdf_dist < min_distance:
+            min_distance = sdf_dist
+    
+    # Store SDF
+    field[i, j, k] = -min_distance
+
+@wp.kernel
+def transform_mesh_vertices(
+    vertices: wp.array(dtype=wp.vec3f),
+    origin: wp.vec3f,
+    spacing: wp.float32,
+    transformed_vertices: wp.array(dtype=wp.vec3f)
+):
+    tid = wp.tid()
+    if tid >= len(vertices):
+        return
+    
+    # Transform from grid space to world space
+    grid_pos = vertices[tid]
+    world_pos = origin + grid_pos * spacing
+    transformed_vertices[tid] = world_pos
+
+
 def check_centreline_leaks(states, num_points, device=None):
     """
     Launch the update_centreline_leaks kernel and return results as Python values.
@@ -293,12 +398,31 @@ class WarpSim:
 
         self.centreline_cut_flags = wp.zeros(self.centreline_points.shape[0], dtype=wp.int32, device=wp.get_device())
 
-        self.max_bleed_particles = 512
+        # Bleeding
+        self.max_bleed_particles = 4096 # Max number of particles used for bleeding
         self.bleed_positions = wp.zeros(self.max_bleed_particles, dtype=wp.vec3f, device=wp.get_device())
         self.bleed_velocities = wp.zeros(self.max_bleed_particles, dtype=wp.vec3f, device=wp.get_device())
         self.bleed_lifetimes = wp.zeros(self.max_bleed_particles, dtype=wp.float32, device=wp.get_device())
         self.bleed_active = wp.zeros(self.max_bleed_particles, dtype=wp.int32, device=wp.get_device())
         self.bleed_next_id = wp.zeros(1, dtype=wp.int32, device=wp.get_device())
+
+        # Bleed marching cubes
+        self.bleeding_field_resolution = 64  # Max grid resolution per axis
+        self.bleeding_field_margin = 0.05    # Margin around AABB
+        self.bleeding_particle_sdf_radius = 0.01  # Particle radius for SDF
+        
+        self.bleeding_field_aabb_min = wp.zeros(3, dtype=wp.float32, device=wp.get_device())
+        self.bleeding_field_aabb_max = wp.zeros(3, dtype=wp.float32, device=wp.get_device())
+        self.bleeding_scalar_field = None
+        self.bleeding_field_dims = wp.vec3i(0, 0, 0)
+        self.bleeding_field_origin = wp.vec3f(0.0, 0.0, 0.0)
+        self.bleeding_field_spacing = 0.0
+
+        self.bleeding_marching_cubes = None
+        self.bleeding_mesh_vertices = None
+        self.bleeding_mesh_indices = None
+        self.bleeding_mesh_triangle_count = 0
+        self.bleeding_isosurface_threshold = 0.0
 
         # Initialize simulation components
         self._setup_simulation()
@@ -767,46 +891,13 @@ class WarpSim:
                             self.bleed_active,
                             self.bleed_next_id,
                             self.max_bleed_particles,
+                            self.sim_time,
                             self.frame_dt
                         ],
                         device=wp.get_device()
                     )
 
-                    # Update all bleed particles
-                    wp.launch(
-                        update_bleed_particles,
-                        dim=self.max_bleed_particles,
-                        inputs=[
-                            self.bleed_positions,
-                            self.bleed_velocities,
-                            self.bleed_lifetimes,
-                            self.bleed_active,
-                            self.max_bleed_particles,
-                            self.frame_dt
-                        ],
-                        device=wp.get_device()
-                    )
-
-                    bleed_pos = self.bleed_positions.numpy()
-                    bleed_active = self.bleed_active.numpy()
-                    for i in range(self.max_bleed_particles):
-                        if bleed_active[i]:
-                            self.renderer.render_sphere(
-                                name=f"bleed_{i}",
-                                pos=bleed_pos[i],
-                                rot=[0.0, 0.0, 0.0, 1.0],
-                                color=[0.8, 0.0, 0.0],
-                                radius=0.008
-                            )
-                        else:
-                            self.renderer.render_sphere(
-                                name=f"bleed_{i}",
-                                pos=[0.0, 0.0, 0.0],
-                                rot=[0.0, 0.0, 0.0, 1.0],
-                                color=[0.8, 0.0, 0.0],
-                                radius=0.008
-                            )
-                                        
+               
                     # Extract surface
                     bucket_counters = getattr(self, f'{mesh_name}_bucket_counters')
                     bucket_storage = getattr(self, f'{mesh_name}_bucket_storage')
@@ -845,7 +936,93 @@ class WarpSim:
                             update_topology=True
                         )
 
+                # Update all bleed particles
+                wp.launch(
+                    update_bleed_particles,
+                    dim=self.max_bleed_particles,
+                    inputs=[
+                        self.bleed_positions,
+                        self.bleed_velocities,
+                        self.bleed_lifetimes,
+                        self.bleed_active,
+                        self.max_bleed_particles,
+                        self.frame_dt
+                    ],
+                    device=wp.get_device()
+                )
+
+                # Generate bleeding mesh using marching cubes
+                mesh_data = self.generate_bleeding_mesh()
+                if mesh_data is not None and mesh_data['triangle_count'] > 0:
+                    # Transform vertices from grid space to world space
+                    vertex_count = mesh_data['vertices'].shape[0]
+                    transformed_vertices = wp.zeros(vertex_count, dtype=wp.vec3f, device=wp.get_device())
                     
+                    wp.launch(
+                        transform_mesh_vertices,
+                        dim=vertex_count,
+                        inputs=[
+                            mesh_data['vertices'],
+                            mesh_data['origin'],
+                            mesh_data['spacing'],
+                            transformed_vertices
+                        ],
+                        device=wp.get_device()
+                    )
+                    
+                    # Render the bleeding mesh with a blood-like color
+                    self.renderer.render_mesh_warp(
+                        name="bleeding_mesh",
+                        points=transformed_vertices,
+                        indices=mesh_data['indices'],
+                        pos=(0.0, 0.0, 0.0),
+                        rot=(0.0, 0.0, 0.0, 1.0),
+                        scale=(1.0, 1.0, 1.0),
+                        basic_color=(0.4, 0.0, 0.05),
+                        update_topology=True,
+                        smooth_shading=True,
+                        visible=True
+                    )
+                else:
+                    # Render empty mesh when no bleeding
+                    empty_vertices = wp.zeros(1, dtype=wp.vec3f, device=wp.get_device())
+                    empty_indices = wp.zeros(3, dtype=wp.int32, device=wp.get_device())
+                    
+                    self.renderer.render_mesh_warp(
+                        name="bleeding_mesh",
+                        points=empty_vertices,
+                        indices=empty_indices,
+                        pos=(0.0, 0.0, 0.0),
+                        rot=(0.0, 0.0, 0.0, 1.0),
+                        scale=(1.0, 1.0, 1.0),
+                        basic_color=(0.4, 0.0, 0.05),
+                        update_topology=True,
+                        smooth_shading=True,
+                        visible=False
+                    )
+                
+                # Render individual bleed particles (debug)
+                '''
+                bleed_pos = self.bleed_positions.numpy()
+                bleed_active = self.bleed_active.numpy()
+                for i in range(self.max_bleed_particles):
+                    if bleed_active[i]:
+                        self.renderer.render_sphere(
+                            name=f"bleed_{i}",
+                            pos=bleed_pos[i],
+                            rot=[0.0, 0.0, 0.0, 1.0],
+                            color=[0.8, 0.0, 0.0],
+                            radius=0.008
+                        )
+                    else:
+                        self.renderer.render_sphere(
+                            name=f"bleed_{i}",
+                            pos=[0.0, 0.0, 0.0],
+                            rot=[0.0, 0.0, 0.0, 1.0],
+                            color=[0.8, 0.0, 0.0],
+                            radius=0.008
+                        )
+                '''   
 
                 wp.copy(self.integrator.dev_pos_prev_buffer, self.integrator.dev_pos_buffer)
                 self.renderer.end_frame()
@@ -853,6 +1030,196 @@ class WarpSim:
                 self.renderer.begin_frame(self.sim_time)
                 self.renderer.render(self.state_0)
                 self.renderer.end_frame()
+
+    def compute_bleeding_field(self):
+        """Compute scalar field from bleeding particles for marching cubes."""
+        # Count active particles
+        active_count = int(np.sum(self.bleed_active.numpy()))
+        print(f"Active bleeding particles: {active_count}")
+        if active_count == 0:
+            return None
+        
+        # Reset AABB with large/small values
+        wp.copy(self.bleeding_field_aabb_min, wp.array([1e6, 1e6, 1e6], dtype=wp.float32, device=wp.get_device()))
+        wp.copy(self.bleeding_field_aabb_max, wp.array([-1e6, -1e6, -1e6], dtype=wp.float32, device=wp.get_device()))
+        
+        # Compute AABB from active particles
+        wp.launch(
+            compute_aabb_from_particles,
+            dim=self.max_bleed_particles,
+            inputs=[
+                self.bleed_positions,
+                self.bleed_active,
+                self.max_bleed_particles,
+                self.bleeding_field_aabb_min,
+                self.bleeding_field_aabb_max
+            ],
+            device=wp.get_device()
+        )
+        
+        # AABB values
+        aabb_min_array = self.bleeding_field_aabb_min.numpy()
+        aabb_max_array = self.bleeding_field_aabb_max.numpy()
+        
+        print(f"AABB: min={aabb_min_array}, max={aabb_max_array}")
+        
+        aabb_min = wp.vec3f(aabb_min_array[0], aabb_min_array[1], aabb_min_array[2])
+        aabb_max = wp.vec3f(aabb_max_array[0], aabb_max_array[1], aabb_max_array[2])
+        
+        # Add margin
+        margin_vec = wp.vec3f(self.bleeding_field_margin, self.bleeding_field_margin, self.bleeding_field_margin)
+        field_min = aabb_min - margin_vec
+        field_max = aabb_max + margin_vec
+        
+        # Compute field dimensions and spacing
+        field_size = field_max - field_min
+        max_extent = max(field_size[0], field_size[1], field_size[2])
+        
+        print(f"Field size: {field_size}, max_extent: {max_extent}")
+        
+        if max_extent <= 0:
+            print("Max extent <= 0, returning None")
+            return None
+            
+        self.bleeding_field_spacing = max_extent / float(self.bleeding_field_resolution)
+        
+        # Calculate actual grid dimensions
+        self.bleeding_field_dims = wp.vec3i(
+            int(math.ceil(field_size[0] / self.bleeding_field_spacing)) + 1,
+            int(math.ceil(field_size[1] / self.bleeding_field_spacing)) + 1,
+            int(math.ceil(field_size[2] / self.bleeding_field_spacing)) + 1
+        )
+        
+        print(f"Field dims: {self.bleeding_field_dims}, spacing: {self.bleeding_field_spacing}")
+        
+        self.bleeding_field_origin = field_min
+        
+        # Allocate field if needed
+        field_shape = (self.bleeding_field_dims[0], self.bleeding_field_dims[1], self.bleeding_field_dims[2])
+        if self.bleeding_scalar_field is None or self.bleeding_scalar_field.shape != field_shape:
+            self.bleeding_scalar_field = wp.zeros(field_shape, dtype=wp.float32, device=wp.get_device())
+            print(f"Allocated new field with shape: {field_shape}")
+        else:
+            # Clear existing field
+            wp.launch(
+                fill_float32_3d,
+                dim=self.bleeding_scalar_field.shape,
+                inputs=[self.bleeding_scalar_field, 0.0],
+                device=wp.get_device()
+            )
+            print("Cleared existing field")
+        
+        # Compute SDF field
+        wp.launch(
+            compute_sdf_field,
+            dim=self.bleeding_field_dims,
+            inputs=[
+                self.bleeding_scalar_field,
+                self.bleeding_field_dims,
+                self.bleeding_field_origin,
+                self.bleeding_field_spacing,
+                self.bleed_positions,
+                self.bleed_active,
+                self.max_bleed_particles,
+                self.bleeding_particle_sdf_radius
+            ],
+            device=wp.get_device()
+        )
+        
+        print("SDF field computed")
+        
+        return {
+            'field': self.bleeding_scalar_field,
+            'dims': self.bleeding_field_dims,
+            'origin': self.bleeding_field_origin,
+            'spacing': self.bleeding_field_spacing
+        }
+
+    def generate_bleeding_mesh(self):
+        """Generate mesh from bleeding particles using marching cubes."""
+        field_data = self.compute_bleeding_field()
+        if field_data is None:
+            self.bleeding_mesh_triangle_count = 0
+            print("No field data")
+            return None
+        
+        field = field_data['field']
+        dims = field_data['dims']
+        
+        print(f"Generating mesh with dims: {dims}")
+        
+        # Initialize/resize
+        if (self.bleeding_marching_cubes is None or 
+            self.bleeding_marching_cubes.nx != dims[0] - 1 or
+            self.bleeding_marching_cubes.ny != dims[1] - 1 or
+            self.bleeding_marching_cubes.nz != dims[2] - 1):
+            
+            # Estimate maximum vertices and triangles
+            total_cubes = (dims[0] - 1) * (dims[1] - 1) * (dims[2] - 1)
+            max_verts = min(total_cubes * 12, 100000)  # Up to 12 vertices per cube, cap at 100k
+            max_tris = min(total_cubes * 5, 200000)   # Up to 5 triangles per cube, cap at 200k
+            
+            print(f"Creating marching cubes: cubes={total_cubes}, max_verts={max_verts}, max_tris={max_tris}")
+            
+            if self.bleeding_marching_cubes is None:
+                self.bleeding_marching_cubes = wp.MarchingCubes(
+                    nx=dims[0],
+                    ny=dims[1], 
+                    nz=dims[2],
+                    max_verts=max_verts,
+                    max_tris=max_tris,
+                    device=wp.get_device()
+                )
+                print("Created new marching cubes object")
+            else:
+                self.bleeding_marching_cubes.resize(
+                    nx=dims[0],
+                    ny=dims[1],
+                    nz=dims[2],
+                    max_verts=max_verts,
+                    max_tris=max_tris
+                )
+                print("Resized existing marching cubes object")
+        
+        print(f"Running marching cubes with threshold: {self.bleeding_isosurface_threshold}")
+
+        # Extract isosurface
+        self.bleeding_marching_cubes.surface(field, self.bleeding_isosurface_threshold)
+        
+        # Get the generated mesh
+        self.bleeding_mesh_vertices = self.bleeding_marching_cubes.verts
+        self.bleeding_mesh_indices = self.bleeding_marching_cubes.indices
+        
+        # Count actual triangles generated
+        indices_array = self.bleeding_mesh_indices.numpy()
+        self.bleeding_mesh_triangle_count = len(indices_array) // 3
+        
+        print(f"Marching cubes result: {self.bleeding_mesh_triangle_count} triangles, {len(self.bleeding_mesh_vertices.numpy())} vertices")
+        
+        if self.bleeding_mesh_triangle_count > 0:
+            '''
+            wp.launch(
+                reverse_triangle_winding,
+                dim=self.bleeding_mesh_triangle_count,
+                inputs=[
+                    self.bleeding_mesh_indices,
+                    self.bleeding_mesh_triangle_count
+                ],
+                device=wp.get_device()
+            )
+            '''
+
+            return {
+                'vertices': self.bleeding_mesh_vertices,
+                'indices': self.bleeding_mesh_indices,
+                'triangle_count': self.bleeding_mesh_triangle_count,
+                'origin': field_data['origin'],
+                'spacing': field_data['spacing']
+            }
+        else:
+            self.bleeding_mesh_triangle_count = 0
+            return None
+
 #endregion
     def update_haptic_position(self, position):
         """Update the haptic device position in the simulation."""
