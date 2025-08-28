@@ -5,6 +5,7 @@ from stretching import stretching_breaking_process
 from surface_reconstruction import extract_surface_triangles_bucketed
 import warp as wp
 import newton
+from pxr import Usd, UsdGeom
 
 from newton.utils.render import SimRendererOpenGL
 from newton.solvers import XPBDSolver
@@ -350,7 +351,7 @@ class WarpSim:
         self.haptic_pos_right = None  # Haptic device position in simulation space
 
         self.radius_collision = 0.1
-        self.radius_heating = 0.1
+        self.radius_heating = 0.2
         self.radius_clipping = 0.1
         self.radius_cutting = 0.075
         self.radius_grasping = 0.075
@@ -407,9 +408,9 @@ class WarpSim:
         self.bleed_next_id = wp.zeros(1, dtype=wp.int32, device=wp.get_device())
 
         # Bleed marching cubes
-        self.bleeding_field_resolution = 64  # Max grid resolution per axis
-        self.bleeding_field_margin = 0.05    # Margin around AABB
-        self.bleeding_particle_sdf_radius = 0.01  # Particle radius for SDF
+        self.bleeding_field_resolution = 96  # Max grid resolution per axis
+        self.bleeding_field_margin = 0.01    # Margin around AABB
+        self.bleeding_particle_sdf_radius = 0.007  # Particle radius for SDF
         
         self.bleeding_field_aabb_min = wp.zeros(3, dtype=wp.float32, device=wp.get_device())
         self.bleeding_field_aabb_max = wp.zeros(3, dtype=wp.float32, device=wp.get_device())
@@ -504,6 +505,148 @@ class WarpSim:
         )
 
 #endregion
+
+    def _load_instrument_from_usd(self, builder, usd_path):
+        """Load surgical instrument mesh from USD file and add to simulation"""
+        # Open USD stage
+        stage = Usd.Stage.Open(usd_path)
+        if not stage:
+            print(f"Failed to load USD file: {usd_path}")
+            return None
+        
+        # Debug list all primitives
+        mesh_paths = self._list_usd_primitives(usd_path)
+        
+        if not mesh_paths:
+            print("No meshes found in USD file")
+            return None
+
+        # Find mesh prim
+        mesh_prim_path = "/root/Cube/Cube_001"
+        mesh_prim = stage.GetPrimAtPath(mesh_prim_path)
+        
+        if not mesh_prim.IsValid():
+            print(f"No valid mesh found at path: {mesh_prim_path}")
+            return None
+        
+        # Get mesh geometry
+        usd_geom = UsdGeom.Mesh(mesh_prim)
+        mesh_points = np.array(usd_geom.GetPointsAttr().Get())
+        mesh_indices = np.array(usd_geom.GetFaceVertexIndicesAttr().Get())
+        
+        # Convert to Warp format
+        vertices = wp.array(mesh_points.astype(np.float32), dtype=wp.vec3f, device=wp.get_device())
+        indices = wp.array(mesh_indices.astype(np.int32), dtype=wp.int32, device=wp.get_device())
+
+        # Add rigid body for the instrument
+        instrument_body_id = builder.add_body(
+            xform=wp.transform([0.0, 0.0, 0.0], wp.quat_identity()),
+            mass=0.1,
+            armature=0.0
+        )
+
+        mesh = wp.Mesh(vertices, indices)
+                
+        # Add mesh shape to the body
+        builder.add_shape_mesh(
+            body=instrument_body_id,
+            xform=wp.transform([0.0, 0.0, 0.0], wp.quat_identity()),
+            mesh=mesh,
+            scale=wp.vec3(1.0, 1.0, 1.0),
+            cfg=newton.ModelBuilder.ShapeConfig(
+                density=1000
+            )
+        )
+        
+        print(f"Successfully loaded instrument with {len(vertices)} vertices and {len(mesh_indices)//3} triangles")
+        return instrument_body_id
+    
+
+    def _list_usd_primitives(self, usd_path, max_depth=10):
+        """List all primitives in a USD file"""
+        try:
+            stage = Usd.Stage.Open(usd_path)
+            if not stage:
+                print(f"Failed to load USD file: {usd_path}")
+                return []
+            
+            print(f"\n=== USD Primitives in {usd_path} ===")
+            
+            def print_prim_info(prim, depth=0):
+                if depth > max_depth:
+                    return
+                    
+                indent = "  " * depth
+                type_name = prim.GetTypeName()
+                path = prim.GetPath()
+                
+                # Check if it's a mesh
+                is_mesh = prim.IsA(UsdGeom.Mesh)
+                mesh_info = ""
+                
+                if is_mesh:
+                    mesh = UsdGeom.Mesh(prim)
+                    try:
+                        points_attr = mesh.GetPointsAttr()
+                        faces_attr = mesh.GetFaceVertexIndicesAttr()
+                        
+                        if points_attr and faces_attr:
+                            points = points_attr.Get()
+                            faces = faces_attr.Get()
+                            if points and faces:
+                                mesh_info = f" [MESH: {len(points)} vertices, {len(faces)//3} triangles]"
+                    except:
+                        mesh_info = " [MESH: error reading geometry]"
+                
+
+                geom_info = ""
+                if prim.IsA(UsdGeom.Sphere):
+                    geom_info = " [SPHERE]"
+                elif prim.IsA(UsdGeom.Cube):
+                    geom_info = " [CUBE]"
+                elif prim.IsA(UsdGeom.Cylinder):
+                    geom_info = " [CYLINDER]"
+                elif prim.IsA(UsdGeom.Cone):
+                    geom_info = " [CONE]"
+                elif prim.IsA(UsdGeom.Xform):
+                    geom_info = " [TRANSFORM]"
+                
+                print(f"{indent}{path} ({type_name}){mesh_info}{geom_info}")
+                
+                for child in prim.GetChildren():
+                    print_prim_info(child, depth + 1)
+            
+            # Start from root
+            root = stage.GetPseudoRoot()
+            for child in root.GetChildren():
+                print_prim_info(child)
+                
+            print("=== End USD Primitives ===\n")
+            
+            # Return paths found
+            mesh_paths = []
+            def collect_meshes(prim):
+                if prim.IsA(UsdGeom.Mesh):
+                    mesh_paths.append(str(prim.GetPath()))
+                for child in prim.GetChildren():
+                    collect_meshes(child)
+            
+            for child in root.GetChildren():
+                collect_meshes(child)
+                
+            if mesh_paths:
+                print("Found mesh primitives at paths:")
+                for path in mesh_paths:
+                    print(f"  - {path}")
+            else:
+                print("No mesh primitives found in USD file")
+                
+            return mesh_paths
+            
+        except Exception as e:
+            print(f"Error reading USD file {usd_path}: {e}")
+            return []
+
     def _on_key_press(self, symbol, modifiers):
         from pyglet.window import key
         if symbol == key.C:
@@ -604,6 +747,9 @@ class WarpSim:
                 density=10
             )
         )
+
+        # Import instruments
+        # self.instrument_body_id = self._load_instrument_from_usd(builder, "meshes/test.usdc")
         
         self.model = builder.finalize()
         self.model.tetrahedra_wp = tetrahedra_wp
@@ -978,7 +1124,7 @@ class WarpSim:
                         pos=(0.0, 0.0, 0.0),
                         rot=(0.0, 0.0, 0.0, 1.0),
                         scale=(1.0, 1.0, 1.0),
-                        basic_color=(0.4, 0.0, 0.05),
+                        basic_color=(0.35, 0.0, 0.05),
                         update_topology=True,
                         smooth_shading=True,
                         visible=True
@@ -995,7 +1141,7 @@ class WarpSim:
                         pos=(0.0, 0.0, 0.0),
                         rot=(0.0, 0.0, 0.0, 1.0),
                         scale=(1.0, 1.0, 1.0),
-                        basic_color=(0.4, 0.0, 0.05),
+                        basic_color=(0.35, 0.0, 0.05),
                         update_topology=True,
                         smooth_shading=True,
                         visible=False

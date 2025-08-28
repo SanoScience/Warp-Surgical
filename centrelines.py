@@ -220,16 +220,36 @@ def emit_bleed_particles(
     if tid >= centreline_positions.shape[0]:
         return
 
-    if cut_flags[tid] == 1:
+    # Check if this node is on the border of a cut region
+    is_border = bool(False)
+    current_cut = cut_flags[tid]
+    
+    # Check with previous node
+    if tid > 0:
+        prev_cut = cut_flags[tid - 1]
+        if current_cut != prev_cut:
+            is_border = True
+    
+    # Check with next node  
+    if tid < centreline_positions.shape[0] - 1:
+        next_cut = cut_flags[tid + 1]
+        if current_cut != next_cut:
+            is_border = True
+    
+    # Only emit if this node is on a border (cut state transition)
+    if is_border:
         # Emit a particle from node if cut
-        idx = wp.atomic_add(bleed_next_id, 0, 1) % max_bleed_particles
-        bleed_positions[idx] = centreline_positions[tid]
+        should_emit = int(total_time * 100.0) % 5 == 0 # Emit only on some frames to reduce amount of bleeding
 
-        # Randomized velocity
-        tid_modified = int(float(tid) * total_time * 10.0) # Add some time-based randomness
-        bleed_velocities[idx] = wp.vec3f(0.0, 0.2, 0.0) + 0.05 * wp.vec3f(float(tid_modified % 3 - 1), 1.0, float((tid_modified * 7) % 3 - 1))
-        bleed_lifetimes[idx] = 0.4  # seconds
-        bleed_active[idx] = 1
+        if should_emit:
+            idx = wp.atomic_add(bleed_next_id, 0, 1) % max_bleed_particles
+            bleed_positions[idx] = centreline_positions[tid]
+
+            # Randomized velocity
+            tid_modified = int(float(tid) * total_time * 10.0) # Add some time-based randomness
+            bleed_velocities[idx] = wp.vec3f(0.0, 0.2, 0.0) + 0.05 * wp.vec3f(float(tid_modified % 3 - 1), 1.0, float((tid_modified * 7) % 3 - 1))
+            bleed_lifetimes[idx] = 0.4  # seconds
+            bleed_active[idx] = 1
 
 
 @wp.kernel
