@@ -34,18 +34,22 @@ def run_simulation(args):
     if args.usd:
         # Offline rendering mode
         for _ in range(args.num_frames):
-            # Update haptic position
+            # Update haptic position and rotation
             haptic_pos = haptic_controller.get_scaled_position()
+            haptic_rot = haptic_controller.get_rotation()
             sim.update_haptic_position(haptic_pos)
+            sim.update_haptic_rotation(haptic_rot)
             
             sim.step()
             sim.render()
     else:
         # Real-time interactive mode
         while sim.is_running():
-            # Get current haptic device position
+            # Get current haptic device position and rotation
             haptic_pos = haptic_controller.get_scaled_position()
+            haptic_rot = haptic_controller.get_rotation()
             sim.update_haptic_position(haptic_pos)
+            sim.update_haptic_rotation(haptic_rot)
             
             # Advance simulation
             sim.step()
@@ -53,6 +57,7 @@ def run_simulation(args):
     
     # Save results
     sim.save()
+
 
 def main():
     """Main entry point."""
