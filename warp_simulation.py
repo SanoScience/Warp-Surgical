@@ -22,7 +22,30 @@ from simulation_kernels import (
     set_body_position,
 )
 
+def axis_angle_to_quat(axis, angle):
+    axis = np.array(axis, dtype=np.float64)
+    axis = axis / np.linalg.norm(axis)
+    half_angle = angle * 0.5
+    sin_half = np.sin(half_angle)
+    return [
+        axis[0] * sin_half,
+        axis[1] * sin_half,
+        axis[2] * sin_half,
+        np.cos(half_angle)
+    ]
 
+
+def multiply_quaternions(q1, q2):
+    """Multiply two quaternions: q1 * q2. Format: [x, y, z, w]"""
+    x1, y1, z1, w1 = q1
+    x2, y2, z2, w2 = q2
+    
+    return [
+        w1*x2 + x1*w2 + y1*z2 - z1*y2,  # x
+        w1*y2 - x1*z2 + y1*w2 + z1*x2,  # y
+        w1*z2 + x1*y2 - y1*x2 + z1*w2,  # z
+        w1*w2 - x1*x2 - y1*y2 - z1*z2   # w
+    ]
 
 @wp.kernel
 def set_active_tets_near_haptic(
@@ -349,6 +372,7 @@ class WarpSim:
         self.sim_constraint_iterations = 1
 
         self.haptic_pos_right = None  # Haptic device position in simulation space
+        self.haptic_rot_right = [0.0, 0.0, 0.0, 1.0]  # Haptic device rotation as quaternion
 
         self.radius_collision = 0.1
         self.radius_heating = 0.2
@@ -366,6 +390,9 @@ class WarpSim:
 
         print(f"Initializing WarpSim with {self.sim_substeps} substeps at {self.fps} FPS")
         print(f"Frame time: {self.frame_dt:.4f}s, Substep time: {self.substep_dt:.4f}s")
+
+        self.jaw_colliders = []
+        self.jaw_collider_offsets = {}
 
         # Initialize model
         self._build_model()
@@ -506,61 +533,413 @@ class WarpSim:
 
 #endregion
 
-    def _load_instrument_from_usd(self, builder, usd_path):
-        """Load surgical instrument mesh from USD file and add to simulation"""
+    def debug_instrument_transforms(self, instrument_id):
+        instrument = self.instruments[instrument_id]
+        print(f"\n--- Instrument {instrument_id} Transform Debug ---")
+        
+        for i, piece in enumerate(instrument['pieces']):
+            print(f"Piece {i}: {piece['name']}")
+            print(f"  USD Local Transform: {piece['usd_local_transform']}")
+            print(f"  Runtime Local Transform: {piece['runtime_local_transform']}")
+            print(f"  World Transform: {piece['world_transform_matrix']}")
+            print(f"  Sample original vertex: {piece['original_vertices'].numpy()[0]}")
+            print(f"  Sample transformed vertex: {piece['vertices'].numpy()[0]}")
+            print("---")
+
+    def _load_instrument_from_usd(self, usd_path, builder, name="instrument"):
+        """Load surgical instrument mesh from USD file as a hierarchical instrument with separate pieces"""
+        import numpy as np
+        
         # Open USD stage
         stage = Usd.Stage.Open(usd_path)
         if not stage:
             print(f"Failed to load USD file: {usd_path}")
             return None
         
-        # Debug list all primitives
-        mesh_paths = self._list_usd_primitives(usd_path)
+        scale = 0.02
+        mesh_pieces = []
         
-        if not mesh_paths:
-            print("No meshes found in USD file")
-            return None
-
-        # Find mesh prim
-        mesh_prim_path = "/root/Cube/Cube_001"
-        mesh_prim = stage.GetPrimAtPath(mesh_prim_path)
-        
-        if not mesh_prim.IsValid():
-            print(f"No valid mesh found at path: {mesh_prim_path}")
-            return None
-        
-        # Get mesh geometry
-        usd_geom = UsdGeom.Mesh(mesh_prim)
-        mesh_points = np.array(usd_geom.GetPointsAttr().Get())
-        mesh_indices = np.array(usd_geom.GetFaceVertexIndicesAttr().Get())
-        
-        # Convert to Warp format
-        vertices = wp.array(mesh_points.astype(np.float32), dtype=wp.vec3f, device=wp.get_device())
-        indices = wp.array(mesh_indices.astype(np.int32), dtype=wp.int32, device=wp.get_device())
-
-        # Add rigid body for the instrument
-        instrument_body_id = builder.add_body(
-            xform=wp.transform([0.0, 0.0, 0.0], wp.quat_identity()),
-            mass=0.1,
-            armature=0.0
-        )
-
-        mesh = wp.Mesh(vertices, indices)
+        def collect_mesh_hierarchy(prim, parent_transform=None, parent_piece_index=None):
+            """Recursively collect all mesh primitives with their hierarchy and transforms"""
+            # Get local transform
+            if prim.IsA(UsdGeom.Xformable):
+                xformable = UsdGeom.Xformable(prim)
+                local_matrix = xformable.GetLocalTransformation()
+                print(f"  Local transform for {prim.GetPath()}:")
+                print(f"    Raw USD matrix (column-major):\n{local_matrix}")
+            else:
+                local_matrix = [[1,0,0,0], [0,1,0,0], [0,0,1,0], [0,0,0,1]]
+            
+            # Convert to numpy array and ensure it's 4x4
+            local_transform = np.array(local_matrix, dtype=np.float64)
+            if local_transform.shape != (4, 4):
+                local_transform = np.eye(4, dtype=np.float64)
+            
+            # USD matrices are column-major, transpose to row-major
+            local_transform = local_transform.T
+            
+            print(f"    Corrected transform (row-major):\n{local_transform}")
+            print(f"    Translation: [{local_transform[0,3]:.3f}, {local_transform[1,3]:.3f}, {local_transform[2,3]:.3f}]")
+            
+            # Compute the world transform for the current primitive
+            if parent_transform is not None:
+                world_transform = np.dot(parent_transform, local_transform)
+            else:
+                world_transform = local_transform.copy()
+            
+            current_piece_index = parent_piece_index  # Start with parent piece index
+            
+            # If this is a mesh, create a piece for it
+            if prim.IsA(UsdGeom.Mesh):
+                current_piece_index = len(mesh_pieces)
                 
-        # Add mesh shape to the body
-        builder.add_shape_mesh(
-            body=instrument_body_id,
-            xform=wp.transform([0.0, 0.0, 0.0], wp.quat_identity()),
-            mesh=mesh,
-            scale=wp.vec3(1.0, 1.0, 1.0),
-            cfg=newton.ModelBuilder.ShapeConfig(
-                density=1000
-            )
+                # Get mesh geometry
+                usd_geom = UsdGeom.Mesh(prim)
+                points_attr = usd_geom.GetPointsAttr()
+                face_indices_attr = usd_geom.GetFaceVertexIndicesAttr()
+                face_counts_attr = usd_geom.GetFaceVertexCountsAttr()
+                
+                if not (points_attr and face_indices_attr and face_counts_attr):
+                    print(f"  Warning: Mesh {prim.GetPath()} missing required attributes, skipping")
+                    # Continue with children using parent's transform and piece index
+                    for child in prim.GetChildren():
+                        collect_mesh_hierarchy(child, parent_transform, parent_piece_index)
+                    return
+                    
+                mesh_points = np.array(points_attr.Get(), dtype=np.float64)
+                mesh_face_vertex_indices = np.array(face_indices_attr.Get())
+                mesh_face_vertex_counts = np.array(face_counts_attr.Get())
+                
+                if len(mesh_points) == 0 or len(mesh_face_vertex_indices) == 0:
+                    print(f"  Warning: Empty mesh {prim.GetPath()}, skipping")
+                    # Continue with children using parent's transform and piece index
+                    for child in prim.GetChildren():
+                        collect_mesh_hierarchy(child, parent_transform, parent_piece_index)
+                    return
+                
+                print(f"  Processing mesh: {prim.GetPath()}")
+                print(f"  Points: {len(mesh_points)}")
+                print(f"  World transform translation: [{world_transform[0,3]:.3f}, {world_transform[1,3]:.3f}, {world_transform[2,3]:.3f}]")
+                
+                original_vertices = mesh_points * scale
+                initial_transformed_vertices = original_vertices
+                
+                print(f"  Sample original vertex: {original_vertices[0] if len(original_vertices) > 0 else 'N/A'}")
+                
+                # Triangulate faces
+                triangulated_indices = []
+                face_start = 0
+                
+                for face_vertex_count in mesh_face_vertex_counts:
+                    if face_vertex_count < 3:
+                        face_start += face_vertex_count
+                        continue
+                    elif face_vertex_count == 3:
+                        triangulated_indices.extend([
+                            mesh_face_vertex_indices[face_start],
+                            mesh_face_vertex_indices[face_start + 1], 
+                            mesh_face_vertex_indices[face_start + 2]
+                        ])
+                    else:
+                        first_vertex = mesh_face_vertex_indices[face_start]
+                        for j in range(1, face_vertex_count - 1):
+                            triangulated_indices.extend([
+                                first_vertex,
+                                mesh_face_vertex_indices[face_start + j],
+                                mesh_face_vertex_indices[face_start + j + 1]
+                            ])
+                    face_start += face_vertex_count
+                
+                # Convert to Warp format
+                vertices = wp.array(np.array(initial_transformed_vertices, dtype=np.float32), dtype=wp.vec3f, device=wp.get_device())
+                vertices_original = wp.array(np.array(original_vertices, dtype=np.float32), dtype=wp.vec3f, device=wp.get_device())
+                indices = wp.array(np.array(triangulated_indices, dtype=np.int32), dtype=wp.int32, device=wp.get_device())
+                
+                # Store the complete world transform from USD as the "USD local transform"
+                # (original positioning from USD)
+                usd_world_transform_wp = wp.mat44f(
+                    world_transform[0, 0], world_transform[0, 1], world_transform[0, 2], world_transform[0, 3] * scale,
+                    world_transform[1, 0], world_transform[1, 1], world_transform[1, 2], world_transform[1, 3] * scale,
+                    world_transform[2, 0], world_transform[2, 1], world_transform[2, 2], world_transform[2, 3] * scale,
+                    world_transform[3, 0], world_transform[3, 1], world_transform[3, 2], world_transform[3, 3]
+                )
+                
+                runtime_local_transform = wp.mat44f(1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0)
+                
+                piece_data = {
+                    'name': str(prim.GetPath()).split('/')[-1],
+                    'path': str(prim.GetPath()),
+                    'vertices': vertices,
+                    'indices': indices,
+                    'original_vertices': vertices_original,  # Mesh in original local space
+                    'usd_local_transform': usd_world_transform_wp,
+                    'runtime_local_transform': runtime_local_transform,
+                    'world_transform_matrix': wp.mat44f(1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0),
+                    'parent_index': parent_piece_index,  # parent piece index (None for root)
+                    'children_indices': [],
+                    'visible': True,
+                    'vertex_count': len(vertices),
+                    'triangle_count': len(triangulated_indices) // 3
+                }
+
+                # Temporary HACK: hide shaft, there is something wrong with handling its local translation
+                if piece_data['name'] == "shaft_color_001":
+                    piece_data["visible"] = False
+                
+                mesh_pieces.append(piece_data)
+                
+                # Add this piece as a child to its parent (if it has one)
+                if parent_piece_index is not None:
+                    mesh_pieces[parent_piece_index]['children_indices'].append(current_piece_index)
+                
+                print(f"  Created piece '{piece_data['name']}' with parent_index={parent_piece_index}")
+            
+            # Recurse to children, passing this node's world transform as the new parent transform
+            for child in prim.GetChildren():
+                collect_mesh_hierarchy(child, world_transform, current_piece_index)
+        
+        # Start from root and collect all meshes with hierarchy
+        root = stage.GetPseudoRoot()
+        for child in root.GetChildren():
+            collect_mesh_hierarchy(child)
+        
+        if not mesh_pieces:
+            print("No mesh primitives found in USD file")
+            return None
+        
+        print(f"\nFound {len(mesh_pieces)} mesh pieces:")
+        for i, piece in enumerate(mesh_pieces):
+            parent_name = mesh_pieces[piece['parent_index']]['name'] if piece['parent_index'] is not None else "None"
+            children_names = [mesh_pieces[idx]['name'] for idx in piece['children_indices']]
+            print(f"  {i}: '{piece['name']}' (parent: {parent_name}, children: {children_names})")
+        
+        instrument_data = {
+            'name': name,
+            'pieces': mesh_pieces,
+            'root_pieces': [i for i, piece in enumerate(mesh_pieces) if piece['parent_index'] is None],
+            'root_transform_matrix': wp.mat44f(1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0),
+            'visible': True
+        }
+        
+        if not hasattr(self, 'instruments'):
+            self.instruments = []
+        
+        self.instruments.append(instrument_data)
+        
+        # Update world transforms for all pieces (this will apply the root transform on top of USD transforms)
+        self._update_instrument_hierarchy_transforms(len(self.instruments) - 1)
+        
+        total_vertices = sum(piece['vertex_count'] for piece in mesh_pieces)
+        total_triangles = sum(piece['triangle_count'] for piece in mesh_pieces)
+        print(f"Successfully loaded instrument '{name}' with {len(mesh_pieces)} pieces, {total_vertices} total vertices and {total_triangles} total triangles")
+
+        self.debug_instrument_transforms(len(self.instruments) - 1)
+        #self._setup_jaw_colliders(len(self.instruments) - 1, builder)
+
+
+        return len(self.instruments) - 1
+
+    def _matrix_to_quaternion(self, matrix):
+        """Convert 3x3 rotation matrix to quaternion [x, y, z, w]"""
+        trace = np.trace(matrix)
+        
+        if trace > 0:
+            s = np.sqrt(trace + 1.0) * 2  # s = 4 * qw
+            w = 0.25 * s
+            x = (matrix[2, 1] - matrix[1, 2]) / s
+            y = (matrix[0, 2] - matrix[2, 0]) / s
+            z = (matrix[1, 0] - matrix[0, 1]) / s
+        elif matrix[0, 0] > matrix[1, 1] and matrix[0, 0] > matrix[2, 2]:
+            s = np.sqrt(1.0 + matrix[0, 0] - matrix[1, 1] - matrix[2, 2]) * 2  # s = 4 * qx
+            w = (matrix[2, 1] - matrix[1, 2]) / s
+            x = 0.25 * s
+            y = (matrix[0, 1] + matrix[1, 0]) / s
+            z = (matrix[0, 2] + matrix[2, 0]) / s
+        elif matrix[1, 1] > matrix[2, 2]:
+            s = np.sqrt(1.0 + matrix[1, 1] - matrix[0, 0] - matrix[2, 2]) * 2  # s = 4 * qy
+            w = (matrix[0, 2] - matrix[2, 0]) / s
+            x = (matrix[0, 1] + matrix[1, 0]) / s
+            y = 0.25 * s
+            z = (matrix[1, 2] + matrix[2, 1]) / s
+        else:
+            s = np.sqrt(1.0 + matrix[2, 2] - matrix[0, 0] - matrix[1, 1]) * 2  # s = 4 * qz
+            w = (matrix[1, 0] - matrix[0, 1]) / s
+            x = (matrix[0, 2] + matrix[2, 0]) / s
+            y = (matrix[1, 2] + matrix[2, 1]) / s
+            z = 0.25 * s
+        
+        return [x, y, z, w]
+
+    def update_instrument_transform(self, instrument_id, position=None, rotation=None, scale=None):
+        """Update instrument root transform and propagate to hierarchy"""
+        if not hasattr(self, 'instruments') or instrument_id >= len(self.instruments):
+            return
+        
+        instrument = self.instruments[instrument_id]
+        
+        # Build root transform matrix from components
+        if position is None:
+            position = [0.0, 0.0, 0.0]
+        if rotation is None:
+            rotation = [0.0, 0.0, 0.0, 1.0]  # identity quaternion
+        if scale is None:
+            scale = [1.0, 1.0, 1.0]
+        
+        # Create transform and scale matrices
+        pos = wp.vec3(position[0], position[1], position[2])
+        rot = wp.quat(rotation[0], rotation[1], rotation[2], rotation[3])
+        transform = wp.transform(pos, rot)
+        transform_matrix = wp.transform_to_matrix(transform)
+        
+        # Apply scale
+        instrument['root_transform_matrix'] = wp.mat44f(
+            transform_matrix[0, 0] * scale[0], transform_matrix[0, 1], transform_matrix[0, 2], transform_matrix[0, 3],
+            transform_matrix[1, 0], transform_matrix[1, 1] * scale[1], transform_matrix[1, 2], transform_matrix[1, 3],
+            transform_matrix[2, 0], transform_matrix[2, 1], transform_matrix[2, 2] * scale[2], transform_matrix[2, 3],
+            transform_matrix[3, 0], transform_matrix[3, 1], transform_matrix[3, 2], transform_matrix[3, 3]
         )
         
-        print(f"Successfully loaded instrument with {len(vertices)} vertices and {len(mesh_indices)//3} triangles")
-        return instrument_body_id
-    
+        # Update world transforms for entire hierarchy
+        self._update_instrument_hierarchy_transforms(instrument_id)
+
+    def update_piece_transform(self, instrument_id, piece_name, transform_matrix):
+        """Update a specific piece's runtime local transform matrix"""
+        if not hasattr(self, 'instruments') or instrument_id >= len(self.instruments):
+            return
+        
+        instrument = self.instruments[instrument_id]
+        
+        # Find piece by name
+        piece_index = None
+        for i, piece in enumerate(instrument['pieces']):
+            if piece['name'] == piece_name:
+                piece_index = i
+                break
+        
+        if piece_index is None:
+            print(f"Piece '{piece_name}' not found in instrument")
+            return
+        
+        piece = instrument['pieces'][piece_index]
+        
+        # Update runtime local transform matrix
+        piece['runtime_local_transform'] = transform_matrix
+        
+        # Update world transforms for this piece and its children
+        self._update_piece_world_transform(instrument_id, piece_index)
+
+    def _update_instrument_hierarchy_transforms(self, instrument_id):
+        """Update world transforms for entire instrument hierarchy"""
+        if not hasattr(self, 'instruments') or instrument_id >= len(self.instruments):
+            return
+        
+        instrument = self.instruments[instrument_id]
+        
+        # Start with root pieces
+        for root_index in instrument['root_pieces']:
+            self._update_piece_world_transform(instrument_id, root_index)
+
+    def _update_piece_world_transform(self, instrument_id, piece_index):
+        """Recursively update world transform for a piece and its children"""
+        instrument = self.instruments[instrument_id]
+        piece = instrument['pieces'][piece_index]
+        
+        # Get parent world transform matrix
+        parent_world_matrix = instrument['root_transform_matrix']
+        
+        if piece['parent_index'] is not None:
+            parent_piece = instrument['pieces'][piece['parent_index']]
+            parent_world_matrix = parent_piece['world_transform_matrix']
+        
+        # Compute world transform
+        combined_local = piece['runtime_local_transform'] * piece['usd_local_transform']
+        piece['world_transform_matrix'] = parent_world_matrix * combined_local
+        
+        # Apply transform to vertices
+        self._transform_piece_vertices(instrument_id, piece_index)
+        
+        # Recursively update children
+        for child_index in piece['children_indices']:
+            self._update_piece_world_transform(instrument_id, child_index)
+
+    @wp.kernel
+    def apply_matrix_transform_to_vertices(
+        original_vertices: wp.array(dtype=wp.vec3f),
+        transformed_vertices: wp.array(dtype=wp.vec3f),
+        transform_matrix: wp.mat44f,
+        num_vertices: int
+    ):
+        tid = wp.tid()
+        if tid >= num_vertices:
+            return
+        
+        # Get original vertex
+        orig_vert = original_vertices[tid]
+        
+        # Apply transformation using homogeneous coordinates
+        vert_homo = wp.vec4f(orig_vert[0], orig_vert[1], orig_vert[2], 1.0)
+        transformed_homo = transform_matrix * vert_homo
+        
+        # Convert back to 3D
+        transformed_vertices[tid] = wp.vec3f(
+            transformed_homo[0], 
+            transformed_homo[1], 
+            transformed_homo[2]
+        )
+
+    def _transform_piece_vertices(self, instrument_id, piece_index):
+        """Apply current transform to piece vertices"""
+        if not hasattr(self, 'instruments') or instrument_id >= len(self.instruments):
+            return
+        
+        piece = self.instruments[instrument_id]['pieces'][piece_index]
+        
+        wp.launch(
+            self.apply_matrix_transform_to_vertices,
+            dim=piece['vertex_count'],
+            inputs=[
+                piece['original_vertices'],
+                piece['vertices'],
+                piece['world_transform_matrix'],
+                piece['vertex_count']
+            ],
+            device=wp.get_device()
+        )
+
+    def set_instrument_visibility(self, instrument_id, visible):
+        """Set instrument visibility"""
+        if not hasattr(self, 'instruments') or instrument_id >= len(self.instruments):
+            return
+        
+        self.instruments[instrument_id]['visible'] = visible
+
+    def set_piece_visibility(self, instrument_id, piece_name, visible):
+        """Set visibility for a specific piece"""
+        if not hasattr(self, 'instruments') or instrument_id >= len(self.instruments):
+            return
+        
+        instrument = self.instruments[instrument_id]
+        for piece in instrument['pieces']:
+            if piece['name'] == piece_name:
+                piece['visible'] = visible
+                break
+
+    def get_piece_names(self, instrument_id):
+        """Get list of piece names for an instrument"""
+        if not hasattr(self, 'instruments') or instrument_id >= len(self.instruments):
+            return []
+        
+        return [piece['name'] for piece in self.instruments[instrument_id]['pieces']]
+
+
+    def get_instrument_position(self, instrument_id):
+        """Get instrument world position"""
+        if not hasattr(self, 'instruments') or instrument_id >= len(self.instruments):
+            return None
+        
+        pos = self.instruments[instrument_id]['position']
+        return [pos[0], pos[1], pos[2]]
+
 
     def _list_usd_primitives(self, usd_path, max_depth=10):
         """List all primitives in a USD file"""
@@ -646,6 +1025,135 @@ class WarpSim:
         except Exception as e:
             print(f"Error reading USD file {usd_path}: {e}")
             return []
+
+    def _setup_jaw_colliders(self, instrument_id, builder):
+        """Setup sphere colliders for jaw pieces"""
+        if not hasattr(self, 'instruments') or instrument_id >= len(self.instruments):
+            return
+        
+        instrument = self.instruments[instrument_id]
+        
+        # Find jaw pieces and create colliders for them
+        for piece_idx, piece in enumerate(instrument['pieces']):
+            piece_name = piece['name'].lower()
+            
+            if 'jaw' in piece_name or 'grasp' in piece_name:
+                # Create a collision body for this jaw
+                jaw_body_id = builder.add_body(
+                    xform=wp.transform([0.0, 0.0, 0.0], wp.quat_identity()),
+                    mass=0.0,  # Kinematic body
+                    armature=0.0
+                )
+                
+                # Add sphere shape to the body
+                collider_radius = 0.015
+                builder.add_shape_sphere(
+                    body=jaw_body_id,
+                    xform=wp.transform([0.0, 0.0, 0.0], wp.quat_identity()),
+                    radius=collider_radius,
+                    cfg=newton.ModelBuilder.ShapeConfig(
+                        density=10
+                    )
+                )
+                
+                # Store the collider info
+                collider_info = {
+                    'body_id': jaw_body_id,
+                    'piece_index': piece_idx,
+                    'piece_name': piece['name'],
+                    'radius': collider_radius,
+                    'instrument_id': instrument_id
+                }
+                
+                self.jaw_colliders.append(collider_info)
+                
+                # Define hardcoded offsets for jaw tips
+                # These offsets are in the jaw piece's local space
+                if 'left' in piece_name:
+                    self.jaw_collider_offsets[f"{instrument_id}_{piece_idx}"] = wp.vec3f(0.0, 0.0, 0.08)
+                elif 'right' in piece_name:
+                    self.jaw_collider_offsets[f"{instrument_id}_{piece_idx}"] = wp.vec3f(0.0, 0.0, 0.08)
+                else:
+                    self.jaw_collider_offsets[f"{instrument_id}_{piece_idx}"] = wp.vec3f(0.0, 0.0, 0.08)
+                
+                print(f"Created jaw collider for piece '{piece['name']}' with body ID {jaw_body_id}")
+
+    @wp.kernel
+    def update_jaw_collider_transform(
+        body_positions: wp.array(dtype=wp.transform),
+        body_velocities: wp.array(dtype=wp.spatial_vector),
+        body_id: int,
+        world_position: wp.vec3f,
+        world_rotation: wp.quat
+    ):
+        """Update jaw collider transform to follow jaw piece"""
+        if wp.tid() == 0:
+            # Set the body transform
+            new_transform = wp.transform(world_position, world_rotation)
+            body_positions[body_id] = new_transform
+            
+            # Zero out velocity for kinematic body
+            body_velocities[body_id] = wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+
+    def _compute_jaw_collider_world_transform(self, instrument_id, piece_index):
+        """Compute world transform for a jaw collider based on its piece transform"""
+        if not hasattr(self, 'instruments') or instrument_id >= len(self.instruments):
+            return None, None
+        
+        instrument = self.instruments[instrument_id]
+        if piece_index >= len(instrument['pieces']):
+            return None, None
+        
+        piece = instrument['pieces'][piece_index]
+        
+        # Get the offset for this jaw collider
+        offset_key = f"{instrument_id}_{piece_index}"
+        local_offset = self.jaw_collider_offsets.get(offset_key, wp.vec3f(0.0, 0.0, 0.0))
+        
+        # Transform the offset by the piece's world transform matrix
+        offset_homo = wp.vec4f(local_offset[0], local_offset[1], local_offset[2], 1.0)
+        world_offset_homo = piece['world_transform_matrix'] * offset_homo
+        world_position = wp.vec3f(world_offset_homo[0], world_offset_homo[1], world_offset_homo[2])
+        
+        # Extract rotation from the world transform matrix
+        transform_matrix = piece['world_transform_matrix']
+        
+        # Create rotation quaternion from the 3x3 rotation part of the matrix
+        rotation_matrix = np.array([
+            [float(transform_matrix[0, 0]), float(transform_matrix[0, 1]), float(transform_matrix[0, 2])],
+            [float(transform_matrix[1, 0]), float(transform_matrix[1, 1]), float(transform_matrix[1, 2])],
+            [float(transform_matrix[2, 0]), float(transform_matrix[2, 1]), float(transform_matrix[2, 2])]
+        ])
+        
+        quat_components = self._matrix_to_quaternion(rotation_matrix)
+        world_rotation = wp.quat(quat_components[0], quat_components[1], quat_components[2], quat_components[3])
+        
+        return world_position, world_rotation
+
+    def _update_jaw_colliders(self):
+        """Update all jaw collider positions to follow their respective jaw pieces"""
+        for collider_info in self.jaw_colliders:
+            instrument_id = collider_info['instrument_id']
+            piece_index = collider_info['piece_index']
+            body_id = collider_info['body_id']
+            
+            # Compute world transform for this jaw collider
+            world_pos, world_rot = self._compute_jaw_collider_world_transform(instrument_id, piece_index)
+            
+            if world_pos is not None and world_rot is not None:
+                # Update the collider body transform
+                wp.launch(
+                    self.update_jaw_collider_transform,
+                    dim=1,
+                    inputs=[
+                        self.state_0.body_q,
+                        self.state_0.body_qd,
+                        body_id,
+                        world_pos,
+                        world_rot
+                    ],
+                    device=wp.get_device()
+                )
 
     def _on_key_press(self, symbol, modifiers):
         from pyglet.window import key
@@ -749,7 +1257,11 @@ class WarpSim:
         )
 
         # Import instruments
-        # self.instrument_body_id = self._load_instrument_from_usd(builder, "meshes/test.usdc")
+        self.instrument_id = self._load_instrument_from_usd("meshes/pgrasp.usdc", builder, "pgrasp")
+        if self.instrument_id is not None:
+            print(f"Successfully loaded instrument with ID: {self.instrument_id}")
+        else:
+            print("Failed to load instrument")
         
         self.model = builder.finalize()
         self.model.tetrahedra_wp = tetrahedra_wp
@@ -1082,6 +1594,97 @@ class WarpSim:
                             update_topology=True
                         )
 
+
+            if not hasattr(self, "jaw_angle"):
+                self.jaw_angle = 0.0
+            
+            target_angle = 0.0 if self.grasping_active else 0.5
+            self.jaw_angle = wp.lerp(self.jaw_angle, target_angle, self.frame_dt * 30.0)
+
+            #self._update_jaw_colliders()
+
+            if hasattr(self, 'instruments'):
+                for instrument_idx, instrument in enumerate(self.instruments):
+                    if not instrument['visible']:
+                        continue
+                    
+                    # Update instrument position and rotation to follow haptic device
+                    if instrument_idx == 0:
+                        haptic_pos = [
+                            self.haptic_pos_right[0] * 0.01, 
+                            self.haptic_pos_right[1] * 0.01, 
+                            self.haptic_pos_right[2] * 0.01
+                        ]
+                        
+                        # Flip rotation so it's pointing away from the device
+                        flip_rotation = axis_angle_to_quat([0.0, 1.0, 0.0], np.pi)  # 180 degrees around Y
+                        
+                        haptic_quat = np.array(self.haptic_rot_right)
+                        flip_quat = np.array(flip_rotation)
+                        
+                        combined_rotation = multiply_quaternions(haptic_quat, flip_quat)
+
+                        # Extract forward direction from rotation quaternion
+                        x, y, z, w = combined_rotation
+                        forward_x = 2.0 * (x*z + w*y)
+                        forward_y = 2.0 * (y*z - w*x)
+                        forward_z = 2.0 * (z*z + w*w) - 1.0
+                        
+                        # Offset distance
+                        offset_distance = 0.5
+                        
+                        offset_pos = [
+                            haptic_pos[0] - forward_x * offset_distance,
+                            haptic_pos[1] - forward_y * offset_distance,
+                            haptic_pos[2] - forward_z * offset_distance
+                        ]
+
+                        self.update_instrument_transform(
+                            instrument_idx, 
+                            position=offset_pos,
+                            rotation=combined_rotation
+                        )
+                        
+                        
+                        # Find and animate jaw pieces
+                        piece_names = self.get_piece_names(instrument_idx)
+                        for piece_name in piece_names:
+                            if 'jaw' in piece_name.lower() or 'grasp' in piece_name.lower():
+
+                                actual_angle = self.jaw_angle if 'left' in piece_name.lower() else -self.jaw_angle
+
+                                # Apply rotation around axis
+                                jaw_rot = axis_angle_to_quat([1.0, 0.0, 0.0], actual_angle)
+
+                                # Convert quaternion to 4x4 transformation matrix
+                                jaw_transform = wp.transform(wp.vec3(0.0, 0.0, 0.0), jaw_rot)
+                                jaw_matrix = wp.transform_to_matrix(jaw_transform)
+
+                                self.update_piece_transform(
+                                    instrument_idx,
+                                    piece_name,
+                                    transform_matrix=jaw_matrix
+                                )
+                        
+                    
+                    # Render each piece of the instrument
+                    for piece_idx, piece in enumerate(instrument['pieces']):
+                        if not piece['visible']:
+                            continue
+                        
+                        self.renderer.render_mesh_warp(
+                            name=f"instrument_{instrument_idx}_piece_{piece_idx}_{piece['name']}",
+                            points=piece['vertices'],
+                            indices=piece['indices'],
+                            pos=(0.0, 0.0, 0.0),
+                            rot=(0.0, 0.0, 0.0, 1.0),
+                            scale=(1.0, 1.0, 1.0),
+                            basic_color=(0.7, 0.7, 0.8),
+                            update_topology=False,
+                            smooth_shading=True,
+                            visible=True
+                        )
+
                 # Update all bleed particles
                 wp.launch(
                     update_bleed_particles,
@@ -1369,11 +1972,13 @@ class WarpSim:
 #endregion
     def update_haptic_position(self, position):
         """Update the haptic device position in the simulation."""
-        
-        haptic_pos = wp.vec3(position[0], position[1] + 100.0, position[2] - 400.0)  # Offset to avoid collision with ground;
+        haptic_pos = wp.vec3(position[0], position[1] + 100.0, position[2] - 400.0)  # Offset to avoid collision with ground
         self.haptic_pos_right = [haptic_pos[0], haptic_pos[1], haptic_pos[2]]
-
         wp.copy(self.integrator.dev_pos_buffer, wp.array([haptic_pos], dtype=wp.vec3, device=wp.get_device()))
+
+    def update_haptic_rotation(self, rotation):
+        """Update the haptic device rotation in the simulation."""
+        self.haptic_rot_right = rotation.copy()
 
     def is_running(self):
         """Check if the simulation should continue running."""
