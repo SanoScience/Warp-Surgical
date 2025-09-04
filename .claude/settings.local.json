@@ -1,0 +1,16 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(find:*)",
+      "Read(G:\\warp\\warp\\warp/**)",
+      "Read(G:\\warp\\warp\\warp/**)",
+      "Read(G:\\warp\\warp\\warp/**)",
+      "Read(G:\\warp\\warp\\warp/**)",
+      "Read(G:\\warp\\warp\\warp\\examples\\sim/**)",
+      "Read(G:\\warp\\warp\\warp\\examples\\sim/**)",
+      "WebSearch"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}

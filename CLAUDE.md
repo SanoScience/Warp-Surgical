@@ -9,7 +9,7 @@ This project uses `uv` for dependency management. Common commands:
 - **Install dependencies**: `uv sync` 
 - **Run main simulation**: `python main.py` (interactive OpenGL mode)
 - **Run simulation with USD output**: `python main.py --usd --stage_path output.usd --num_frames 300`
-- **Run specific haptic tests**: `python ws-openhaptics_test.py`
+- **Run specific haptic tests**: `python legacy/ws-openhaptics_test.py`
 
 ## Architecture Overview
 
@@ -39,19 +39,33 @@ This is a surgical simulation framework built on Warp (NVIDIA's Python physics s
 
 ### Dependencies
 
-- **warp-lang**: NVIDIA's GPU-accelerated physics simulation framework
+- **warp-lang**: NVIDIA's GPU-accelerated physics simulation framework (local editable dependency)
 - **newton-physics**: Extended physics solver framework (local editable dependency)
 - **pyOpenHaptics**: Interface to haptic devices for force feedback
 - **pyglet**: OpenGL rendering and window management
 - **usd-core**: Universal Scene Description for offline rendering
+- **trimesh**: 3D mesh processing library
 
 ### File Structure
 
-- `meshes/`: Contains organ mesh data (vertices, tetrahedra, triangles, connectors)
-- `textures/`: Organ texture files for realistic rendering
+- `meshes/`: Contains organ mesh data (vertices, tetrahedra, triangles, connectors) and centrelines
+- `textures/`: Organ texture files with different damage states (base, blood, coagulation, damage)
+- `assets/`: Robot models (Franka, MIRA, STAR, dVRK) and surgical instruments
 - `haptics/`: Haptic device interaction examples and utilities
+- `legacy/`: Legacy code and test files
 - `simulation_kernels.py`: Custom Warp kernels for surgical simulation constraints
+- `collision_kernels.py`: Specialized collision detection kernels
 - `render_*.py`: Multiple rendering backends (OpenGL, SurgSim-style, custom)
+
+### Specialized Modules
+
+- **centrelines.py**: Vascular structure simulation with bleeding and clamping
+- **grasping.py**: Tissue grasping and manipulation mechanics
+- **heating.py**: Electrocautery simulation with heat conduction and coagulation
+- **stretching.py**: Tissue stretching and tearing mechanics
+- **robot_simulation.py**: Robotic arm integration and inverse kinematics
+- **robot_ik.py**: Advanced inverse kinematics solver for surgical robots
+- **surface_reconstruction.py**: Dynamic surface mesh generation from volume data
 
 ### Simulation Modes
 

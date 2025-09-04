@@ -1,0 +1,233 @@
+# warp-surgical: Warp Consistency Improvements TODO
+
+Based on analysis of Warp source code architecture and coding patterns, here are recommendations to make warp-surgical more consistent with the Warp ecosystem.
+
+## Key Architectural Inconsistencies Identified
+
+### 1. Missing SPDX License Headers
+**Warp Pattern**: Every source file has consistent SPDX license headers:
+```python
+# SPDX-FileCopyrightText: Copyright (c) 2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+```
+
+**warp-surgical**: No license headers in any Python files
+
+**Recommendation**: Add consistent SPDX headers to all Python files for legal compliance and professional consistency.
+
+### 2. Import Organization and Future Annotations
+**Warp Pattern**: 
+- Uses `from __future__ import annotations` consistently
+- Organized imports: standard library → third-party → warp modules
+- Type hints throughout
+
+**warp-surgical**: 
+- Missing future annotations
+- Inconsistent import organization
+- Limited type annotations
+
+### 3. Module Structure and Packaging
+**Warp Pattern**:
+- Clear modular structure (`sim/`, `fem/`, `render/`, `examples/`)
+- Comprehensive `__init__.py` files with organized exports
+- Clear separation between core functionality and examples
+
+**warp-surgical**:
+- Flat structure with specialized modules mixed at root level
+- No `__init__.py` structure
+- Examples mixed with core functionality
+
+### 4. Kernel Documentation and Patterns
+**Warp Pattern**:
+- Kernels have detailed docstrings with parameter descriptions
+- Consistent parameter naming and type annotations
+- Clear separation of concerns per kernel
+
+**warp-surgical**: 
+- Minimal kernel documentation
+- Inconsistent parameter naming patterns
+
+### 5. Class Design and Example Structure
+**Warp Pattern**:
+- Examples follow consistent `class Example:` pattern with `__init__()` taking stage_path and num_frames
+- Clear separation between simulation setup and execution
+- Consistent parameter handling
+
+**warp-surgical**:
+- Mixed class and functional approaches
+- No consistent example pattern
+
+## Specific Actionable Recommendations
+
+### Phase 1: Foundation & Licensing
+
+1. **Add SPDX headers** to all Python files:
+```python
+# SPDX-FileCopyrightText: Copyright (c) 2025 [Your Organization]
+# SPDX-License-Identifier: Apache-2.0
+```
+
+2. **Add future annotations** to all files:
+```python
+from __future__ import annotations
+```
+
+3. **Organize imports** following Warp's pattern:
+```python
+# Standard library
+import math
+import os
+from typing import List, Tuple
+
+# Third-party
+import numpy as np
+
+# Warp
+import warp as wp
+import warp.sim
+
+# Local modules
+from .mesh_loader import Tetrahedron
+```
+
+### Phase 2: Structural Reorganization
+
+4. **Create modular package structure**:
+```
+warp_surgical/
+├── __init__.py
+├── core/
+│   ├── __init__.py
+│   ├── simulation.py (WarpSim)
+│   ├── solvers.py (PBDSolver)
+│   └── kernels.py (simulation_kernels)
+├── surgical/
+│   ├── __init__.py
+│   ├── grasping.py
+│   ├── heating.py
+│   ├── centrelines.py
+│   └── stretching.py
+├── haptics/
+│   ├── __init__.py
+│   └── haptic_device.py
+├── rendering/
+│   ├── __init__.py
+│   ├── opengl_renderer.py
+│   └── surgsim_renderer.py
+└── examples/
+    ├── __init__.py
+    └── surgical_simulation.py
+```
+
+5. **Create comprehensive `__init__.py` files** with organized exports following Warp's pattern.
+
+### Phase 3: Code Quality & Documentation
+
+6. **Standardize kernel documentation**:
+```python
+@wp.kernel
+def set_active_tets_near_haptic(
+    tet_active: wp.array(dtype=wp.int32),         
+    tets: wp.array(dtype=Tetrahedron),            
+    particle_q: wp.array(dtype=wp.vec3f),         
+    haptic_pos: wp.array(dtype=wp.vec3f),         
+    radius: float,
+    num_tets: int
+):
+    """Mark tetrahedra as inactive when near haptic device.
+    
+    Args:
+        tet_active: Array indicating which tetrahedra are active
+        tets: Array of tetrahedron definitions
+        particle_q: Particle positions
+        haptic_pos: Current haptic device position
+        radius: Interaction radius around haptic device
+        num_tets: Total number of tetrahedra
+    """
+```
+
+7. **Add type annotations** following Warp's comprehensive typing approach.
+
+8. **Implement consistent Example class pattern**:
+```python
+class SurgicalSimulationExample:
+    def __init__(self, stage_path: str = "surgical_sim.usd", num_frames: int = 300):
+        self.stage_path = stage_path
+        self.num_frames = num_frames
+        # ... initialization
+        
+    def step(self):
+        """Execute one simulation step."""
+        
+    def render(self):
+        """Render current simulation state."""
+```
+
+### Phase 4: Testing & Examples
+
+9. **Add comprehensive test suite** following Warp's pattern:
+```
+tests/
+├── __init__.py
+├── test_surgical_kernels.py
+├── test_haptic_integration.py
+└── test_rendering.py
+```
+
+10. **Separate examples from core functionality**:
+    - Move `main.py` logic into `examples/surgical_simulation.py`
+    - Create focused examples for each surgical technique
+    - Follow Warp's example documentation style
+
+### Phase 5: Advanced Improvements
+
+11. **Implement Warp-style configuration management**:
+    - Create `config.py` for simulation parameters
+    - Use consistent parameter naming conventions
+
+12. **Add Warp-style utility classes**:
+    - `ScopedSurgicalTimer` for performance monitoring
+    - Consistent device management patterns
+
+13. **Enhance error handling and warnings**:
+    - Follow Warp's warning system pattern
+    - Add comprehensive error checking
+
+## Priority Implementation Order
+
+1. **High Priority** (Phase 1-2): Licensing, imports, basic structure
+2. **Medium Priority** (Phase 3): Documentation, typing, class patterns  
+3. **Lower Priority** (Phase 4-5): Testing, examples, advanced features
+
+## Files to Modify
+
+### Files needing SPDX headers and import reorganization:
+- main.py
+- warp_simulation.py
+- PBDSolver.py
+- haptic_device.py
+- mesh_loader.py
+- simulation_kernels.py
+- collision_kernels.py
+- centrelines.py
+- grasping.py
+- heating.py
+- stretching.py
+- robot_ik.py
+- robot_simulation.py
+- surface_reconstruction.py
+- render_opengl.py
+- render_surgsim_opengl.py
+- texture_loader.py
+
+### Files to create:
+- warp_surgical/__init__.py
+- warp_surgical/core/__init__.py
+- warp_surgical/surgical/__init__.py
+- warp_surgical/haptics/__init__.py
+- warp_surgical/rendering/__init__.py
+- warp_surgical/examples/__init__.py
+- warp_surgical/config.py
+- tests/ directory structure
+
+These changes will significantly improve code maintainability, consistency with Warp ecosystem patterns, and make the codebase more professional and accessible to other Warp developers.

@@ -372,12 +372,12 @@ class PBDSolver(XPBDSolver):
 
 
                         # CUSTOM CONSTRAINTS
-
-                        wp.launch(
-                            apply_tri_points_constraints_jacobian,
-                            dim=len(model.tri_points_connectors),
-                            inputs=[particle_q,model.tri_points_connectors],
-                            outputs=[particle_deltas],
+                        if hasattr(model, "tri_points_connectors") and model.tri_points_connectors:
+                            wp.launch(
+                                apply_tri_points_constraints_jacobian,
+                                dim=len(model.tri_points_connectors),
+                                inputs=[particle_q, model.tri_points_connectors],
+                                outputs=[particle_deltas],
                             device=model.device,
                         )
 

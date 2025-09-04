@@ -13,7 +13,11 @@ dependencies = [
     "pyopenhaptics>=1.0.1",
     "trimesh>=4.7.1",
     "usd-core>=25.5.1",
-    "warp-lang==1.8.0",
+    "warp-lang>=1.8.1",
+    "numpy>=1.24.0",  # Required for CGAL mesh processing
+    "pillow>=10.0.0",  # For image processing support
+    "scipy>=1.10.0",  # For Gaussian filtering and image processing
+    "scikit-image>=0.20.0",  # For marching cubes surface extraction
 ]
 
 
@@ -28,3 +32,4 @@ url = "https://pypi.org/simple"
 [tool.uv.sources]
 newton-physics = { path = "../newton", editable = true }
 warp-lang = { path = "../warp", editable = true }
+
