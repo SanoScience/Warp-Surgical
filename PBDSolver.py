@@ -550,6 +550,7 @@ class PBDSolver(XPBDSolver):
                                 contacts.rigid_contact_offset1,
                                 contacts.rigid_contact_normal,
                                 contacts.rigid_contact_thickness0,
+                                contacts.rigid_contact_thickness1,
                                 contacts.rigid_contact_shape0,
                                 contacts.rigid_contact_shape1,
                                 model.shape_materials,

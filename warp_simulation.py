@@ -734,7 +734,7 @@ class WarpSim:
         print(f"Successfully loaded instrument '{name}' with {len(mesh_pieces)} pieces, {total_vertices} total vertices and {total_triangles} total triangles")
 
         self.debug_instrument_transforms(len(self.instruments) - 1)
-        #self._setup_jaw_colliders(len(self.instruments) - 1, builder)
+        self._setup_jaw_colliders(len(self.instruments) - 1, builder)
 
 
         return len(self.instruments) - 1
@@ -1046,7 +1046,7 @@ class WarpSim:
                 )
                 
                 # Add sphere shape to the body
-                collider_radius = 0.015
+                collider_radius = 0.1
                 builder.add_shape_sphere(
                     body=jaw_body_id,
                     xform=wp.transform([0.0, 0.0, 0.0], wp.quat_identity()),
@@ -1066,22 +1066,14 @@ class WarpSim:
                 }
                 
                 self.jaw_colliders.append(collider_info)
-                
-                # Define hardcoded offsets for jaw tips
-                # These offsets are in the jaw piece's local space
-                if 'left' in piece_name:
-                    self.jaw_collider_offsets[f"{instrument_id}_{piece_idx}"] = wp.vec3f(0.0, 0.0, 0.08)
-                elif 'right' in piece_name:
-                    self.jaw_collider_offsets[f"{instrument_id}_{piece_idx}"] = wp.vec3f(0.0, 0.0, 0.08)
-                else:
-                    self.jaw_collider_offsets[f"{instrument_id}_{piece_idx}"] = wp.vec3f(0.0, 0.0, 0.08)
+                self.jaw_collider_offsets[f"{instrument_id}_{piece_idx}"] = wp.vec3f(0.0, 0.0, 0.4)
                 
                 print(f"Created jaw collider for piece '{piece['name']}' with body ID {jaw_body_id}")
 
     @wp.kernel
     def update_jaw_collider_transform(
-        body_positions: wp.array(dtype=wp.transform),
-        body_velocities: wp.array(dtype=wp.spatial_vector),
+        body_positions: wp.array(dtype=wp.transformf),
+        body_velocities: wp.array(dtype=wp.spatial_vectorf),
         body_id: int,
         world_position: wp.vec3f,
         world_rotation: wp.quat
@@ -1139,7 +1131,10 @@ class WarpSim:
             
             # Compute world transform for this jaw collider
             world_pos, world_rot = self._compute_jaw_collider_world_transform(instrument_id, piece_index)
-            
+            # debug, should be using computed pos eventually when confirmed working
+            world_pos = self.haptic_pos_right
+            world_rot = wp.quat(0.0, 0.0, 0.0, 1.0)
+
             if world_pos is not None and world_rot is not None:
                 # Update the collider body transform
                 wp.launch(
@@ -1333,6 +1328,8 @@ class WarpSim:
                 device=self.state_0.body_q.device,
             )
 
+            self._update_jaw_colliders()
+
             # Run collision detection and integration
             #self.contacts = self.model.collide(self.state_0)
             #if self.contacts:
@@ -1366,10 +1363,10 @@ class WarpSim:
     def step(self):
         """Advance simulation by one frame."""
         with wp.ScopedTimer("step"):
-            if self.use_cuda_graph:
-                wp.capture_launch(self.graph)
-            else:
-                self.simulate()
+            #if self.use_cuda_graph:
+            #    wp.capture_launch(self.graph)
+            #else:
+            self.simulate()
 
         self.sim_time += self.frame_dt
 #endregion
@@ -1601,7 +1598,25 @@ class WarpSim:
             target_angle = 0.0 if self.grasping_active else 0.5
             self.jaw_angle = wp.lerp(self.jaw_angle, target_angle, self.frame_dt * 30.0)
 
-            #self._update_jaw_colliders()
+            # Debug jaw collider render
+            for i, collider_info in enumerate(self.jaw_colliders):
+                # Get collider transform from physics state
+                collider_transform = self.state_0.body_q.numpy()[collider_info['body_id']]
+                pos = [
+                    self.haptic_pos_right[0] * 0.01, 
+                    self.haptic_pos_right[1] * 0.01, 
+                    self.haptic_pos_right[2] * 0.01
+                ] #[collider_transform[0], collider_transform[1], collider_transform[2]]
+                rot = wp.quat_identity() # [collider_transform[3], collider_transform[4], collider_transform[5], collider_transform[6]]
+                
+                # Render debug sphere for jaw collider
+                self.renderer.render_sphere(
+                    name=f"debug_jaw_collider_{i}",
+                    pos=pos,
+                    rot=rot,
+                    color=[0.0, 1.0, 0.0], 
+                    radius=collider_info['radius']
+                        )
 
             if hasattr(self, 'instruments'):
                 for instrument_idx, instrument in enumerate(self.instruments):
