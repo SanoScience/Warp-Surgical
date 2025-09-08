@@ -1,5 +1,5 @@
 import warp as wp
-from newton.geometry.kernels import (
+from newton._src.geometry.kernels import (
     triangle_closest_point,
     vertex_adjacent_to_triangle,
     VERTEX_COLLISION_BUFFER_OVERFLOW_INDEX,

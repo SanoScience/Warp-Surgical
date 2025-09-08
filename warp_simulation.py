@@ -1,3 +1,4 @@
+import sys
 from centrelines import CentrelinePointInfo, ClampConstraint, attach_clip_to_nearest_centreline, compute_centreline_positions, cut_centrelines_near_haptic, emit_bleed_particles, update_bleed_particles, update_centreline_leaks
 from grasping import grasp_end, grasp_process, grasp_start
 from heating import heating_active_process, heating_conduction_process, heating_end, heating_start, paint_vertices_near_haptic_proxy, set_paint_strength
@@ -7,9 +8,6 @@ import warp as wp
 import newton
 from pxr import Usd, UsdGeom
 
-from newton.utils.render import SimRendererOpenGL
-from newton.solvers import XPBDSolver
-from newton.solvers import VBDSolver
 import numpy as np
 import math
 
@@ -387,7 +385,7 @@ class WarpSim:
         self.grasping_active = False
         self.clipping = False
 
-
+        print(sys.version)
         print(f"Initializing WarpSim with {self.sim_substeps} substeps at {self.fps} FPS")
         print(f"Frame time: {self.frame_dt:.4f}s, Substep time: {self.substep_dt:.4f}s")
 

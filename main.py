@@ -1,4 +1,5 @@
 import argparse
+import sys
 import warp as wp
 
 from haptic_device import HapticController
@@ -21,6 +22,9 @@ def parse_arguments():
 
 def run_simulation(args):
     """Run the main simulation loop."""
+
+    print("Python version:", sys.version)
+
     # Initialize haptic controller
     haptic_controller = HapticController(scale=1.0)
     
