@@ -23,6 +23,7 @@ from typing import List, Union
 import numpy as np
 import warp as wp
 from warp.render import OpenGLRenderer, UsdRenderer
+#from newton._src.viewer.gl.opengl import RendererGL as OpenGLRenderer
 from warp.render.utils import solidify_mesh, tab10_color_map
 from pyglet.graphics.shader import Shader, ShaderProgram
 
@@ -1196,11 +1197,11 @@ def CreateSurgSimRenderer(renderer):
                 self.body_shapes = defaultdict(list)  # mapping from body index to its shape IDs
 
                 shape_body = model.shape_body.numpy()
-                shape_geo_src = model.shape_geo_src
-                shape_geo_type = model.shape_geo.type.numpy()
-                shape_geo_scale = model.shape_geo.scale.numpy()
-                shape_geo_thickness = model.shape_geo.thickness.numpy()
-                shape_geo_is_solid = model.shape_geo.is_solid.numpy()
+                shape_geo_src = model.shape_source
+                shape_geo_type = model.shape_type.numpy()
+                shape_geo_scale = model.shape_scale.numpy()
+                shape_geo_thickness = model.shape_thickness.numpy()
+                shape_geo_is_solid = model.shape_is_solid.numpy()
                 shape_transform = model.shape_transform.numpy()
                 shape_flags = model.shape_flags.numpy()
 
@@ -1242,7 +1243,7 @@ def CreateSurgSimRenderer(renderer):
                     if geo_hash in self.geo_shape:
                         shape = self.geo_shape[geo_hash]
                     else:
-                        if geo_type == newton.GEO_PLANE:
+                        if geo_type == newton.GeoType.PLANE:
                             # plane mesh
                             width = geo_scale[0] if geo_scale[0] > 0.0 else 100.0
                             length = geo_scale[1] if geo_scale[1] > 0.0 else 100.0
@@ -1257,32 +1258,32 @@ def CreateSurgSimRenderer(renderer):
                                     name, p, q, width, length, color, parent_body=body, is_template=True
                                 )
 
-                        elif geo_type == newton.GEO_SPHERE:
+                        elif geo_type == newton.GeoType.SPHERE:
                             shape = self.render_sphere(
                                 name, p, q, geo_scale[0], parent_body=body, is_template=True, color=color
                             )
 
-                        elif geo_type == newton.GEO_CAPSULE:
+                        elif geo_type == newton.GeoType.CAPSULE:
                             shape = self.render_capsule(
                                 name, p, q, geo_scale[0], geo_scale[1], parent_body=body, is_template=True, color=color
                             )
 
-                        elif geo_type == newton.GEO_CYLINDER:
+                        elif geo_type == newton.GeoType.CYLINDER:
                             shape = self.render_cylinder(
                                 name, p, q, geo_scale[0], geo_scale[1], parent_body=body, is_template=True, color=color
                             )
 
-                        elif geo_type == newton.GEO_CONE:
+                        elif geo_type == newton.GeoType.CONE:
                             shape = self.render_cone(
                                 name, p, q, geo_scale[0], geo_scale[1], parent_body=body, is_template=True, color=color
                             )
 
-                        elif geo_type == newton.GEO_BOX:
+                        elif geo_type == newton.GeoType.BOX:
                             shape = self.render_box(
                                 name, p, q, geo_scale, parent_body=body, is_template=True, color=color
                             )
 
-                        elif geo_type == newton.GEO_MESH:
+                        elif geo_type == newton.GeoType.MESH:
                             if not geo_is_solid:
                                 faces, vertices = solidify_mesh(geo_src.indices, geo_src.vertices, geo_thickness)
                             else:
@@ -1300,12 +1301,12 @@ def CreateSurgSimRenderer(renderer):
                                 is_template=True,
                             )
 
-                        elif geo_type == newton.GEO_SDF:
+                        elif geo_type == newton.GeoType.SDF:
                             continue
 
                         self.geo_shape[geo_hash] = shape
 
-                    if add_shape_instance and shape_flags[s] & int(newton.geometry.SHAPE_FLAG_VISIBLE):
+                    if add_shape_instance and shape_flags[s] & int(newton._src.geometry.flags.ShapeFlags.VISIBLE):
                         # TODO support dynamic visibility
                         self.add_shape_instance(name, shape, body, X_bs.p, X_bs.q, scale, custom_index=s, visible=True)
                     self.instance_count += 1

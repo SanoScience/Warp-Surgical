@@ -1,7 +1,7 @@
 import warp as wp
-from newton.sim import Contacts, Control, Model, State
-from newton.solvers.xpbd.solver_xpbd import XPBDSolver
-from newton.solvers.xpbd.kernels import (
+from newton._src.sim import Contacts, Control, Model, State
+from newton._src.solvers.xpbd import SolverXPBD
+from newton._src.solvers.xpbd.kernels import (
     apply_body_delta_velocities,
     apply_body_deltas,
     apply_joint_forces,
@@ -35,14 +35,14 @@ from collision_kernels import (
     vertex_triangle_collision_det,
 )
 
-from newton.solvers.vbd.tri_mesh_collision import (
+from newton._src.solvers.vbd.tri_mesh_collision import (
     TriMeshCollisionDetector,
     TriMeshCollisionInfo,
 )
 
 NUM_THREADS_PER_COLLISION_PRIMITIVE = 4
 
-class PBDSolver(XPBDSolver):
+class PBDSolver(SolverXPBD):
     def __init__(self, model: Model, **kwargs):
         super().__init__(model, **kwargs)
         self.volCnstrs = True
@@ -213,7 +213,7 @@ class PBDSolver(XPBDSolver):
                                     model.body_inv_mass,
                                     model.body_inv_inertia,
                                     model.shape_body,
-                                    model.shape_materials,
+                                    model.shape_material_mu,
                                     model.soft_contact_mu,
                                     model.particle_adhesion,
                                     contacts.soft_contact_count,
@@ -552,7 +552,7 @@ class PBDSolver(XPBDSolver):
                                 contacts.rigid_contact_thickness0,
                                 contacts.rigid_contact_shape0,
                                 contacts.rigid_contact_shape1,
-                                model.shape_materials,
+                                model.shape_material_mu,
                                 self.rigid_contact_relaxation,
                                 dt,
                                 model.rigid_contact_torsional_friction,
