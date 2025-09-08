@@ -1,4 +1,5 @@
 import warp as wp
+from pbf_system import PBFSystem
 
 @wp.struct
 class CentrelinePointInfo:
@@ -271,3 +272,101 @@ def update_bleed_particles(
         bleed_lifetimes[tid] -= dt
         if bleed_lifetimes[tid] <= 0.0:
             bleed_active[tid] = 0
+
+
+# PBF Integration Functions
+@wp.kernel
+def emit_pbf_bleeding(
+    centreline_positions: wp.array(dtype=wp.vec3f),   # [num_points]
+    cut_flags: wp.array(dtype=wp.int32),              # [num_points]
+    spawn_requests: wp.array(dtype=wp.vec3f),         # [max_spawn_requests] - positions to spawn
+    spawn_velocities: wp.array(dtype=wp.vec3f),       # [max_spawn_requests] - velocities for spawning
+    spawn_count: wp.array(dtype=wp.int32),            # [1] - number of spawn requests this frame
+    max_spawn_requests: int,
+    total_time: float,
+    dt: float,
+    emission_rate: int = 3  # Emit every N frames
+):
+    """Emit spawn requests for PBF particles at cut centreline locations"""
+    tid = wp.tid()
+    if tid >= centreline_positions.shape[0]:
+        return
+
+    # Check if this node is on the border of a cut region
+    is_border = bool(False)
+    current_cut = cut_flags[tid]
+    
+    # Check with previous node
+    if tid > 0:
+        prev_cut = cut_flags[tid - 1]
+        if current_cut != prev_cut:
+            is_border = True
+    
+    # Check with next node  
+    if tid < centreline_positions.shape[0] - 1:
+        next_cut = cut_flags[tid + 1]
+        if current_cut != next_cut:
+            is_border = True
+    
+    # Only emit if this node is on a border (cut state transition)
+    if is_border:
+        # Emit a particle from node if cut - use emission rate to control frequency
+        should_emit = int(total_time * 60.0) % emission_rate == 0  # 60 FPS assumption
+        
+        if should_emit:
+            # Request spawn at this position
+            idx = wp.atomic_add(spawn_count, 0, 1)
+            if idx < max_spawn_requests:
+                spawn_requests[idx] = centreline_positions[tid]
+                
+                # Generate randomized initial velocity for blood spurting
+                tid_modified = int(float(tid) * total_time * 10.0)  # Add time-based randomness
+                base_velocity = wp.vec3f(0.0, 0.3, 0.0)  # Slight upward initial velocity
+                random_component = 0.08 * wp.vec3f(
+                    float(tid_modified % 7 - 3), 
+                    float((tid_modified * 3) % 5 - 2),
+                    float((tid_modified * 7) % 7 - 3)
+                )
+                spawn_velocities[idx] = base_velocity + random_component
+
+
+def process_pbf_spawn_requests(pbf_system, spawn_requests, spawn_velocities, spawn_count, current_time):
+    """Process spawn requests and create PBF particles"""
+    if pbf_system is None:
+        return
+        
+    # Get spawn count from GPU
+    count = int(spawn_count.numpy()[0])
+    if count == 0:
+        return
+    
+    # Get spawn data from GPU
+    spawn_positions = spawn_requests.numpy()[:count]
+    spawn_vels = spawn_velocities.numpy()[:count]
+    
+    # Spawn particles in the PBF system
+    for i in range(count):
+        pos = wp.vec3f(spawn_positions[i][0], spawn_positions[i][1], spawn_positions[i][2])
+        vel = wp.vec3f(spawn_vels[i][0], spawn_vels[i][1], spawn_vels[i][2])
+        pbf_system.spawn_particle(pos, vel, current_time)
+    
+    # Reset spawn count for next frame
+    spawn_count.zero_()
+
+
+def init_pbf_bleeding_system(max_spawn_requests=64, device=None):
+    """Initialize data structures for PBF-based bleeding"""
+    if device is None:
+        device = wp.get_device()
+    
+    # Spawn request buffers
+    spawn_requests = wp.zeros(max_spawn_requests, dtype=wp.vec3f, device=device)
+    spawn_velocities = wp.zeros(max_spawn_requests, dtype=wp.vec3f, device=device)
+    spawn_count = wp.zeros(1, dtype=wp.int32, device=device)
+    
+    return {
+        'spawn_requests': spawn_requests,
+        'spawn_velocities': spawn_velocities, 
+        'spawn_count': spawn_count,
+        'max_spawn_requests': max_spawn_requests
+    }

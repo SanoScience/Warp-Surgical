@@ -1,4 +1,5 @@
-from centrelines import CentrelinePointInfo, ClampConstraint, attach_clip_to_nearest_centreline, compute_centreline_positions, cut_centrelines_near_haptic, emit_bleed_particles, update_bleed_particles, update_centreline_leaks
+from centrelines import CentrelinePointInfo, ClampConstraint, attach_clip_to_nearest_centreline, compute_centreline_positions, cut_centrelines_near_haptic, emit_bleed_particles, update_bleed_particles, update_centreline_leaks, emit_pbf_bleeding, process_pbf_spawn_requests, init_pbf_bleeding_system
+from pbf_system import PBFSystem
 from grasping import grasp_end, grasp_process, grasp_start
 from heating import heating_active_process, heating_conduction_process, heating_end, heating_start, paint_vertices_near_haptic_proxy, set_paint_strength
 from stretching import stretching_breaking_process
@@ -426,15 +427,42 @@ class WarpSim:
 
         self.centreline_cut_flags = wp.zeros(self.centreline_points.shape[0], dtype=wp.int32, device=wp.get_device())
 
-        # Bleeding
-        self.max_bleed_particles = 4096 # Max number of particles used for bleeding
+        # Position Based Fluids (PBF) Bleeding System
+        self.max_bleed_particles = 4096  # Max fluid particles for bleeding
+        self.use_pbf_bleeding = True     # Switch to enable/disable PBF vs old system
+        
+        # Initialize PBF system
+        if self.use_pbf_bleeding:
+            self.pbf_system = PBFSystem(
+                max_particles=self.max_bleed_particles,
+                smoothing_length=0.012,      # Smoothing radius for fluid particles
+                rest_density=1000.0,         # Target fluid density (kg/m³)
+                particle_mass=0.001,         # Mass of each fluid particle
+                device=wp.get_device()
+            )
+            
+            # Set simulation bounds based on expected surgical area
+            self.pbf_system.set_simulation_bounds(
+                bounds_min=[-2.0, -3.0, -2.0], 
+                bounds_max=[2.0, 2.0, 2.0]
+            )
+            
+            # Initialize PBF bleeding spawn system
+            self.pbf_bleeding_data = init_pbf_bleeding_system(
+                max_spawn_requests=64, 
+                device=wp.get_device()
+            )
+        else:
+            self.pbf_system = None
+            
+        # Legacy bleeding system (kept for fallback)
         self.bleed_positions = wp.zeros(self.max_bleed_particles, dtype=wp.vec3f, device=wp.get_device())
         self.bleed_velocities = wp.zeros(self.max_bleed_particles, dtype=wp.vec3f, device=wp.get_device())
         self.bleed_lifetimes = wp.zeros(self.max_bleed_particles, dtype=wp.float32, device=wp.get_device())
         self.bleed_active = wp.zeros(self.max_bleed_particles, dtype=wp.int32, device=wp.get_device())
         self.bleed_next_id = wp.zeros(1, dtype=wp.int32, device=wp.get_device())
 
-        # Bleed marching cubes
+        # Legacy marching cubes bleeding (kept for fallback)
         self.bleeding_field_resolution = 96  # Max grid resolution per axis
         self.bleeding_field_margin = 0.01    # Margin around AABB
         self.bleeding_particle_sdf_radius = 0.007  # Particle radius for SDF
@@ -1362,6 +1390,10 @@ class WarpSim:
             
             # Swap states
             (self.state_0, self.state_1) = (self.state_1, self.state_0)
+        
+        # Run PBF fluid simulation (outside substep loop, once per frame)
+        if self.use_pbf_bleeding and self.pbf_system is not None:
+            self.pbf_system.simulate_step(self.frame_dt, self.sim_time)
 
     def step(self):
         """Advance simulation by one frame."""
@@ -1537,23 +1569,52 @@ class WarpSim:
                         heating_active_process(self)
 
                     # Emit new bleed particles from cut centrelines
-                    wp.launch(
-                        emit_bleed_particles,
-                        dim=self.centreline_points.shape[0],
-                        inputs=[
-                            self.centreline_avg_positions,
-                            self.centreline_cut_flags,
-                            self.bleed_positions,
-                            self.bleed_velocities,
-                            self.bleed_lifetimes,
-                            self.bleed_active,
-                            self.bleed_next_id,
-                            self.max_bleed_particles,
-                            self.sim_time,
-                            self.frame_dt
-                        ],
-                        device=wp.get_device()
-                    )
+                    if self.use_pbf_bleeding and self.pbf_system is not None:
+                        # PBF bleeding: Generate spawn requests for fluid particles
+                        wp.launch(
+                            emit_pbf_bleeding,
+                            dim=self.centreline_points.shape[0],
+                            inputs=[
+                                self.centreline_avg_positions,
+                                self.centreline_cut_flags,
+                                self.pbf_bleeding_data['spawn_requests'],
+                                self.pbf_bleeding_data['spawn_velocities'],
+                                self.pbf_bleeding_data['spawn_count'],
+                                self.pbf_bleeding_data['max_spawn_requests'],
+                                self.sim_time,
+                                self.frame_dt,
+                                3  # Emission rate (emit every N frames)
+                            ],
+                            device=wp.get_device()
+                        )
+                        
+                        # Process spawn requests and create PBF particles
+                        process_pbf_spawn_requests(
+                            self.pbf_system,
+                            self.pbf_bleeding_data['spawn_requests'],
+                            self.pbf_bleeding_data['spawn_velocities'],
+                            self.pbf_bleeding_data['spawn_count'],
+                            self.sim_time
+                        )
+                    else:
+                        # Legacy bleeding system
+                        wp.launch(
+                            emit_bleed_particles,
+                            dim=self.centreline_points.shape[0],
+                            inputs=[
+                                self.centreline_avg_positions,
+                                self.centreline_cut_flags,
+                                self.bleed_positions,
+                                self.bleed_velocities,
+                                self.bleed_lifetimes,
+                                self.bleed_active,
+                                self.bleed_next_id,
+                                self.max_bleed_particles,
+                                self.sim_time,
+                                self.frame_dt
+                            ],
+                            device=wp.get_device()
+                        )
 
                
                     # Extract surface
@@ -1685,24 +1746,29 @@ class WarpSim:
                             visible=True
                         )
 
-                # Update all bleed particles
-                wp.launch(
-                    update_bleed_particles,
-                    dim=self.max_bleed_particles,
-                    inputs=[
-                        self.bleed_positions,
-                        self.bleed_velocities,
-                        self.bleed_lifetimes,
-                        self.bleed_active,
-                        self.max_bleed_particles,
-                        self.frame_dt
-                    ],
-                    device=wp.get_device()
-                )
+                # Render bleeding system
+                if self.use_pbf_bleeding and self.pbf_system is not None:
+                    # PBF bleeding rendering: Render fluid particles directly
+                    self.render_pbf_fluid()
+                else:
+                    # Legacy bleeding system: Update particles and generate mesh
+                    wp.launch(
+                        update_bleed_particles,
+                        dim=self.max_bleed_particles,
+                        inputs=[
+                            self.bleed_positions,
+                            self.bleed_velocities,
+                            self.bleed_lifetimes,
+                            self.bleed_active,
+                            self.max_bleed_particles,
+                            self.frame_dt
+                        ],
+                        device=wp.get_device()
+                    )
 
-                # Generate bleeding mesh using marching cubes
-                mesh_data = self.generate_bleeding_mesh()
-                if mesh_data is not None and mesh_data['triangle_count'] > 0:
+                    # Generate bleeding mesh using marching cubes
+                    mesh_data = self.generate_bleeding_mesh()
+                if not self.use_pbf_bleeding and mesh_data is not None and mesh_data['triangle_count'] > 0:
                     # Transform vertices from grid space to world space
                     vertex_count = mesh_data['vertices'].shape[0]
                     transformed_vertices = wp.zeros(vertex_count, dtype=wp.vec3f, device=wp.get_device())
@@ -1988,4 +2054,60 @@ class WarpSim:
         """Save the simulation results."""
         if self.renderer:
             self.renderer.save()
+    
+    def render_pbf_fluid(self):
+        """Render PBF fluid particles as individual spheres or as a cohesive fluid surface"""
+        if not self.pbf_system:
+            return
+        
+        # Get active particle data
+        active_data = self.pbf_system.get_active_particle_data()
+        active_positions = active_data['positions']
+        
+        if len(active_positions) == 0:
+            # Render empty mesh when no active particles
+            empty_vertices = wp.zeros(1, dtype=wp.vec3f, device=wp.get_device())
+            empty_indices = wp.zeros(3, dtype=wp.int32, device=wp.get_device())
+            
+            self.renderer.render_mesh_warp(
+                name="pbf_fluid_mesh",
+                points=empty_vertices,
+                indices=empty_indices,
+                pos=(0.0, 0.0, 0.0),
+                rot=(0.0, 0.0, 0.0, 1.0),
+                scale=(1.0, 1.0, 1.0),
+                basic_color=(0.4, 0.0, 0.05),
+                update_topology=True,
+                smooth_shading=True,
+                visible=False
+            )
+            return
+        
+        # Method 1: Render individual particles as small spheres (for debugging/visualization)
+        # This is simpler but less realistic than a unified fluid surface
+        particle_count = min(len(active_positions), 512)  # Limit for performance
+        
+        for i in range(particle_count):
+            pos = active_positions[i]
+            self.renderer.render_sphere(
+                name=f"pbf_particle_{i}",
+                pos=[float(pos[0]), float(pos[1]), float(pos[2])],
+                rot=[0.0, 0.0, 0.0, 1.0],
+                color=[0.4, 0.0, 0.05],  # Dark red blood color
+                radius=0.006  # Small particle radius
+            )
+        
+        # Hide unused particle spheres
+        for i in range(particle_count, 512):
+            self.renderer.render_sphere(
+                name=f"pbf_particle_{i}",
+                pos=[0.0, 0.0, 0.0],
+                rot=[0.0, 0.0, 0.0, 1.0],
+                color=[0.4, 0.0, 0.05],
+                radius=0.006
+            )
+        
+        # TODO: Method 2: Generate metaball surface or screen-space fluid rendering
+        # This would create a more realistic unified fluid surface
+        # For now, we use individual particle rendering which works well for blood droplets
 
