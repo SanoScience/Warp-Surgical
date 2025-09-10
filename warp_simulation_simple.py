@@ -1,8 +1,8 @@
 import warp as wp
 import newton
 
-from newton.utils.render import SimRendererOpenGL
-from newton.solvers import XPBDSolver
+# from newton.utils.render import SimRendererOpenGL
+# from newton.solvers import XPBDSolver
 
 import numpy as np
 import math
@@ -172,7 +172,7 @@ class WarpSim:
         
         if self.use_opengl:
             #self.renderer = SurgSimRendererOpenGL(self.model, "Warp Surgical Simulation", scaling=1.0, near_plane=0.05, far_plane = 25)
-            self.renderer = SimRendererOpenGL(self.model, "Warp Surgical Simulation", scaling=1.0, near_plane=0.05, far_plane = 25)
+            self.renderer = SurgSimRendererOpenGL(self.model, "Warp Surgical Simulation", scaling=1.0, near_plane=0.05, far_plane = 25)
         elif stage_path:
             self.renderer = newton.render.SimRenderer(self.model, stage_path, scaling=20.0)
         else:
@@ -251,11 +251,16 @@ class WarpSim:
                 # )
 
 
-                self.renderer.render_mesh(
+                # Create per-vertex colors for multi-label visualization (only once)
+                if not hasattr(self, '_vertex_colors') or True:  # Force regeneration for spatial coloring
+                    self._vertex_colors = self._create_vertex_colors_for_labels()
+                
+                self.renderer.render_mesh_warp(
                     "surface",
-                    self.model.particle_q.numpy().flatten(),
-                    self.model.tri_indices.numpy().flatten(),
-                    colors=(0.75, 0.25, 0.0),
+                    self.model.particle_q,
+                    self.model.tri_indices,
+                    vertex_colors=self._vertex_colors,
+                    basic_color=(1.0, 1.0, 1.0),  # White base to let vertex colors show through
                 )
 
                 # # render springs
@@ -272,6 +277,64 @@ class WarpSim:
 
 
 #endregion
+    def _create_vertex_colors_for_labels(self):
+        """Create per-vertex colors for multi-label visualization based on spatial regions."""
+        import numpy as np
+        import warp as wp
+        
+        # Get vertex positions
+        positions = self.model.particle_q.numpy()
+        num_vertices = positions.shape[0]
+        
+        # Define colors for each label (RGB + Alpha)
+        label_colors = [
+            (0.8, 0.2, 0.2, 1.0),  # Red for label 1
+            (0.2, 0.8, 0.2, 1.0),  # Green for label 2  
+            (0.2, 0.2, 0.8, 1.0),  # Blue for label 3
+        ]
+        
+        # Create vertex colors array
+        vertex_colors = np.zeros((num_vertices, 4), dtype=np.float32)
+        
+        # Analyze spatial distribution
+        x_coords = positions[:, 0]
+        y_coords = positions[:, 1] 
+        z_coords = positions[:, 2]
+        
+        x_min, x_max = np.min(x_coords), np.max(x_coords)
+        y_min, y_max = np.min(y_coords), np.max(y_coords)
+        z_min, z_max = np.min(z_coords), np.max(z_coords)
+        
+        print(f"Mesh bounds: X[{x_min:.3f}, {x_max:.3f}], Y[{y_min:.3f}, {y_max:.3f}], Z[{z_min:.3f}, {z_max:.3f}]")
+        
+        # Assign colors based on spatial regions (using Y-axis for vertical slicing)
+        # This assumes the liver is oriented vertically and we want horizontal slices
+        y_range = y_max - y_min
+        y_third = y_range / 3
+        
+        label_counts = [0, 0, 0]
+        
+        for i in range(num_vertices):
+            y = y_coords[i]
+            
+            if y < y_min + y_third:
+                label_idx = 0  # Bottom third - Red
+            elif y < y_min + 2 * y_third:
+                label_idx = 1  # Middle third - Green  
+            else:
+                label_idx = 2  # Top third - Blue
+                
+            vertex_colors[i] = label_colors[label_idx]
+            label_counts[label_idx] += 1
+        
+        # Debug: Print spatial color statistics
+        print(f"Spatial vertex coloring: {num_vertices} vertices")
+        print(f"Y-axis slicing: Bottom[{y_min:.3f}, {y_min + y_third:.3f}] = {label_counts[0]} Red vertices")
+        print(f"                Middle[{y_min + y_third:.3f}, {y_min + 2*y_third:.3f}] = {label_counts[1]} Green vertices")
+        print(f"                Top[{y_min + 2*y_third:.3f}, {y_max:.3f}] = {label_counts[2]} Blue vertices")
+        
+        return wp.array(vertex_colors, dtype=wp.vec4, device=wp.get_device())
+
     def update_haptic_position(self, position):
         """Update the haptic device position in the simulation."""
         

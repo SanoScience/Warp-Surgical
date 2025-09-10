@@ -167,7 +167,7 @@ void main()
     spec = pow(max(dot(viewDir, reflectDir), 0.0), 64);
     specular += specularStrength * spec * lightColor * 0.3;
 
-    vec3 baseColor = startColor;
+    vec3 baseColor = VertexColor.rgb;
     if (numTextures > 0)
     {
         vec3 baseCol =      texture(diffuseMaps[0], TexCoord).rgb;

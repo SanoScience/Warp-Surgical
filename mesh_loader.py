@@ -503,20 +503,58 @@ def load_cgal_and_build_model(builder: newton.ModelBuilder, particle_mass, verti
     current_edge_offset = 0
     current_tet_offset = 0
     
-    # Liver
-    mesh_positions, mesh_indices, mesh_edges, mesh_tris, mesh_uvs = load_mesh_component('meshes/liver_cgal/', 0)
-
+    # Check if multi-label meshes exist, otherwise fall back to single mesh
+    import os
+    multi_label_dirs = []
+    for i in range(1, 10):  # Check for up to 9 labels
+        label_dir = f'meshes/liver_cgal_label_{i}/'
+        if os.path.exists(label_dir):
+            multi_label_dirs.append((i, label_dir))
     
-    all_positions.extend(mesh_positions)
-    all_indices.extend(mesh_indices)
-    all_edges.extend(mesh_edges)
-    all_tri_surface_indices.extend(mesh_tris)
-    all_uvs.extend(mesh_uvs)
-    
-    current_vertex_offset = len(all_positions)
-    current_edge_offset = len(all_edges)
-    current_index_offset = len(all_tri_surface_indices)
-    current_tet_offset = len(all_indices) // 4
+    if multi_label_dirs:
+        print(f"Found {len(multi_label_dirs)} multi-label meshes, loading only first label for debugging...")
+        # Load only the first label for debugging
+        label_num, label_dir = multi_label_dirs[0]  # Only first label
+        print(f"  Loading label {label_num} from {label_dir}")
+        mesh_positions, mesh_indices, mesh_edges, mesh_tris, mesh_uvs = load_mesh_component(label_dir, 0)
+        
+        all_positions.extend(mesh_positions)
+        all_indices.extend(mesh_indices)
+        all_edges.extend(mesh_edges)
+        all_tri_surface_indices.extend(mesh_tris)
+        all_uvs.extend(mesh_uvs)
+        
+        current_vertex_offset = len(all_positions)
+        current_edge_offset = len(all_edges)
+        current_index_offset = len(all_tri_surface_indices)
+        current_tet_offset = len(all_indices) // 4
+        
+        # Set liver mesh range for single label
+        mesh_ranges['liver']['vertex_start'] = 0
+        mesh_ranges['liver']['vertex_count'] = current_vertex_offset
+        mesh_ranges['liver']['index_start'] = 0
+        mesh_ranges['liver']['index_count'] = current_tet_offset
+    else:
+        print("No multi-label meshes found, loading single mesh...")
+        # Fallback to single mesh loading
+        mesh_positions, mesh_indices, mesh_edges, mesh_tris, mesh_uvs = load_mesh_component('meshes/liver_cgal/', 0)
+        
+        all_positions.extend(mesh_positions)
+        all_indices.extend(mesh_indices)
+        all_edges.extend(mesh_edges)
+        all_tri_surface_indices.extend(mesh_tris)
+        all_uvs.extend(mesh_uvs)
+        
+        current_vertex_offset = len(all_positions)
+        current_edge_offset = len(all_edges)
+        current_index_offset = len(all_tri_surface_indices)
+        current_tet_offset = len(all_indices) // 4
+        
+        # Set liver mesh range for single mesh
+        mesh_ranges['liver']['vertex_start'] = 0
+        mesh_ranges['liver']['vertex_count'] = current_vertex_offset
+        mesh_ranges['liver']['index_start'] = 0
+        mesh_ranges['liver']['index_count'] = current_tet_offset
     
     
     

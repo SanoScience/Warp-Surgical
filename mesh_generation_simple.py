@@ -217,6 +217,9 @@ class SimpleMeshGenerator:
             print(f"+ Multi-label mesh generation completed in {generation_time:.1f} seconds")
             print(f"  Statistics: {stats}")
             
+            # Fix Windows backslash path separator issue in generated filenames
+            self._fix_backslash_filenames(target_base_dir)
+            
             return True
             
         except Exception as e:
@@ -265,6 +268,42 @@ class SimpleMeshGenerator:
         except Exception as e:
             print(f"- Mesh generation failed: {e}")
             return False
+
+    def _fix_backslash_filenames(self, base_dir: str):
+        """Fix Windows backslash path separator issue in generated mesh filenames."""
+        import shutil
+        
+        # Look for files with backslashes in their names in the meshes directory
+        meshes_dir = Path("meshes")
+        
+        # Find all files with backslashes in their names
+        backslash_files = []
+        for file_path in meshes_dir.rglob("*"):
+            if file_path.is_file() and "\\" in file_path.name:
+                backslash_files.append(file_path)
+        
+        if not backslash_files:
+            return
+            
+        print(f"+ Fixing {len(backslash_files)} files with backslash names...")
+        
+        for file_path in backslash_files:
+            # Parse the intended directory and filename
+            filename_with_backslash = file_path.name
+            
+            # Split on the last backslash to get directory and filename
+            if "\\" in filename_with_backslash:
+                intended_dir, intended_filename = filename_with_backslash.rsplit("\\", 1)
+                
+                # Create the intended directory
+                target_dir = file_path.parent / intended_dir
+                target_dir.mkdir(parents=True, exist_ok=True)
+                
+                # Move the file to the correct location
+                target_file = target_dir / intended_filename
+                
+                print(f"  Moving: {filename_with_backslash} -> {intended_dir}/{intended_filename}")
+                shutil.move(str(file_path), str(target_file))
 
 
 def ensure_meshes_ready(args) -> bool:

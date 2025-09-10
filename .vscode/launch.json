@@ -18,6 +18,36 @@
             "program": "${file}",
             "console": "integratedTerminal",
             "args": "${command:pickArgs}"
-        }
+        },
+        {
+            "name": "Debug main_simple.py - Default",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/main_simple.py",
+            "args": [
+                "--generate-meshes",
+                "--mesh-source=liver-sliced.inr", 
+            ],
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "env": {},
+            "python": "${workspaceFolder}/.venv/bin/python"
+        },
+        {
+            "name": "Debug main_simple.py - Multi-label",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/main_simple.py",
+            "args": [
+                "--generate-meshes",
+                "--mesh-source=liver-sliced.inr", 
+                "--multi-label"
+            ],
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "env": {},
+            "python": "${workspaceFolder}/.venv/bin/python"
+        },
+       
     ]
 }

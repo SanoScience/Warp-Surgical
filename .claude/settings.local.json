@@ -8,7 +8,12 @@
       "Read(G:\\warp\\warp\\warp/**)",
       "Read(G:\\warp\\warp\\warp\\examples\\sim/**)",
       "Read(G:\\warp\\warp\\warp\\examples\\sim/**)",
-      "WebSearch"
+      "WebSearch",
+      "Bash(uv run:*)",
+      "Read(//home/korzen303/Projects/warp/DefKitCgal/**)",
+      "Bash(timeout 10s uv run:*)",
+      "Bash(timeout:*)",
+      "Read(//home/korzen303/Projects/cgal/cgal-6.0.1/**)"
     ],
     "deny": [],
     "ask": []
