@@ -469,11 +469,59 @@ class GUIRenderer:
         self.gui_elements = []
         self.active_slider = None
         self.setup_gui()
+        # OpenGL buffer handles initialized once a context is available
+        self.vbo_positions = None
+        self.vbo_colors = None
+        self.boundary_vbo = None
+        self.boundary_vertex_count = 0
+        self._boundary_domain = None
 
         # FPS tracking
         self.frame_count = 0
         self.last_fps_time = time.time()
         self.fps = 0
+
+    def initialize_gl_resources(self):
+        """Create OpenGL buffers once a context is active."""
+        if self.vbo_positions is not None:
+            return
+        self.vbo_positions = glGenBuffers(1)
+        self.vbo_colors = glGenBuffers(1)
+        self.boundary_vbo = glGenBuffers(1)
+        self.boundary_vertex_count = 0
+        self._boundary_domain = None
+        self.update_boundary_vbo(force=True)
+
+    def update_boundary_vbo(self, force=False):
+        """Upload boundary line vertices when the domain changes."""
+        if self.boundary_vbo is None:
+            return
+        domain_min = tuple(self.sim.params['domain_min'])
+        domain_max = tuple(self.sim.params['domain_max'])
+        domain_key = (domain_min, domain_max)
+        if not force and domain_key == self._boundary_domain:
+            return
+
+        min_pt = np.array(domain_min, dtype=np.float32)
+        max_pt = np.array(domain_max, dtype=np.float32)
+        vertices = np.array([
+            # Bottom face
+            [min_pt[0], min_pt[1], min_pt[2]], [max_pt[0], min_pt[1], min_pt[2]],
+            [max_pt[0], min_pt[1], min_pt[2]], [max_pt[0], min_pt[1], max_pt[2]],
+            [max_pt[0], min_pt[1], max_pt[2]], [min_pt[0], min_pt[1], max_pt[2]],
+            [min_pt[0], min_pt[1], max_pt[2]], [min_pt[0], min_pt[1], min_pt[2]],
+            # Vertical edges
+            [min_pt[0], min_pt[1], min_pt[2]], [min_pt[0], max_pt[1], min_pt[2]],
+            [max_pt[0], min_pt[1], min_pt[2]], [max_pt[0], max_pt[1], min_pt[2]],
+            [max_pt[0], min_pt[1], max_pt[2]], [max_pt[0], max_pt[1], max_pt[2]],
+            [min_pt[0], min_pt[1], max_pt[2]], [min_pt[0], max_pt[1], max_pt[2]],
+        ], dtype=np.float32)
+
+        glBindBuffer(GL_ARRAY_BUFFER, self.boundary_vbo)
+        glBufferData(GL_ARRAY_BUFFER, vertices.nbytes, vertices, GL_DYNAMIC_DRAW)
+        glBindBuffer(GL_ARRAY_BUFFER, 0)
+        self.boundary_vertex_count = len(vertices)
+        self._boundary_domain = domain_key
 
     def setup_gui(self):
         """Setup GUI elements."""
@@ -696,124 +744,109 @@ class GUIRenderer:
         glLoadIdentity()
 
     def render_particles(self):
-        """Render particles in 3D with mode-appropriate coloring."""
-        positions_gpu = self.sim.positions.numpy()
-        velocities_gpu = self.sim.velocities.numpy()
+        """Render particles in 3D with mode-appropriate coloring using VBOs."""
+        num_particles = self.sim.num_particles
+        if num_particles == 0:
+            return
 
-        glPointSize(6.0)
-        glBegin(GL_POINTS)
+        if self.vbo_positions is None:
+            self.initialize_gl_resources()
 
+        positions_gpu = np.asarray(self.sim.positions.numpy(), dtype=np.float32)
+        colors = np.empty((num_particles, 4), dtype=np.float32)
+
+        alpha = 0.85
         if self.sim.params['use_pbf']:
-            # PBF mode: density-based coloring
-            densities_gpu = self.sim.densities.numpy()
-            rest_density = self.sim.params['rest_density']
+            densities_gpu = np.asarray(self.sim.densities.numpy(), dtype=np.float32)
+            rest_density = float(self.sim.params['rest_density'])
             pressures = (densities_gpu / rest_density) - 1.0
 
-            # Normalize pressure for coloring (clamp extreme values)
-            min_pressure = np.percentile(pressures, 5)
-            max_pressure = np.percentile(pressures, 95)
+            min_pressure = float(np.percentile(pressures, 5))
+            max_pressure = float(np.percentile(pressures, 95))
             pressure_range = max(max_pressure - min_pressure, 0.1)
 
-            for i in range(self.sim.num_particles):
-                pos = positions_gpu[i]
+            for i in range(num_particles):
                 pressure = pressures[i]
-
-                # Normalize pressure to [0, 1]
                 pressure_factor = max(0.0, min(1.0, (pressure - min_pressure) / pressure_range))
 
-                # Color mapping: Blue (low pressure) -> Cyan -> Green -> Yellow -> Red (high pressure)
                 if pressure_factor < 0.25:
-                    # Blue to Cyan
                     t = pressure_factor * 4.0
-                    r = 0.0
-                    g = t * 0.5
-                    b = 1.0
+                    r, g, b = 0.0, t * 0.5, 1.0
                 elif pressure_factor < 0.5:
-                    # Cyan to Green
                     t = (pressure_factor - 0.25) * 4.0
-                    r = 0.0
-                    g = 0.5 + t * 0.5
-                    b = 1.0 - t
+                    r, g, b = 0.0, 0.5 + t * 0.5, 1.0 - t
                 elif pressure_factor < 0.75:
-                    # Green to Yellow
                     t = (pressure_factor - 0.5) * 4.0
-                    r = t
-                    g = 1.0
-                    b = 0.0
+                    r, g, b = t, 1.0, 0.0
                 else:
-                    # Yellow to Red
                     t = (pressure_factor - 0.75) * 4.0
-                    r = 1.0
-                    g = 1.0 - t
-                    b = 0.0
+                    r, g, b = 1.0, 1.0 - t, 0.0
 
-                glColor4f(r, g, b, 0.85)
-                glVertex3f(pos[0], pos[1], pos[2])
+                colors[i] = (r, g, b, alpha)
         else:
-            # Sphere collision mode: velocity-based coloring
+            velocities_gpu = np.asarray(self.sim.velocities.numpy(), dtype=np.float32)
             speeds = np.linalg.norm(velocities_gpu, axis=1)
-            max_speed = max(np.max(speeds), 0.1)
+            max_speed = max(float(np.max(speeds)), 0.1)
 
-            for i in range(self.sim.num_particles):
-                pos = positions_gpu[i]
-                speed = speeds[i]
+            for i in range(num_particles):
+                speed_factor = min(speeds[i] / max_speed, 1.0)
 
-                # Normalize speed to [0, 1]
-                speed_factor = min(speed / max_speed, 1.0)
-
-                # Color mapping: Blue (slow) -> Green -> Yellow -> Red (fast)
                 if speed_factor < 0.33:
-                    # Blue to Green
                     t = speed_factor * 3.0
                     r = 0.1
                     g = 0.3 + t * 0.4
                     b = 0.8 - t * 0.3
                 elif speed_factor < 0.66:
-                    # Green to Yellow
                     t = (speed_factor - 0.33) * 3.0
                     r = t * 0.6
                     g = 0.7 + t * 0.2
                     b = 0.5 - t * 0.4
                 else:
-                    # Yellow to Red
                     t = (speed_factor - 0.66) * 3.0
                     r = 0.6 + t * 0.3
                     g = 0.9 - t * 0.6
                     b = 0.1
 
-                glColor4f(r, g, b, 0.85)
-                glVertex3f(pos[0], pos[1], pos[2])
+                colors[i] = (r, g, b, alpha)
 
-        glEnd()
+        glPointSize(6.0)
+
+        glBindBuffer(GL_ARRAY_BUFFER, self.vbo_positions)
+        glBufferData(GL_ARRAY_BUFFER, positions_gpu.nbytes, positions_gpu, GL_DYNAMIC_DRAW)
+
+        glBindBuffer(GL_ARRAY_BUFFER, self.vbo_colors)
+        glBufferData(GL_ARRAY_BUFFER, colors.nbytes, colors, GL_DYNAMIC_DRAW)
+
+        glEnableClientState(GL_VERTEX_ARRAY)
+        glBindBuffer(GL_ARRAY_BUFFER, self.vbo_positions)
+        glVertexPointer(3, GL_FLOAT, 0, None)
+
+        glEnableClientState(GL_COLOR_ARRAY)
+        glBindBuffer(GL_ARRAY_BUFFER, self.vbo_colors)
+        glColorPointer(4, GL_FLOAT, 0, None)
+
+        glDrawArrays(GL_POINTS, 0, num_particles)
+
+        glDisableClientState(GL_COLOR_ARRAY)
+        glDisableClientState(GL_VERTEX_ARRAY)
+        glBindBuffer(GL_ARRAY_BUFFER, 0)
 
     def render_boundaries(self):
-        """Render simulation boundaries."""
+        """Render simulation boundaries using a static line VBO."""
+        if self.vbo_positions is None:
+            self.initialize_gl_resources()
+        self.update_boundary_vbo()
+
+        if self.boundary_vertex_count == 0:
+            return
+
         glColor4f(0.3, 0.3, 0.3, 0.4)
-        glBegin(GL_LINES)
-
-        min_pt = self.sim.params['domain_min']
-        max_pt = self.sim.params['domain_max']
-
-        # Draw wireframe box edges
-        vertices = [
-            # Bottom face
-            [min_pt[0], min_pt[1], min_pt[2]], [max_pt[0], min_pt[1], min_pt[2]],
-            [max_pt[0], min_pt[1], min_pt[2]], [max_pt[0], min_pt[1], max_pt[2]],
-            [max_pt[0], min_pt[1], max_pt[2]], [min_pt[0], min_pt[1], max_pt[2]],
-            [min_pt[0], min_pt[1], max_pt[2]], [min_pt[0], min_pt[1], min_pt[2]],
-
-            # Vertical edges
-            [min_pt[0], min_pt[1], min_pt[2]], [min_pt[0], max_pt[1], min_pt[2]],
-            [max_pt[0], min_pt[1], min_pt[2]], [max_pt[0], max_pt[1], min_pt[2]],
-            [max_pt[0], min_pt[1], max_pt[2]], [max_pt[0], max_pt[1], max_pt[2]],
-            [min_pt[0], min_pt[1], max_pt[2]], [min_pt[0], max_pt[1], max_pt[2]]
-        ]
-
-        for i in range(0, len(vertices), 2):
-            glVertex3f(*vertices[i])
-            glVertex3f(*vertices[i+1])
-
-        glEnd()
+        glEnableClientState(GL_VERTEX_ARRAY)
+        glBindBuffer(GL_ARRAY_BUFFER, self.boundary_vbo)
+        glVertexPointer(3, GL_FLOAT, 0, None)
+        glDrawArrays(GL_LINES, 0, self.boundary_vertex_count)
+        glBindBuffer(GL_ARRAY_BUFFER, 0)
+        glDisableClientState(GL_VERTEX_ARRAY)
 
     def render_gui(self):
         """Render GUI elements."""
@@ -1110,6 +1143,7 @@ def main():
     glutInitDisplayMode(GLUT_DOUBLE | GLUT_RGB | GLUT_DEPTH)
     glutInitWindowSize(renderer.window_width, renderer.window_height)
     glutCreateWindow(b"Position-Based Fluids - PBF Simulation")
+    renderer.initialize_gl_resources()
 
     # Set callbacks
     glutDisplayFunc(display)
