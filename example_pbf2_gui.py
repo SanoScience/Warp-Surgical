@@ -45,22 +45,28 @@ from pbf_kernels import (
 # PBF simulation parameters
 PBF_PARAMS = {
     'particle_radius': 0.015,
-    'smoothing_radius': 0.04,   # Kernel support radius
-    'collision_radius': 0.03,   # For sphere collision mode
+    'smoothing_radius': 0.09,   # Kernel support radius (~3x spacing)
+    'collision_radius': 0.04,   # For sphere collision mode
     'rest_density': 1000.0,
-    'constraint_epsilon': 200.0,  # More regularization for stability
+    'particle_mass': 0.0,  # Computed from rest density and spawn spacing
+    'constraint_epsilon': 1.0e-6,
+    'artificial_pressure_k': 0.1,
+    'artificial_pressure_delta_q': 0.2,  # Relative to smoothing radius
+    'artificial_pressure_n': 4.0,
     'restitution': 0.3,  # For sphere collision mode
     'friction': 0.5,  # For sphere collision mode
-    'gravity': -5.0,
+    'gravity': -9.81,
     'dt': 1.0/120.0,
-    'substeps': 6,
+    'substeps': 4,
     'constraint_iterations': 6,  # More iterations for incompressibility
-    'max_velocity': 8.0,
-    'damping': 0.96,
+    'max_velocity': 6.0,
+    'damping': 0.996,
     'use_pbf': True,  # Toggle between PBF and sphere collision
-    'grid_dim': 64,
+    'grid_dim': 128,
+    'boundary_restitution': 0.35,
+    'boundary_friction': 0.2,
     'domain_min': np.array([-1.2, -0.8, -1.2]),
-    'domain_max': np.array([1.2, 2.0, 1.2])
+    'domain_max': np.array([1.2, 5.0, 1.2])
 }
 
 # Shared PBF kernels provided by pbf_kernels
@@ -107,6 +113,8 @@ class SimpleSlider(SimpleGUIElement):
             return f"{self.current_val:.2f}"
         if span > 1.0:
             return f"{self.current_val:.3f}"
+        if abs(self.current_val) < 1e-3:
+            return f"{self.current_val:.2e}"
         return f"{self.current_val:.4f}"
 
     def get_normalized_value(self):
@@ -239,6 +247,10 @@ class PBFSimulation:
         self.params = PBF_PARAMS.copy()
         self.paused = False
 
+        self.particle_mass = 0.0
+        self.spawn_spacing = self.params['particle_radius'] * 2.2
+        self.ensure_parameter_consistency()
+
         # Initialize Warp
         wp.init()
         self.device = wp.get_device()
@@ -267,10 +279,13 @@ class PBFSimulation:
 
     def reset_particles(self):
         """Initialize particles in a fluid dam configuration."""
+        self.ensure_parameter_consistency()
+
         positions = []
 
         # Create a fluid dam
         spacing = self.params['particle_radius'] * 2.2
+        self.update_particle_mass(spacing)
         layers_x = int(0.8 / spacing)
         layers_y = int(1.0 / spacing)
         layers_z = int(0.8 / spacing)
@@ -318,10 +333,42 @@ class PBFSimulation:
         wp.copy(self.positions, wp.array(positions_array, dtype=wp.vec3, device=self.device))
         wp.copy(self.velocities, wp.zeros(self.num_particles, dtype=wp.vec3, device=self.device))
 
+    def update_particle_mass(self, spacing=None):
+        """Compute per-particle mass from rest density."""
+        if spacing is None or spacing <= 0.0:
+            spacing = self.params['particle_radius'] * 2.2
+        self.spawn_spacing = spacing
+        particle_volume = spacing ** 3
+        mass = self.params['rest_density'] * particle_volume
+        self.particle_mass = max(1.0e-9, mass)
+        self.params['particle_mass'] = self.particle_mass
+
+    def ensure_parameter_consistency(self):
+        """Keep coupled parameters within stable ranges."""
+        self.params['substeps'] = max(1, int(self.params['substeps']))
+        self.params['constraint_iterations'] = max(1, int(self.params['constraint_iterations']))
+        self.params['dt'] = max(1.0e-4, float(self.params['dt']))
+        min_smoothing = max(self.params['particle_radius'] * 3.0, self.params['particle_radius'] * 2.2 + 1.0e-4)
+        if self.params['smoothing_radius'] < min_smoothing:
+            self.params['smoothing_radius'] = min_smoothing
+        min_collision = self.params['particle_radius'] * 2.5
+        if self.params['collision_radius'] < min_collision:
+            self.params['collision_radius'] = min_collision
+        self.params['constraint_epsilon'] = max(self.params['constraint_epsilon'], 1.0e-8)
+        self.params['damping'] = min(max(self.params['damping'], 0.9), 0.9999)
+        self.params['artificial_pressure_delta_q'] = float(min(max(self.params.get('artificial_pressure_delta_q', 0.2), 0.05), 0.6))
+        self.params['artificial_pressure_k'] = max(self.params.get('artificial_pressure_k', 0.0), 0.0)
+        self.params['max_velocity'] = max(self.params['max_velocity'], 0.5)
+        self.params['boundary_restitution'] = float(np.clip(self.params.get('boundary_restitution', 0.35), 0.0, 1.0))
+        self.params['boundary_friction'] = float(np.clip(self.params.get('boundary_friction', 0.2), 0.0, 1.0))
+        self.update_particle_mass()
+
     def step(self):
         """Run one simulation step with substepping."""
         if self.paused:
             return
+
+        self.ensure_parameter_consistency()
 
         # Substepping for stability
         substeps = self.params['substeps']
@@ -362,8 +409,9 @@ class PBFSimulation:
                     dim=self.num_particles,
                     inputs=[
                         self.predicted_positions, self.densities,
-                        self.hash_grid.id, self.params['smoothing_radius']
-                    ],
+                        self.hash_grid.id, self.params['smoothing_radius'],
+                    self.particle_mass
+                ],
                     device=self.device
                 )
 
@@ -374,7 +422,8 @@ class PBFSimulation:
                     inputs=[
                         self.predicted_positions, self.densities, self.lambdas,
                         self.hash_grid.id, self.params['smoothing_radius'],
-                        self.params['rest_density'], self.params['constraint_epsilon']
+                        self.params['rest_density'], self.params['constraint_epsilon'],
+                        self.particle_mass
                     ],
                     device=self.device
                 )
@@ -385,7 +434,9 @@ class PBFSimulation:
                     dim=self.num_particles,
                     inputs=[
                         self.predicted_positions, self.lambdas, self.position_deltas,
-                        self.hash_grid.id, self.params['smoothing_radius'], self.params['rest_density']
+                        self.hash_grid.id, self.params['smoothing_radius'], self.params['rest_density'],
+                        self.params['artificial_pressure_k'], self.params['artificial_pressure_delta_q'],
+                        self.params['artificial_pressure_n'], self.particle_mass
                     ],
                     device=self.device
                 )
@@ -434,7 +485,8 @@ class PBFSimulation:
             dim=self.num_particles,
             inputs=[
                 self.predicted_positions, self.velocities, domain_min, domain_max,
-                0.3  # restitution for boundaries
+                self.params['particle_radius'], self.params['boundary_restitution'],
+                self.params['boundary_friction']
             ],
             device=self.device
         )
@@ -529,64 +581,74 @@ class GUIRenderer:
         spacing = 40
 
         # Timestep slider
-        self.dt_slider = SimpleSlider(20, y_pos, 250, 20, 1.0/240.0, 1.0/30.0, self.sim.params['dt'], "Timestep")
+        self.dt_slider = SimpleSlider(20, y_pos, 250, 20, 1.0/240.0, 1.0/60.0, self.sim.params['dt'], "Timestep")
         self.gui_elements.append(self.dt_slider)
         y_pos += spacing
 
         # Substeps slider
-        self.substeps_slider = SimpleSlider(20, y_pos, 250, 20, 4, 12, self.sim.params['substeps'], "Substeps")
+        self.substeps_slider = SimpleSlider(20, y_pos, 250, 20, 2, 10, self.sim.params['substeps'], "Substeps")
         self.gui_elements.append(self.substeps_slider)
         y_pos += spacing
 
         # Constraint iterations slider
-        self.iterations_slider = SimpleSlider(20, y_pos, 250, 20, 4, 12, self.sim.params['constraint_iterations'], "PBF Iterations")
+        self.iterations_slider = SimpleSlider(20, y_pos, 250, 20, 3, 12, self.sim.params['constraint_iterations'], "PBF Iterations")
         self.gui_elements.append(self.iterations_slider)
         y_pos += spacing
 
         # Damping slider
-        self.damping_slider = SimpleSlider(20, y_pos, 250, 20, 0.90, 0.99, self.sim.params['damping'], "Damping")
+        self.damping_slider = SimpleSlider(20, y_pos, 250, 20, 0.95, 0.999, self.sim.params['damping'], "Damping")
         self.gui_elements.append(self.damping_slider)
         y_pos += spacing
 
         # Gravity slider
-        self.gravity_slider = SimpleSlider(20, y_pos, 250, 20, -12.0, -2.0, self.sim.params['gravity'], "Gravity")
+        self.gravity_slider = SimpleSlider(20, y_pos, 250, 20, -15.0, -1.0, self.sim.params['gravity'], "Gravity")
         self.gui_elements.append(self.gravity_slider)
         y_pos += spacing
 
         # Particle radius slider
-        self.particle_radius_slider = SimpleSlider(20, y_pos, 250, 20, 0.010, 0.1, self.sim.params['particle_radius'], "Particle Radius")
+        self.particle_radius_slider = SimpleSlider(20, y_pos, 250, 20, 0.010, 0.040, self.sim.params['particle_radius'], "Particle Radius")
         self.gui_elements.append(self.particle_radius_slider)
         y_pos += spacing
 
         # Smoothing radius slider
-        self.smoothing_radius_slider = SimpleSlider(20, y_pos, 250, 20, 0.0, 0.1, self.sim.params['smoothing_radius'], "Smoothing Radius")
+        self.smoothing_radius_slider = SimpleSlider(20, y_pos, 250, 20, 0.04, 0.14, self.sim.params['smoothing_radius'], "Smoothing Radius")
         self.gui_elements.append(self.smoothing_radius_slider)
         y_pos += spacing
 
         # Rest density slider
-        self.rest_density_slider = SimpleSlider(20, y_pos, 250, 20, 0.0, 50000.0, self.sim.params['rest_density'], "Rest Density")
+        self.rest_density_slider = SimpleSlider(20, y_pos, 250, 20, 500.0, 2000.0, self.sim.params['rest_density'], "Rest Density")
         self.gui_elements.append(self.rest_density_slider)
         y_pos += spacing
 
         # Constraint epsilon slider
-        self.epsilon_slider = SimpleSlider(20, y_pos, 250, 20, 50.0, 4000.0, self.sim.params['constraint_epsilon'], "Constraint Epsilon")
+        self.epsilon_slider = SimpleSlider(20, y_pos, 250, 20, 1.0e-8, 1.0e-3, self.sim.params['constraint_epsilon'], "Constraint Epsilon")
         self.gui_elements.append(self.epsilon_slider)
         y_pos += spacing
 
+        # Artificial pressure strength slider
+        self.artificial_pressure_slider = SimpleSlider(20, y_pos, 250, 20, 0.0, 0.5, self.sim.params['artificial_pressure_k'], "Artificial Pressure k")
+        self.gui_elements.append(self.artificial_pressure_slider)
+        y_pos += spacing
+
+        # Artificial pressure delta q slider
+        self.artificial_delta_q_slider = SimpleSlider(20, y_pos, 250, 20, 0.05, 0.6, self.sim.params['artificial_pressure_delta_q'], "Artificial d_q Scale")
+        self.gui_elements.append(self.artificial_delta_q_slider)
+        y_pos += spacing
+
         # Max velocity slider
-        self.max_velocity_slider = SimpleSlider(20, y_pos, 250, 20, 4.0, 12.0, self.sim.params['max_velocity'], "Max Velocity")
+        self.max_velocity_slider = SimpleSlider(20, y_pos, 250, 20, 3.0, 12.0, self.sim.params['max_velocity'], "Max Velocity")
         self.gui_elements.append(self.max_velocity_slider)
         y_pos += spacing
 
         # Collision radius slider (for sphere mode)
-        self.collision_radius_slider = SimpleSlider(20, y_pos, 250, 20, 0.010, 0.1, self.sim.params['collision_radius'], "Collision Radius")
+        self.collision_radius_slider = SimpleSlider(20, y_pos, 250, 20, 0.03, 0.08, self.sim.params['collision_radius'], "Collision Radius")
         self.gui_elements.append(self.collision_radius_slider)
-        #y_pos += spacing
+        y_pos += spacing
 
         # Restitution slider (for sphere mode)
         self.restitution_slider = SimpleSlider(20, y_pos, 250, 20, 0.0, 0.6, self.sim.params['restitution'], "Restitution")
         self.gui_elements.append(self.restitution_slider)
-        #y_pos += spacing * 2
+        y_pos += spacing
 
         # Mode toggle buttons
         self.pbf_btn = SimpleButton(20, y_pos, 80, 25, "PBF Mode", self.set_pbf_mode)
@@ -632,59 +694,76 @@ class GUIRenderer:
     def set_water(self):
         self.sim.params.update({
             'particle_radius': 0.015,
-            'smoothing_radius': 0.04,
+            'smoothing_radius': 0.09,
             'rest_density': 1000.0,
-            'constraint_epsilon': 200.0,
-            'damping': 0.96,
-            'gravity': -5.0,
+            'constraint_epsilon': 1.0e-6,
+            'damping': 0.996,
+            'gravity': -9.81,
             'dt': 1.0/120.0,
-            'substeps': 6,
+            'substeps': 4,
             'constraint_iterations': 6,
-            'max_velocity': 8.0
+            'max_velocity': 6.0,
+            'artificial_pressure_k': 0.1,
+            'artificial_pressure_delta_q': 0.2,
+            'artificial_pressure_n': 4.0
         })
+        self.sim.ensure_parameter_consistency()
+        self.sim.reset_particles()
         self.update_sliders()
 
     def set_viscous(self):
         self.sim.params.update({
-            'particle_radius': 0.015,
-            'smoothing_radius': 0.04,
+            'particle_radius': 0.016,
+            'smoothing_radius': 0.1,
             'rest_density': 1000.0,
-            'constraint_epsilon': 220.0,
-            'damping': 0.92,  # higher damping for viscous feel
-            'gravity': -5.0,
+            'constraint_epsilon': 2.0e-6,
+            'damping': 0.992,
+            'gravity': -9.81,
             'dt': 1.0/120.0,
-            'substeps': 6,
+            'substeps': 5,
             'constraint_iterations': 8,
-            'max_velocity': 7.0
+            'max_velocity': 5.5,
+            'artificial_pressure_k': 0.08,
+            'artificial_pressure_delta_q': 0.25,
+            'artificial_pressure_n': 4.0
         })
+        self.sim.ensure_parameter_consistency()
+        self.sim.reset_particles()
         self.update_sliders()
 
     def set_stable(self):
         self.sim.params.update({
             'particle_radius': 0.015,
-            'smoothing_radius': 0.04,
+            'smoothing_radius': 0.1,
             'rest_density': 1000.0,
-            'constraint_epsilon': 250.0,
-            'damping': 0.96,
-            'gravity': -5.0,
+            'constraint_epsilon': 5.0e-6,
+            'damping': 0.998,
+            'gravity': -9.81,
             'dt': 1.0/120.0,
-            'substeps': 8,
-            'constraint_iterations': 8,
-            'max_velocity': 8.0
+            'substeps': 6,
+            'constraint_iterations': 9,
+            'max_velocity': 5.0,
+            'artificial_pressure_k': 0.12,
+            'artificial_pressure_delta_q': 0.18,
+            'artificial_pressure_n': 4.0
         })
+        self.sim.ensure_parameter_consistency()
+        self.sim.reset_particles()
         self.update_sliders()
 
     def update_sliders(self):
         """Update slider values from simulation parameters."""
         self.dt_slider.current_val = self.sim.params['dt']
-        self.substeps_slider.current_val = self.sim.params['substeps']
-        self.iterations_slider.current_val = self.sim.params['constraint_iterations']
+        self.substeps_slider.current_val = float(self.sim.params['substeps'])
+        self.iterations_slider.current_val = float(self.sim.params['constraint_iterations'])
         self.damping_slider.current_val = self.sim.params['damping']
         self.gravity_slider.current_val = self.sim.params['gravity']
         self.particle_radius_slider.current_val = self.sim.params['particle_radius']
         self.smoothing_radius_slider.current_val = self.sim.params['smoothing_radius']
         self.rest_density_slider.current_val = self.sim.params['rest_density']
         self.epsilon_slider.current_val = self.sim.params['constraint_epsilon']
+        self.artificial_pressure_slider.current_val = self.sim.params['artificial_pressure_k']
+        self.artificial_delta_q_slider.current_val = self.sim.params['artificial_pressure_delta_q']
         self.max_velocity_slider.current_val = self.sim.params['max_velocity']
         self.collision_radius_slider.current_val = self.sim.params['collision_radius']
         self.restitution_slider.current_val = self.sim.params['restitution']
@@ -700,9 +779,20 @@ class GUIRenderer:
         self.sim.params['smoothing_radius'] = self.smoothing_radius_slider.current_val
         self.sim.params['rest_density'] = self.rest_density_slider.current_val
         self.sim.params['constraint_epsilon'] = self.epsilon_slider.current_val
+        self.sim.params['artificial_pressure_k'] = self.artificial_pressure_slider.current_val
+        self.sim.params['artificial_pressure_delta_q'] = self.artificial_delta_q_slider.current_val
         self.sim.params['max_velocity'] = self.max_velocity_slider.current_val
         self.sim.params['collision_radius'] = self.collision_radius_slider.current_val
         self.sim.params['restitution'] = self.restitution_slider.current_val
+
+        self.sim.ensure_parameter_consistency()
+
+        self.smoothing_radius_slider.current_val = self.sim.params['smoothing_radius']
+        self.collision_radius_slider.current_val = self.sim.params['collision_radius']
+        self.epsilon_slider.current_val = self.sim.params['constraint_epsilon']
+        self.artificial_pressure_slider.current_val = self.sim.params['artificial_pressure_k']
+        self.artificial_delta_q_slider.current_val = self.sim.params['artificial_pressure_delta_q']
+        self.max_velocity_slider.current_val = self.sim.params['max_velocity']
 
     def render_text(self, x, y, text):
         """Render text using GLUT."""
@@ -936,40 +1026,40 @@ class GUIRenderer:
             self.render_text(20, y_pos, "Pressure Colors:")
             y_pos += 20
             glColor3f(0.0, 0.5, 1.0)  # Blue
-            self.render_text(20, y_pos, "• Blue: Low pressure")
+            self.render_text(20, y_pos, "- Blue: Low pressure")
             y_pos += 20
             glColor3f(0.0, 1.0, 0.5)  # Green
-            self.render_text(20, y_pos, "• Green: Medium pressure")
+            self.render_text(20, y_pos, "- Green: Medium pressure")
             y_pos += 20
             glColor3f(1.0, 1.0, 0.0)  # Yellow
-            self.render_text(20, y_pos, "• Yellow: High pressure")
+            self.render_text(20, y_pos, "- Yellow: High pressure")
             y_pos += 20
             glColor3f(1.0, 0.0, 0.0)  # Red
-            self.render_text(20, y_pos, "• Red: Very high pressure")
+            self.render_text(20, y_pos, "- Red: Very high pressure")
         else:
             self.render_text(20, y_pos, "Speed Colors:")
             y_pos += 20
             glColor3f(0.1, 0.3, 0.8)  # Blue
-            self.render_text(20, y_pos, "• Blue: Slow")
+            self.render_text(20, y_pos, "- Blue: Slow")
             y_pos += 20
             glColor3f(0.0, 0.7, 0.5)  # Green
-            self.render_text(20, y_pos, "• Green: Medium")
+            self.render_text(20, y_pos, "- Green: Medium")
             y_pos += 20
             glColor3f(0.9, 0.3, 0.1)  # Red
-            self.render_text(20, y_pos, "• Red: Fast")
+            self.render_text(20, y_pos, "- Red: Fast")
 
         # Instructions
         y_pos = self.window_height - 120
         glColor3f(1.0, 1.0, 1.0)  # Reset to white
         self.render_text(20, y_pos, "Instructions:")
         y_pos += 20
-        self.render_text(20, y_pos, "• Click sliders to adjust")
+        self.render_text(20, y_pos, "- Click sliders to adjust")
         y_pos += 20
-        self.render_text(20, y_pos, "• Use preset buttons")
+        self.render_text(20, y_pos, "- Use preset buttons")
         y_pos += 20
-        self.render_text(20, y_pos, "• Drag in 3D area to rotate")
+        self.render_text(20, y_pos, "- Drag in 3D area to rotate")
         y_pos += 20
-        self.render_text(20, y_pos, "• ESC to exit")
+        self.render_text(20, y_pos, "- ESC to exit")
 
     def render(self):
         """Main render function."""
@@ -1163,17 +1253,17 @@ def main():
 
     print("\nPosition-Based Fluids with Mode Toggle simulation started!")
     print("GUI Controls:")
-    print("  • Left panel: Interactive sliders and buttons")
-    print("  • Right panel: 3D particle visualization")
-    print("  • Click sliders to adjust parameters")
-    print("  • Toggle buttons: Switch between PBF and Sphere collision")
-    print("  • PBF Mode: Fluid behavior with density constraints")
-    print("  • Sphere Mode: Granular behavior with distance constraints")
-    print("  • Use preset buttons for different material types")
-    print("  • Drag in 3D area to rotate camera")
-    print("  • Space: Pause/Resume")
-    print("  • R: Reset particles")
-    print("  • Escape: Exit")
+    print("  - Left panel: Interactive sliders and buttons")
+    print("  - Right panel: 3D particle visualization")
+    print("  - Click sliders to adjust parameters")
+    print("  - Toggle buttons: Switch between PBF and Sphere collision")
+    print("  - PBF Mode: Fluid behavior with density constraints")
+    print("  - Sphere Mode: Granular behavior with distance constraints")
+    print("  - Use preset buttons for different material types")
+    print("  - Drag in 3D area to rotate camera")
+    print("  - Space: Pause/Resume")
+    print("  - R: Reset particles")
+    print("  - Escape: Exit")
 
     # Start main loop
     glutMainLoop()

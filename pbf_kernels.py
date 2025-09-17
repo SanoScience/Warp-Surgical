@@ -32,28 +32,30 @@ def pbf_compute_density(
     predicted_positions: wp.array(dtype=wp.vec3),
     densities: wp.array(dtype=wp.float32),
     hash_grid: wp.uint64,
-    smoothing_radius: float
+    smoothing_radius: float,
+    particle_mass: float
 ):
-    """Compute particle density using Poly6 kernel."""
+    """Compute particle density using Poly6 kernel with per-particle mass."""
     tid = wp.tid()
     pos_i = predicted_positions[tid]
     density = float(0.0)
-    
+
+    h2 = smoothing_radius * smoothing_radius
+    coeff = 315.0 / (64.0 * wp.pi * wp.pow(smoothing_radius, 9.0))
+
     # Query neighbors using spatial hash
     for neighbor_id in wp.hash_grid_query(hash_grid, pos_i, smoothing_radius):
         pos_j = predicted_positions[neighbor_id]
-        r = wp.length(pos_i - pos_j)
-        
-        if r < smoothing_radius:
-            # Poly6 kernel (properly normalized)
-            q = r / smoothing_radius
-            if q <= 1.0:
-                w = 315.0 / (64.0 * wp.pi * wp.pow(smoothing_radius, 9.0))
-                w *= wp.pow(smoothing_radius * smoothing_radius - r * r, 3.0)
-                density = density + w
-    
-    # Clamp density to reasonable bounds
-    densities[tid] = wp.clamp(density, 100.0, 5000.0)
+        r_vec = pos_i - pos_j
+        r_sq = wp.dot(r_vec, r_vec)
+
+        if r_sq < h2:
+            term = h2 - r_sq
+            if term > 0.0:
+                density = density + particle_mass * coeff * wp.pow(term, 3.0)
+
+    densities[tid] = density
+
 
 @wp.kernel
 def pbf_compute_lambda(
@@ -63,51 +65,41 @@ def pbf_compute_lambda(
     hash_grid: wp.uint64,
     smoothing_radius: float,
     rest_density: float,
-    constraint_epsilon: float
+    constraint_epsilon: float,
+    particle_mass: float
 ):
     """Compute constraint Lagrange multipliers."""
     tid = wp.tid()
     pos_i = predicted_positions[tid]
     density_i = densities[tid]
-    
-    # Constraint value
+
     C_i = (density_i / rest_density) - 1.0
-    
-    # Skip if constraint is already satisfied
-    if wp.abs(C_i) < 0.01:
-        lambdas[tid] = 0.0
-        return
-    
-    # Compute gradient sum
+
+    mass_term = particle_mass / rest_density
     grad_sum = float(0.0)
     grad_i = wp.vec3(0.0, 0.0, 0.0)
-    
+
+    spiky_const = -45.0 / (wp.pi * wp.pow(smoothing_radius, 6.0))
+
     for neighbor_id in wp.hash_grid_query(hash_grid, pos_i, smoothing_radius):
         pos_j = predicted_positions[neighbor_id]
         r_vec = pos_i - pos_j
         r = wp.length(r_vec)
-        
-        if r > 0.001 and r < smoothing_radius:  # Avoid division by zero
-            # Spiky kernel gradient
-            grad_magnitude = -45.0 / (wp.pi * wp.pow(smoothing_radius, 6.0))
-            grad_magnitude *= wp.pow(smoothing_radius - r, 2.0) / r
-            
-            grad_j = grad_magnitude * r_vec / rest_density
-            
-            if neighbor_id == tid:
-                grad_i = grad_i + grad_j
-            else:
-                grad_sum = grad_sum + wp.length_sq(grad_j)
-    
+
+        if r > 0.0 and r < smoothing_radius:
+            grad_w = spiky_const * wp.pow(smoothing_radius - r, 2.0) * (r_vec / r)
+            grad = mass_term * grad_w
+            grad_sum = grad_sum + wp.length_sq(grad)
+            grad_i = grad_i + grad
+
     grad_sum = grad_sum + wp.length_sq(grad_i)
-    
-    # Compute lambda with regularization
-    if grad_sum > constraint_epsilon:
-        lambda_val = -C_i / (grad_sum + constraint_epsilon)
-        # Clamp lambda to reasonable range
-        lambdas[tid] = wp.clamp(lambda_val, -0.5, 0.5)
+    denom = grad_sum + wp.max(constraint_epsilon, 1.0e-8)
+
+    if denom > 0.0:
+        lambdas[tid] = -C_i / denom
     else:
         lambdas[tid] = 0.0
+
 
 @wp.kernel
 def pbf_compute_delta_positions(
@@ -116,34 +108,54 @@ def pbf_compute_delta_positions(
     delta_positions: wp.array(dtype=wp.vec3),
     hash_grid: wp.uint64,
     smoothing_radius: float,
-    rest_density: float
+    rest_density: float,
+    artificial_pressure_k: float,
+    artificial_pressure_delta_q: float,
+    artificial_pressure_n: float,
+    particle_mass: float
 ):
-    """Compute position corrections."""
+    """Compute position corrections with optional artificial pressure."""
     tid = wp.tid()
     pos_i = predicted_positions[tid]
     lambda_i = lambdas[tid]
     delta_pos = wp.vec3(0.0, 0.0, 0.0)
-    
+
+    dq_distance = artificial_pressure_delta_q * smoothing_radius
+    poly6_coeff = 315.0 / (64.0 * wp.pi * wp.pow(smoothing_radius, 9.0))
+    poly6_normalizer = 0.0
+
+    if artificial_pressure_k > 0.0 and artificial_pressure_delta_q > 0.0 and dq_distance > 0.0 and dq_distance < smoothing_radius:
+        dq_term = smoothing_radius * smoothing_radius - dq_distance * dq_distance
+        if dq_term > 0.0:
+            poly6_normalizer = poly6_coeff * wp.pow(dq_term, 3.0)
+
+    spiky_const = -45.0 / (wp.pi * wp.pow(smoothing_radius, 6.0))
+    mass_term = particle_mass / rest_density
+
     for neighbor_id in wp.hash_grid_query(hash_grid, pos_i, smoothing_radius):
+        if neighbor_id == tid:
+            continue
+
         pos_j = predicted_positions[neighbor_id]
         lambda_j = lambdas[neighbor_id]
         r_vec = pos_i - pos_j
         r = wp.length(r_vec)
-        
-        if r > 0.001 and r < smoothing_radius:  # Avoid division by zero
-            # Spiky kernel gradient
-            grad_magnitude = -45.0 / (wp.pi * wp.pow(smoothing_radius, 6.0))
-            grad_magnitude *= wp.pow(smoothing_radius - r, 2.0) / r
-            
-            delta_pos = delta_pos + (lambda_i + lambda_j) * grad_magnitude * r_vec / rest_density
-    
-    # Limit delta magnitude to prevent large jumps
-    max_delta = smoothing_radius * 0.3  # Conservative limit
-    delta_magnitude = wp.length(delta_pos)
-    if delta_magnitude > max_delta:
-        delta_pos = delta_pos * (max_delta / delta_magnitude)
-    
+
+        if r > 0.0 and r < smoothing_radius:
+            grad_w = spiky_const * wp.pow(smoothing_radius - r, 2.0) * (r_vec / r)
+
+            artificial_term = 0.0
+            if poly6_normalizer > 0.0:
+                r_term = smoothing_radius * smoothing_radius - r * r
+                if r_term > 0.0:
+                    w_ij = poly6_coeff * wp.pow(r_term, 3.0)
+                    artificial_term = -artificial_pressure_k * wp.pow(w_ij / poly6_normalizer, artificial_pressure_n)
+
+            correction = (lambda_i + lambda_j + artificial_term) * mass_term * grad_w
+            delta_pos = delta_pos + correction
+
     delta_positions[tid] = delta_pos
+
 
 @wp.kernel
 def pbf_apply_delta_positions(
@@ -160,40 +172,52 @@ def pbf_apply_boundaries(
     velocities: wp.array(dtype=wp.vec3),
     domain_min: wp.vec3,
     domain_max: wp.vec3,
-    restitution: float
+    particle_radius: float,
+    restitution: float,
+    friction: float
 ):
     """Apply boundary conditions with velocity damping."""
     tid = wp.tid()
     pos = positions[tid]
     vel = velocities[tid]
-    
-    # Boundary collision and response with extra damping
-    margin = 0.01  # Small margin to prevent sticking
-    
-    if pos[0] < domain_min[0] + margin:
-        pos[0] = domain_min[0] + margin
-        vel[0] = -vel[0] * restitution
-    elif pos[0] > domain_max[0] - margin:
-        pos[0] = domain_max[0] - margin
-        vel[0] = -vel[0] * restitution
-        
-    if pos[1] < domain_min[1] + margin:
-        pos[1] = domain_min[1] + margin
-        vel[1] = -vel[1] * restitution
-        vel[1] = wp.max(vel[1], 0.0)  # Prevent bouncing into ground
-    elif pos[1] > domain_max[1] - margin:
-        pos[1] = domain_max[1] - margin
-        vel[1] = -vel[1] * restitution
-        
-    if pos[2] < domain_min[2] + margin:
-        pos[2] = domain_min[2] + margin
-        vel[2] = -vel[2] * restitution
-    elif pos[2] > domain_max[2] - margin:
-        pos[2] = domain_max[2] - margin
-        vel[2] = -vel[2] * restitution
-    
+
+    rest = wp.clamp(restitution, 0.0, 1.0)
+    tangential = wp.max(0.0, 1.0 - friction)
+
+    min_x = domain_min[0] + particle_radius
+    max_x = domain_max[0] - particle_radius
+    min_y = domain_min[1] + particle_radius
+    max_y = domain_max[1] - particle_radius
+    min_z = domain_min[2] + particle_radius
+    max_z = domain_max[2] - particle_radius
+
+    if pos[0] < min_x:
+        pos = wp.vec3(min_x, pos[1], pos[2])
+        vel = wp.vec3(-vel[0] * rest, vel[1] * tangential, vel[2] * tangential)
+    elif pos[0] > max_x:
+        pos = wp.vec3(max_x, pos[1], pos[2])
+        vel = wp.vec3(-vel[0] * rest, vel[1] * tangential, vel[2] * tangential)
+
+    if pos[1] < min_y:
+        pos = wp.vec3(pos[0], min_y, pos[2])
+        vy = -vel[1] * rest
+        if vy < 0.0:
+            vy = 0.0
+        vel = wp.vec3(vel[0] * tangential, vy, vel[2] * tangential)
+    elif pos[1] > max_y:
+        pos = wp.vec3(pos[0], max_y, pos[2])
+        vel = wp.vec3(vel[0] * tangential, -vel[1] * rest, vel[2] * tangential)
+
+    if pos[2] < min_z:
+        pos = wp.vec3(pos[0], pos[1], min_z)
+        vel = wp.vec3(vel[0] * tangential, vel[1] * tangential, -vel[2] * rest)
+    elif pos[2] > max_z:
+        pos = wp.vec3(pos[0], pos[1], max_z)
+        vel = wp.vec3(vel[0] * tangential, vel[1] * tangential, -vel[2] * rest)
+
     positions[tid] = pos
     velocities[tid] = vel
+
 
 @wp.kernel
 def pbf_update_velocities_positions(
@@ -269,48 +293,46 @@ def pbf_compute_density_debug(
     unstable_flags: wp.array(dtype=wp.int32),
     hash_grid: wp.uint64,
     smoothing_radius: float,
+    particle_mass: float,
     max_density: float,
     min_density: float
 ):
     """Debug version of density computation with bounds checking."""
     tid = wp.tid()
-    
-    # Skip if marked as unstable
+
     if unstable_flags[tid] == 1:
-        densities[tid] = 1000.0  # Set to rest density
+        densities[tid] = max_density
         return
-    
+
     pos_i = predicted_positions[tid]
     density = float(0.0)
     neighbor_count = int(0)
-    
-    # Query neighbors using spatial hash
+
+    h2 = smoothing_radius * smoothing_radius
+    coeff = 315.0 / (64.0 * wp.pi * wp.pow(smoothing_radius, 9.0))
+
     for neighbor_id in wp.hash_grid_query(hash_grid, pos_i, smoothing_radius):
         pos_j = predicted_positions[neighbor_id]
-        r = wp.length(pos_i - pos_j)
-        
-        if r < smoothing_radius:
+        r_vec = pos_i - pos_j
+        r_sq = wp.dot(r_vec, r_vec)
+
+        if r_sq < h2:
             neighbor_count += 1
-            # Poly6 kernel
-            q = r / smoothing_radius
-            if q <= 1.0:
-                h2 = smoothing_radius * smoothing_radius
-                w = 315.0 / (64.0 * wp.pi * wp.pow(smoothing_radius, 9.0))
-                w *= wp.pow(h2 - r * r, 3.0)
-                density = density + w
-    
-    # Only mark as unstable if density is extremely high (indicating particle overlap)
-    if density > max_density * 2.0:  # More lenient threshold
+            term = h2 - r_sq
+            if term > 0.0:
+                density = density + particle_mass * coeff * wp.pow(term, 3.0)
+
+    if density > max_density * 2.0:
         density = max_density
         unstable_flags[tid] = 1
-    elif density < min_density * 0.5:  # More lenient threshold
+    elif density < min_density * 0.5:
         density = min_density
-    
-    # Only mark as unstable if completely isolated (0 neighbors including self)
+
     if neighbor_count == 0:
         unstable_flags[tid] = 1
-    
+
     densities[tid] = density
+
 
 @wp.kernel
 def pbf_compute_lambda_debug(
@@ -321,66 +343,49 @@ def pbf_compute_lambda_debug(
     hash_grid: wp.uint64,
     smoothing_radius: float,
     rest_density: float,
-    constraint_epsilon: float
+    constraint_epsilon: float,
+    particle_mass: float
 ):
     """Debug version of lambda computation with stability checks."""
     tid = wp.tid()
-    
-    # Skip if marked as unstable
+
     if unstable_flags[tid] == 1:
         lambdas[tid] = 0.0
         return
-    
+
     pos_i = predicted_positions[tid]
     density_i = densities[tid]
-    
-    # Constraint value
     C_i = (density_i / rest_density) - 1.0
-    
-    # Skip if constraint is already satisfied
-    if wp.abs(C_i) < 0.01:
-        lambdas[tid] = 0.0
-        return
-    
-    # Compute gradient sum
+
+    mass_term = particle_mass / rest_density
     grad_sum = float(0.0)
     grad_i = wp.vec3(0.0, 0.0, 0.0)
-    
+
+    spiky_const = -45.0 / (wp.pi * wp.pow(smoothing_radius, 6.0))
+
     for neighbor_id in wp.hash_grid_query(hash_grid, pos_i, smoothing_radius):
         if unstable_flags[neighbor_id] == 1:
-            continue  # Skip unstable neighbors
-            
+            continue
+
         pos_j = predicted_positions[neighbor_id]
         r_vec = pos_i - pos_j
         r = wp.length(r_vec)
-        
-        if r > 0.001 and r < smoothing_radius:  # Avoid division by zero
-            # Spiky kernel gradient
-            grad_magnitude = -45.0 / (wp.pi * wp.pow(smoothing_radius, 6.0))
-            grad_magnitude *= wp.pow(smoothing_radius - r, 2.0) / r
-            
-            grad_j = grad_magnitude * r_vec / rest_density
-            
-            if neighbor_id == tid:
-                grad_i = grad_i + grad_j
-            else:
-                grad_sum = grad_sum + wp.length_sq(grad_j)
-    
+
+        if r > 0.0 and r < smoothing_radius:
+            grad_w = spiky_const * wp.pow(smoothing_radius - r, 2.0) * (r_vec / r)
+            grad = mass_term * grad_w
+            grad_sum = grad_sum + wp.length_sq(grad)
+            grad_i = grad_i + grad
+
     grad_sum = grad_sum + wp.length_sq(grad_i)
-    
-    # Compute lambda with regularization
-    denominator = grad_sum + constraint_epsilon
-    if denominator > 0.0001:  # Avoid division by very small numbers
-        lambda_val = -C_i / denominator
-        # Clamp lambda to reasonable range
-        max_lambda = 1.0
-        if wp.abs(lambda_val) > max_lambda:
-            lambda_val = wp.sign(lambda_val) * max_lambda
-            unstable_flags[tid] = 1
-        lambdas[tid] = lambda_val
+    denom = grad_sum + wp.max(constraint_epsilon, 1.0e-8)
+
+    if denom > 0.0:
+        lambdas[tid] = -C_i / denom
     else:
         lambdas[tid] = 0.0
         unstable_flags[tid] = 1
+
 
 @wp.kernel
 def pbf_compute_delta_positions_debug(
@@ -391,44 +396,64 @@ def pbf_compute_delta_positions_debug(
     hash_grid: wp.uint64,
     smoothing_radius: float,
     rest_density: float,
+    artificial_pressure_k: float,
+    artificial_pressure_delta_q: float,
+    artificial_pressure_n: float,
+    particle_mass: float,
     max_delta: float
 ):
     """Debug version of delta position computation with bounds."""
     tid = wp.tid()
-    
-    # Skip if marked as unstable
+
     if unstable_flags[tid] == 1:
         delta_positions[tid] = wp.vec3(0.0, 0.0, 0.0)
         return
-    
+
     pos_i = predicted_positions[tid]
     lambda_i = lambdas[tid]
     delta_pos = wp.vec3(0.0, 0.0, 0.0)
-    
+
+    dq_distance = artificial_pressure_delta_q * smoothing_radius
+    poly6_coeff = 315.0 / (64.0 * wp.pi * wp.pow(smoothing_radius, 9.0))
+    poly6_normalizer = 0.0
+
+    if artificial_pressure_k > 0.0 and artificial_pressure_delta_q > 0.0 and dq_distance > 0.0 and dq_distance < smoothing_radius:
+        dq_term = smoothing_radius * smoothing_radius - dq_distance * dq_distance
+        if dq_term > 0.0:
+            poly6_normalizer = poly6_coeff * wp.pow(dq_term, 3.0)
+
+    spiky_const = -45.0 / (wp.pi * wp.pow(smoothing_radius, 6.0))
+    mass_term = particle_mass / rest_density
+
     for neighbor_id in wp.hash_grid_query(hash_grid, pos_i, smoothing_radius):
-        if unstable_flags[neighbor_id] == 1:
-            continue  # Skip unstable neighbors
-            
+        if neighbor_id == tid or unstable_flags[neighbor_id] == 1:
+            continue
+
         pos_j = predicted_positions[neighbor_id]
         lambda_j = lambdas[neighbor_id]
         r_vec = pos_i - pos_j
         r = wp.length(r_vec)
-        
-        if r > 0.001 and r < smoothing_radius:  # Avoid division by zero
-            # Spiky kernel gradient
-            grad_magnitude = -45.0 / (wp.pi * wp.pow(smoothing_radius, 6.0))
-            grad_magnitude *= wp.pow(smoothing_radius - r, 2.0) / r
-            
-            correction = (lambda_i + lambda_j) * grad_magnitude * r_vec / rest_density
+
+        if r > 0.0 and r < smoothing_radius:
+            grad_w = spiky_const * wp.pow(smoothing_radius - r, 2.0) * (r_vec / r)
+
+            artificial_term = 0.0
+            if poly6_normalizer > 0.0:
+                r_term = smoothing_radius * smoothing_radius - r * r
+                if r_term > 0.0:
+                    w_ij = poly6_coeff * wp.pow(r_term, 3.0)
+                    artificial_term = -artificial_pressure_k * wp.pow(w_ij / poly6_normalizer, artificial_pressure_n)
+
+            correction = (lambda_i + lambda_j + artificial_term) * mass_term * grad_w
             delta_pos = delta_pos + correction
-    
-    # Clamp delta position to prevent large corrections
+
     delta_magnitude = wp.length(delta_pos)
     if delta_magnitude > max_delta:
         delta_pos = delta_pos * (max_delta / delta_magnitude)
         unstable_flags[tid] = 1
-    
+
     delta_positions[tid] = delta_pos
+
 
 @wp.kernel
 def pbf_apply_delta_positions_debug(
