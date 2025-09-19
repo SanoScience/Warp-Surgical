@@ -475,6 +475,8 @@ class GUIRenderer:
         self.boundary_vbo = None
         self.boundary_vertex_count = 0
         self._boundary_domain = None
+        self._positions_buffer_bytes = 0
+        self._colors_buffer_bytes = 0
 
         # FPS tracking
         self.frame_count = 0
@@ -490,6 +492,8 @@ class GUIRenderer:
         self.boundary_vbo = glGenBuffers(1)
         self.boundary_vertex_count = 0
         self._boundary_domain = None
+        self._positions_buffer_bytes = 0
+        self._colors_buffer_bytes = 0
         self.update_boundary_vbo(force=True)
 
     def update_boundary_vbo(self, force=False):
@@ -554,12 +558,12 @@ class GUIRenderer:
         y_pos += spacing
 
         # Particle radius slider
-        self.particle_radius_slider = SimpleSlider(20, y_pos, 250, 20, 0.010, 0.1, self.sim.params['particle_radius'], "Particle Radius")
+        self.particle_radius_slider = SimpleSlider(20, y_pos, 250, 20, 0.01, 1.0, self.sim.params['particle_radius'], "Particle Radius")
         self.gui_elements.append(self.particle_radius_slider)
         y_pos += spacing
 
         # Smoothing radius slider
-        self.smoothing_radius_slider = SimpleSlider(20, y_pos, 250, 20, 0.0, 0.1, self.sim.params['smoothing_radius'], "Smoothing Radius")
+        self.smoothing_radius_slider = SimpleSlider(20, y_pos, 250, 20, 0.01, 1.0, self.sim.params['smoothing_radius'], "Smoothing Radius")
         self.gui_elements.append(self.smoothing_radius_slider)
         y_pos += spacing
 
