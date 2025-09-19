@@ -36,7 +36,21 @@ def parse_arguments():
                        help="Detect and display available labels in the source image")
     
     parser.add_argument("--warp-mesh-path", type=lambda x: None if x == "None" else str(x),
-                       default=None, help="Optional path to a Warp mesh folder or base name")
+                       default=None, help="Optional path to a Warp mesh folder (.mesh or WarpSim folder)")
+
+    # Viewer/loader integration options
+    parser.add_argument("--reconstruct-surface", dest="reconstruct_surface", action="store_true",
+                       help="Reconstruct surface from tets (with consistent winding)")
+    parser.add_argument("--no-reconstruct-surface", dest="reconstruct_surface", action="store_false",
+                       help="Do not reconstruct surface; use provided triangles if present")
+    parser.set_defaults(reconstruct_surface=True)
+
+    parser.add_argument("--mesh-load-mode", choices=["single", "split_subdomains"], default="single",
+                       help="Load a single mesh (colored by subdomain IDs) or split into per-subdomain meshes")
+    parser.add_argument("--flip-winding", action="store_true",
+                       help="Force flip triangle winding after reconstruction (debug/fallback)")
+    parser.add_argument("--coloring", choices=["subdomain", "spatial", "none"], default="subdomain",
+                       help="Vertex coloring mode for the surface mesh")
 
     return parser.parse_known_args()[0]
 
@@ -92,6 +106,13 @@ def run_simulation(args):
             print(f"Warning: Warp mesh path not found: {resolved_mesh_path}. Falling back to bundled meshes.")
             mesh_path = None
 
+    # Configure warp-cgal viewer bridge via environment
+    import os
+    os.environ['WARP_CGAL_RECONSTRUCT_SURFACE'] = '1' if args.reconstruct_surface else '0'
+    os.environ['WARP_CGAL_SPLIT_SUBDOMAINS'] = '1' if args.mesh_load_mode == 'split_subdomains' else '0'
+    if args.flip_winding:
+        os.environ['WARP_CGAL_FORCE_FLIP_WINDING'] = '1'
+
     # Initialize haptic controller
     #haptic_controller = HapticController(scale=1.0)
 
@@ -101,6 +122,7 @@ def run_simulation(args):
         num_frames=args.num_frames,
         use_opengl=not args.usd,
         mesh_path=mesh_path,
+        coloring_mode=args.coloring,
     )
 
     if args.usd:

@@ -40,7 +40,7 @@ def transform_mesh_vertices(
 
 class WarpSim:
     #region Initialization
-    def __init__(self, stage_path="output.usd", num_frames=300, use_opengl=True, mesh_path=None):
+    def __init__(self, stage_path="output.usd", num_frames=300, use_opengl=True, mesh_path=None, coloring_mode: str = "subdomain"):
         self.sim_substeps = 16
         self.num_frames = num_frames
         self.fps = 120
@@ -60,6 +60,7 @@ class WarpSim:
 
         self.particle_mass = 0.1
         self.mesh_path = mesh_path
+        self.coloring_mode = coloring_mode or "subdomain"
 
         self.cutting_active = False
         self.heating_active = False
@@ -278,7 +279,7 @@ class WarpSim:
 
 
                 # Create per-vertex colors for multi-label visualization (only once)
-                if not hasattr(self, '_vertex_colors') or True:  # Force regeneration for spatial coloring
+                if not hasattr(self, '_vertex_colors') or True:  # Regenerate per frame for simplicity
                     self._vertex_colors = self._create_vertex_colors_for_labels()
                 
                 self.renderer.render_mesh_warp(
@@ -304,7 +305,12 @@ class WarpSim:
 
 #endregion
     def _create_vertex_colors_for_labels(self):
-        """Create per-vertex colors using subdomain labels when available."""
+        """Create per-vertex colors.
+
+        - 'subdomain': use tetra subdomain labels to color vertices
+        - 'spatial': fallback spatial bands by Y
+        - 'none': uniform white
+        """
         import numpy as np
         import warp as wp
 
@@ -313,7 +319,14 @@ class WarpSim:
 
         vertex_colors = np.zeros((num_vertices, 4), dtype=np.float32)
 
-        if getattr(self, 'tet_subdomain_labels', None) is not None and len(self.tet_subdomain_labels):
+        # None: return white
+        if str(self.coloring_mode).lower() == 'none':
+            vertex_colors[:, 0:3] = (1.0, 1.0, 1.0)
+            vertex_colors[:, 3] = 1.0
+            return wp.array(vertex_colors, dtype=wp.vec4, device=wp.get_device())
+
+        # Subdomain coloring when labels available
+        if str(self.coloring_mode).lower() == 'subdomain' and getattr(self, 'tet_subdomain_labels', None) is not None and len(self.tet_subdomain_labels):
             tetra_array = self.model.tetrahedra_wp
             tet_indices = None
             if tetra_array is not None and tetra_array.shape[0] > 0:
@@ -355,6 +368,10 @@ class WarpSim:
                 return wp.array(vertex_colors, dtype=wp.vec4, device=wp.get_device())
             else:
                 print('Warning: Unable to map subdomain labels to tetrahedra; using spatial coloring fallback')
+
+        # Spatial coloring fallback or explicit request
+        if str(self.coloring_mode).lower() not in ('subdomain',) or getattr(self, 'tet_subdomain_labels', None) is None:
+            pass
 
         x_coords = positions[:, 0]
         y_coords = positions[:, 1]

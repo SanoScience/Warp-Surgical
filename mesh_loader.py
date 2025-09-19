@@ -130,11 +130,73 @@ def _build_model_from_warp_mesh(
     tetra_stiffness_lambda: float,
     tetra_dampen: float,
 ):
+    import os
+
     load_warp_mesh_dataset, flatten_mesh_dataset = _get_warp_bridge()
 
-    dataset = load_warp_mesh_dataset(str(warp_mesh_path), reconstruct_surface=True)
+    reconstruct_flag = os.environ.get('WARP_CGAL_RECONSTRUCT_SURFACE', '1')
+    reconstruct_surface = reconstruct_flag not in ('0', 'false', 'False')
+
+    split_flag = os.environ.get('WARP_CGAL_SPLIT_SUBDOMAINS', '0')
+    split_subdomains = split_flag in ('1', 'true', 'True')
+
+    # Load without reconstruction; we will optionally force-reconstruct below for consistent winding
+    dataset = load_warp_mesh_dataset(str(warp_mesh_path), reconstruct_surface=False)
     if not dataset:
         raise ValueError(f'No mesh data found at {warp_mesh_path}')
+
+    # Optionally force surface reconstruction for all meshes to ensure consistent winding
+    if reconstruct_surface:
+        try:
+            import simulation_bridge as _viewer_bridge  # type: ignore
+            ProcessorCls = getattr(_viewer_bridge, 'MeshProcessor', None)
+        except Exception:
+            ProcessorCls = None
+
+        if ProcessorCls is not None:
+            processor = ProcessorCls()
+            _recon_count = 0
+            for lbl, mesh in list(dataset.items()):
+                # Only attempt if tetrahedra exist
+                try:
+                    if mesh.tetrahedra is not None and len(mesh.tetrahedra):
+                        if processor.reconstruct_surface(mesh):
+                            _recon_count += 1
+                except Exception as _e:
+                    # Non-fatal; keep existing triangles
+                    pass
+            try:
+                if _recon_count:
+                    print(f"warp-cgal: forced surface reconstruction on {int(_recon_count)} mesh(es)")
+            except Exception:
+                pass
+
+    # Optionally split meshes into per-subdomain isolated geometry prior to flattening
+    if split_subdomains:
+        # Import MeshProcessor from the viewer's simulation bridge (handles local loader isolation)
+        try:
+            import simulation_bridge as _viewer_bridge  # type: ignore
+            ProcessorCls = getattr(_viewer_bridge, 'MeshProcessor', None)
+        except Exception:
+            ProcessorCls = None
+
+        processor = ProcessorCls() if ProcessorCls is not None else None
+        new_dataset = {}
+        for label, mesh in dataset.items():
+            # If labels are present, separate per subdomain; otherwise keep as-is
+            if processor is not None and getattr(mesh, 'subdomain_labels', None) is not None and mesh.subdomain_labels is not None and mesh.tetrahedra is not None:
+                separated = processor.reconstruct_subdomain_meshes(mesh)
+                if separated:
+                    for sub_id, sub_mesh in separated.items():
+                        # Build unique numeric label combining original label and subdomain id
+                        new_label = int(label) * 1000 + int(sub_id)
+                        sub_mesh.label = new_label
+                        new_dataset[new_label] = sub_mesh
+                else:
+                    new_dataset[int(label)] = mesh
+            else:
+                new_dataset[int(label)] = mesh
+        dataset = new_dataset
 
     combined = flatten_mesh_dataset(dataset)
 
@@ -149,6 +211,13 @@ def _build_model_from_warp_mesh(
     vertex_rows = vertices.shape[0]
     edge_pairs = edges.reshape(-1, 2) if edges.size else np.empty((0, 2), dtype=np.int32)
     triangle_indices = triangles.reshape(-1, 3) if triangles.size else np.empty((0, 3), dtype=np.int32)
+
+    # Optional final flip of triangle winding (debug/fallback)
+    try:
+        if os.environ.get('WARP_CGAL_FORCE_FLIP_WINDING', '0') in ('1', 'true', 'True') and triangle_indices.size:
+            triangle_indices = triangle_indices[:, [0, 2, 1]]
+    except Exception:
+        pass
     tetra_indices = tetrahedra.reshape(-1, 4) if tetrahedra.size else np.empty((0, 4), dtype=np.int32)
 
     for position in vertices:

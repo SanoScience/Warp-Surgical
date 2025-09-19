@@ -182,11 +182,17 @@ void main()
             bloodBlend   * bloodCol;
     }
 
+    // Use per-vertex color when no textures are bound
+    if (numTextures == 0)
+    {
+        baseColor = VertexColor.rgb;
+    }
+
     // Environment hack
     if (numTextures == 1)
         baseColor *= 0.5;
 
-    vec3 result = (ambient + diffuse + specular) * baseColor; // Commented out previous formula for debugging, irrelevant
+    vec3 result = (ambient + diffuse + specular) * baseColor; // Multiply lighting by chosen base color
     FragColor = vec4(result, 1.0);
 }
 """
