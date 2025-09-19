@@ -1,6 +1,37 @@
+import sys
+from pathlib import Path
+from typing import Optional
+
+import numpy as np
+
 from centrelines import CentrelinePointInfo, ClampConstraint
 import warp as wp
 import newton
+
+VIEWER_ROOT = Path(__file__).resolve().parent.parent / "warp-cgal" / "viewer"
+_BRIDGE_CACHE = None
+
+
+def _get_warp_bridge():
+    global _BRIDGE_CACHE
+
+    if _BRIDGE_CACHE is not None:
+        return _BRIDGE_CACHE
+
+    if not VIEWER_ROOT.exists():
+        raise RuntimeError('warp-cgal viewer integration is unavailable; install warp-cgal/viewer to enable Warp mesh loading.')
+
+    viewer_path = str(VIEWER_ROOT)
+    if viewer_path not in sys.path:
+        sys.path.insert(0, viewer_path)
+
+    try:
+        from simulation_bridge import load_warp_mesh_dataset, flatten_mesh_dataset
+    except ImportError as exc:
+        raise RuntimeError(f'warp-cgal viewer integration import failed: {exc}') from exc
+
+    _BRIDGE_CACHE = (load_warp_mesh_dataset, flatten_mesh_dataset)
+    return _BRIDGE_CACHE
 
 @wp.struct
 class Tetrahedron:
@@ -14,7 +45,7 @@ class TriPointsConnector:
     tri_ids: wp.vec3i
     tri_bar: wp.vec3f
 
-def parse_connector_file(filepath, particle_id_offset=0, tri_id_offset=0):
+def parse_connector_file(filepath, particle_id_offset=0, tri_id_offset=0, scale=1.0):
     """Parse connector file and return list of TriPointsConnector objects."""
     connectors = []
     with open(filepath, 'r') as f:
@@ -28,7 +59,7 @@ def parse_connector_file(filepath, particle_id_offset=0, tri_id_offset=0):
             
             connector = TriPointsConnector()
             connector.particle_id = int(parts[0]) + particle_id_offset
-            connector.rest_dist = float(parts[1])
+            connector.rest_dist = float(parts[1]) * scale
             connector.tri_ids = wp.vec3i(int(parts[2]) + tri_id_offset, int(parts[3]) + tri_id_offset, int(parts[4]) + tri_id_offset)
             connector.tri_bar = wp.vec3f(float(parts[5]), float(parts[6]), float(parts[7]))
             
@@ -44,7 +75,7 @@ def compute_tet_volume(p0, p1, p2, p3):
         ) / 6.0
     )
 
-def load_mesh_component(base_path, offset=0):
+def load_mesh_component(base_path, offset=0, scale=1.0):
     """Load a single mesh component and return positions, indices, and edges."""
     positions = []
     indices = []
@@ -62,7 +93,7 @@ def load_mesh_component(base_path, offset=0):
     # Load vertices
     with open(vertices_file, 'r') as f:
         for line in f:
-            pos = [float(x) for x in line.split()]
+            pos = [float(x) * scale for x in line.split()]
             positions.append(pos)
     
     # Load indices
@@ -88,8 +119,122 @@ def load_mesh_component(base_path, offset=0):
 
     return positions, indices, edges, tri_surface_indices, uvs
 
-def load_mesh_and_build_model(builder: newton.ModelBuilder, particle_mass, vertical_offset=0.0, spring_stiffness=1.0, spring_dampen=0.0, tetra_stiffness_mu=1.0e3, tetra_stiffness_lambda=1.0e3, tetra_dampen=0.0):
-    """Load all mesh components and build the simulation model with ranges."""
+def _build_model_from_warp_mesh(
+    builder: newton.ModelBuilder,
+    warp_mesh_path: str,
+    particle_mass: float,
+    vertical_offset: float,
+    spring_stiffness: float,
+    spring_dampen: float,
+    tetra_stiffness_mu: float,
+    tetra_stiffness_lambda: float,
+    tetra_dampen: float,
+):
+    load_warp_mesh_dataset, flatten_mesh_dataset = _get_warp_bridge()
+
+    dataset = load_warp_mesh_dataset(str(warp_mesh_path), reconstruct_surface=True)
+    if not dataset:
+        raise ValueError(f'No mesh data found at {warp_mesh_path}')
+
+    combined = flatten_mesh_dataset(dataset)
+
+    vertices = np.asarray(combined.get('vertices', np.zeros((0, 3), dtype=np.float32)), dtype=np.float32)
+    tetrahedra = np.asarray(combined.get('tetrahedra', np.zeros((0, 4), dtype=np.int32)), dtype=np.int32)
+    edges = np.asarray(combined.get('edges', np.zeros((0, 2), dtype=np.int32)), dtype=np.int32)
+    triangles = np.asarray(combined.get('triangles', np.zeros((0, 3), dtype=np.int32)), dtype=np.int32)
+    uvs = np.asarray(combined.get('uvs', np.zeros((0, 2), dtype=np.float32)), dtype=np.float32)
+    subdomain_labels = np.asarray(combined.get('subdomain_labels', np.zeros((0,), dtype=np.int32)), dtype=np.int32)
+    label_ranges = combined.get('label_ranges', {})
+
+    vertex_rows = vertices.shape[0]
+    edge_pairs = edges.reshape(-1, 2) if edges.size else np.empty((0, 2), dtype=np.int32)
+    triangle_indices = triangles.reshape(-1, 3) if triangles.size else np.empty((0, 3), dtype=np.int32)
+    tetra_indices = tetrahedra.reshape(-1, 4) if tetrahedra.size else np.empty((0, 4), dtype=np.int32)
+
+    for position in vertices:
+        pos = wp.vec3(float(position[0]), float(position[1]) + vertical_offset, float(position[2]))
+        pos = pos * 0.01
+        builder.add_particle(pos, wp.vec3(0.0, 0.0, 0.0), mass=particle_mass, radius=0.01)
+
+    for edge in edge_pairs:
+        builder.add_spring(int(edge[0]), int(edge[1]), spring_stiffness, spring_dampen, 0)
+
+    for tri in triangle_indices:
+        builder.add_triangle(int(tri[0]), int(tri[1]), int(tri[2]))
+
+    all_tetrahedra = []
+    if tetra_indices.size:
+        for tet in tetra_indices:
+            ids = [int(tet[0]), int(tet[1]), int(tet[2]), int(tet[3])]
+            v0 = vertices[ids[0]]
+            v1 = vertices[ids[1]]
+            v2 = vertices[ids[2]]
+            v3 = vertices[ids[3]]
+            p0 = wp.vec3(float(v0[0]), float(v0[1]), float(v0[2]))
+            p1 = wp.vec3(float(v1[0]), float(v1[1]), float(v1[2]))
+            p2 = wp.vec3(float(v2[0]), float(v2[1]), float(v2[2]))
+            p3 = wp.vec3(float(v3[0]), float(v3[1]), float(v3[2]))
+            rest_volume = compute_tet_volume(p0, p1, p2, p3)
+
+            tet_struct = Tetrahedron()
+            tet_struct.ids = wp.vec4i(ids[0], ids[1], ids[2], ids[3])
+            tet_struct.rest_volume = rest_volume
+            all_tetrahedra.append(tet_struct)
+
+            builder.add_tetrahedron(ids[0], ids[1], ids[2], ids[3], tetra_stiffness_mu, tetra_stiffness_lambda, tetra_dampen)
+
+    tri_indices_list = triangle_indices.astype(np.int32).reshape(-1).tolist() if triangle_indices.size else []
+    uv_list = uvs.astype(np.float32).tolist() if uvs.size else []
+
+    mesh_ranges: dict[str, dict[str, int]] = {}
+    for label, info in label_ranges.items():
+        numeric_label = int(label)
+        mesh_ranges[f'label_{numeric_label}'] = {
+            'vertex_start': int(info.get('vertex_start', 0)),
+            'vertex_count': int(info.get('vertex_count', 0)),
+            'tet_start': int(info.get('tet_start', 0)),
+            'tet_count': int(info.get('tet_count', 0)),
+            'triangle_start': int(info.get('triangle_start', 0)),
+            'triangle_count': int(info.get('triangle_count', 0)),
+            'edge_start': int(info.get('edge_start', 0)),
+            'edge_count': int(info.get('edge_count', 0)),
+            'numeric_label': numeric_label,
+        }
+
+    mesh_ranges['_tet_subdomains'] = subdomain_labels.astype(int).tolist()
+    mesh_ranges['_warp_mesh_path'] = str(warp_mesh_path)
+    mesh_ranges['_label_ranges'] = {int(k): {key: int(value) for key, value in v.items()} for k, v in label_ranges.items()}
+
+    connectors_wp = wp.array([], dtype=TriPointsConnector, device=wp.get_device())
+    tetrahedra_wp = wp.array(all_tetrahedra, dtype=Tetrahedron, device=wp.get_device()) if all_tetrahedra else wp.array([], dtype=Tetrahedron, device=wp.get_device())
+
+    return connectors_wp, tri_indices_list, uv_list, mesh_ranges, tetrahedra_wp
+
+def load_mesh_and_build_model(
+    builder: newton.ModelBuilder,
+    particle_mass,
+    vertical_offset=0.0,
+    spring_stiffness=1.0,
+    spring_dampen=0.0,
+    tetra_stiffness_mu=1.0e3,
+    tetra_stiffness_lambda=1.0e3,
+    tetra_dampen=0.0,
+    warp_mesh_path: Optional[str] = None,
+):
+    """Load mesh components and build the simulation model."""
+    if warp_mesh_path:
+        return _build_model_from_warp_mesh(
+            builder,
+            warp_mesh_path,
+            particle_mass,
+            vertical_offset,
+            spring_stiffness,
+            spring_dampen,
+            tetra_stiffness_mu,
+            tetra_stiffness_lambda,
+            tetra_dampen,
+        )
+
     all_positions = []
     all_indices = []
     all_edges = []
