@@ -108,12 +108,17 @@ def update_vertex_stretch_blend_kernel(
 
 def stretching_breaking_process(sim):
 
-    gallbladder_range = sim.mesh_ranges["fat"]
-    tet_start = gallbladder_range["tet_start"]
-    tet_count = gallbladder_range["tet_count"]
+    fat_range = sim.mesh_ranges.get("fat")
+    if not fat_range:
+        return
 
-    edge_start = gallbladder_range["edge_start"]
-    edge_count = gallbladder_range["edge_count"]
+    tet_start = fat_range.get("tet_start")
+    tet_count = fat_range.get("tet_count", 0)
+    edge_start = fat_range.get("edge_start")
+    edge_count = fat_range.get("edge_count", 0)
+
+    if tet_start is None or edge_start is None or tet_count <= 0 or edge_count <= 0:
+        return
 
     # Tetrahedrons
     wp.launch(

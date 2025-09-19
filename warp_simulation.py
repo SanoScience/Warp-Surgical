@@ -10,11 +10,20 @@ from pxr import Usd, UsdGeom
 
 import numpy as np
 import math
+from pathlib import Path
+from typing import Optional
 
 from PBDSolver import PBDSolver
 from render_surgsim_opengl import SurgSimRendererOpenGL
 
-from mesh_loader import Tetrahedron, load_background_mesh, load_mesh_and_build_model, parse_centreline_file
+from mesh_loader import (
+    Tetrahedron,
+    WarpMeshConfig,
+    load_background_mesh,
+    load_mesh_and_build_model,
+    load_warp_mesh_and_build_model,
+    parse_centreline_file,
+)
 from render_opengl import CustomOpenGLRenderer
 from simulation_kernels import (
     set_body_position,
@@ -359,7 +368,7 @@ def check_centreline_leaks(states, num_points, device=None):
 
 class WarpSim:
     #region Initialization
-    def __init__(self, stage_path="output.usd", num_frames=300, use_opengl=True):
+    def __init__(self, stage_path="output.usd", num_frames=300, use_opengl=True, warp_mesh_config: Optional[WarpMeshConfig] = None):
         self.sim_substeps = 16
         self.num_frames = num_frames
         self.fps = 120
@@ -384,6 +393,10 @@ class WarpSim:
         self.heating_active = False
         self.grasping_active = False
         self.clipping = False
+
+        self.warp_mesh_config = warp_mesh_config
+        self.warp_mesh_metadata = None
+        self.tet_subdomain_labels = None
 
         print(sys.version)
         print(f"Initializing WarpSim with {self.sim_substeps} substeps at {self.fps} FPS")
@@ -471,27 +484,46 @@ class WarpSim:
         # Load textures
         if self.use_opengl and self.renderer:
 
-            self.background_diffuse = [self.renderer.load_texture("textures/cavity_diffuse.tga")]
-            self.background_normal = [self.renderer.load_texture("textures/cavity_normals.tga")]
-            self.background_spec = [self.renderer.load_texture("textures/cavity_spec.png")]
+            textures_root = Path("textures")
 
+            cavity_diffuse = textures_root / "cavity_diffuse.tga"
+            self.background_diffuse = [self.renderer.load_texture(str(cavity_diffuse))] if cavity_diffuse.exists() else []
+
+            cavity_normal = textures_root / "cavity_normals.tga"
+            self.background_normal = [self.renderer.load_texture(str(cavity_normal))] if cavity_normal.exists() else []
+
+            cavity_spec = textures_root / "cavity_spec.png"
+            self.background_spec = [self.renderer.load_texture(str(cavity_spec))] if cavity_spec.exists() else []
 
             for mesh_name, _ in self.mesh_ranges.items():
-                setattr(self, f"{mesh_name}_diffuse_maps", [self.renderer.load_texture(f"textures/{mesh_name}/diffuse-base.png"),
-                                                            self.renderer.load_texture(f"textures/{mesh_name}/diffuse-coag.png"),
-                                                            self.renderer.load_texture(f"textures/{mesh_name}/diffuse-damage.png"),
-                                                            self.renderer.load_texture(f"textures/{mesh_name}/diffuse-blood.png")])
-                
-                setattr(self, f"{mesh_name}_normal_maps", [self.renderer.load_texture(f"textures/{mesh_name}/normal-base.png"),
-                                                            self.renderer.load_texture(f"textures/{mesh_name}/normal-coag.png"),
-                                                            self.renderer.load_texture(f"textures/{mesh_name}/normal-damage.png"),
-                                                            self.renderer.load_texture(f"textures/{mesh_name}/normal-blood.png")])
-                
-                setattr(self, f"{mesh_name}_specular_maps", [self.renderer.load_texture(f"textures/{mesh_name}/spec-base.png"),
-                                                            self.renderer.load_texture(f"textures/{mesh_name}/spec-coag.png"),
-                                                            self.renderer.load_texture(f"textures/{mesh_name}/spec-damage.png"),
-                                                            self.renderer.load_texture(f"textures/{mesh_name}/spec-blood.png")])
+                mesh_texture_dir = textures_root / mesh_name
 
+                diffuse_files = [
+                    mesh_texture_dir / "diffuse-base.png",
+                    mesh_texture_dir / "diffuse-coag.png",
+                    mesh_texture_dir / "diffuse-damage.png",
+                    mesh_texture_dir / "diffuse-blood.png",
+                ]
+                if all(p.exists() for p in diffuse_files):
+                    setattr(self, f"{mesh_name}_diffuse_maps", [self.renderer.load_texture(str(p)) for p in diffuse_files])
+
+                normal_files = [
+                    mesh_texture_dir / "normal-base.png",
+                    mesh_texture_dir / "normal-coag.png",
+                    mesh_texture_dir / "normal-damage.png",
+                    mesh_texture_dir / "normal-blood.png",
+                ]
+                if all(p.exists() for p in normal_files):
+                    setattr(self, f"{mesh_name}_normal_maps", [self.renderer.load_texture(str(p)) for p in normal_files])
+
+                specular_files = [
+                    mesh_texture_dir / "spec-base.png",
+                    mesh_texture_dir / "spec-coag.png",
+                    mesh_texture_dir / "spec-damage.png",
+                    mesh_texture_dir / "spec-blood.png",
+                ]
+                if all(p.exists() for p in specular_files):
+                    setattr(self, f"{mesh_name}_specular_maps", [self.renderer.load_texture(str(p)) for p in specular_files])
 
             self.renderer.set_input_callbacks(
                 on_key_press=self._on_key_press,
@@ -1188,11 +1220,50 @@ class WarpSim:
         tetra_dampen = 0.2
 
         # Import the mesh
-        tri_points_connectors, self.surface_tris, uvs, self.mesh_ranges, tetrahedra_wp = load_mesh_and_build_model(builder,
-            particle_mass=self.particle_mass, vertical_offset=-3.0, 
-            spring_stiffness=spring_stiffness, spring_dampen=spring_dampen,
-            tetra_stiffness_mu=tetra_stiffness_mu, tetra_stiffness_lambda=tetra_stiffness_lambda, tetra_dampen=tetra_dampen)
-        
+        if self.warp_mesh_config and self.warp_mesh_config.is_active():
+            (
+                tri_points_connectors,
+                self.surface_tris,
+                uvs,
+                self.mesh_ranges,
+                tetrahedra_wp,
+                tet_labels_wp,
+                mesh_metadata,
+            ) = load_warp_mesh_and_build_model(
+                builder,
+                particle_mass=self.particle_mass,
+                config=self.warp_mesh_config,
+                vertical_offset=-3.0,
+                spring_stiffness=spring_stiffness,
+                spring_dampen=spring_dampen,
+                tetra_stiffness_mu=tetra_stiffness_mu,
+                tetra_stiffness_lambda=tetra_stiffness_lambda,
+                tetra_dampen=tetra_dampen,
+            )
+            self.warp_mesh_metadata = mesh_metadata
+            self.tet_subdomain_labels = tet_labels_wp
+        else:
+            tri_points_connectors, self.surface_tris, uvs, self.mesh_ranges, tetrahedra_wp = load_mesh_and_build_model(
+                builder,
+                particle_mass=self.particle_mass,
+                vertical_offset=-3.0,
+                spring_stiffness=spring_stiffness,
+                spring_dampen=spring_dampen,
+                tetra_stiffness_mu=tetra_stiffness_mu,
+                tetra_stiffness_lambda=tetra_stiffness_lambda,
+                tetra_dampen=tetra_dampen,
+            )
+            self.warp_mesh_metadata = None
+            self.tet_subdomain_labels = None
+
+        if self.warp_mesh_metadata:
+            mesh_path = self.warp_mesh_metadata.get("mesh_path")
+            subdomains = self.warp_mesh_metadata.get("subdomain_ids")
+            if mesh_path:
+                print(f"Loaded warp mesh: {mesh_path}")
+            if subdomains:
+                print(f"Subdomain labels: {subdomains}")
+
         self.surface_tris_wp = wp.array(self.surface_tris, dtype=wp.int32, device=wp.get_device())
         self.uvs_wp = wp.array(uvs, dtype=wp.vec2f, device=wp.get_device())
 
@@ -1216,27 +1287,40 @@ class WarpSim:
                 setattr(self, f'{mesh_name}_bucket_storage', wp.zeros((num_buckets, bucket_size, 3), dtype=wp.int32, device=wp.get_device()))
 
         # Centrelines
-        cntr1_points, cntr1_clamp_cnstr, cntr1_edge_cnstr = parse_centreline_file(
-            'meshes/centrelines/cystic_artery.cntr',
-            self.mesh_ranges['gallbladder']['vertex_start'],
-            self.mesh_ranges['gallbladder']['edge_start']
-        )
-        cntr2_points, cntr2_clamp_cnstr, cntr2_edge_cnstr = parse_centreline_file(
-            'meshes/centrelines/cystic_duct.cntr',
-            self.mesh_ranges['gallbladder']['vertex_start'],
-            self.mesh_ranges['gallbladder']['edge_start']
+        gallbladder_range = self.mesh_ranges.get('gallbladder')
+        has_centreline_data = bool(
+            gallbladder_range
+            and gallbladder_range.get('vertex_start') is not None
+            and gallbladder_range.get('edge_start') is not None
         )
 
-        # Merge lists
-        merged_points = cntr1_points + cntr2_points
-        merged_clamp_cnstr = cntr1_clamp_cnstr + cntr2_clamp_cnstr
-        merged_edge_cnstr = cntr1_edge_cnstr + cntr2_edge_cnstr
+        if has_centreline_data:
+            cntr1_points, cntr1_clamp_cnstr, cntr1_edge_cnstr = parse_centreline_file(
+                'meshes/centrelines/cystic_artery.cntr',
+                gallbladder_range['vertex_start'],
+                gallbladder_range['edge_start'],
+            )
+            cntr2_points, cntr2_clamp_cnstr, cntr2_edge_cnstr = parse_centreline_file(
+                'meshes/centrelines/cystic_duct.cntr',
+                gallbladder_range['vertex_start'],
+                gallbladder_range['edge_start'],
+            )
 
-        self.centreline_points = wp.array(merged_points, dtype=CentrelinePointInfo, device=wp.get_device())
-        self.centreline_states = wp.zeros(len(merged_points), dtype=wp.int32, device=wp.get_device())
-        self.centreline_clamp_cnstr = wp.array(merged_clamp_cnstr, dtype=ClampConstraint, device=wp.get_device())
-        self.centreline_edge_conn = wp.array(merged_edge_cnstr, dtype=wp.int32, device=wp.get_device())
-        self.centreline_avg_positions = wp.zeros(self.centreline_points.shape[0], dtype=wp.vec3f, device=wp.get_device())
+            merged_points = cntr1_points + cntr2_points
+            merged_clamp_cnstr = cntr1_clamp_cnstr + cntr2_clamp_cnstr
+            merged_edge_cnstr = cntr1_edge_cnstr + cntr2_edge_cnstr
+
+            self.centreline_points = wp.array(merged_points, dtype=CentrelinePointInfo, device=wp.get_device())
+            self.centreline_states = wp.zeros(len(merged_points), dtype=wp.int32, device=wp.get_device())
+            self.centreline_clamp_cnstr = wp.array(merged_clamp_cnstr, dtype=ClampConstraint, device=wp.get_device())
+            self.centreline_edge_conn = wp.array(merged_edge_cnstr, dtype=wp.int32, device=wp.get_device())
+            self.centreline_avg_positions = wp.zeros(self.centreline_points.shape[0], dtype=wp.vec3f, device=wp.get_device())
+        else:
+            self.centreline_points = wp.zeros(0, dtype=CentrelinePointInfo, device=wp.get_device())
+            self.centreline_states = wp.zeros(0, dtype=wp.int32, device=wp.get_device())
+            self.centreline_clamp_cnstr = wp.zeros(0, dtype=ClampConstraint, device=wp.get_device())
+            self.centreline_edge_conn = wp.zeros(0, dtype=wp.int32, device=wp.get_device())
+            self.centreline_avg_positions = wp.zeros(0, dtype=wp.vec3f, device=wp.get_device())
 
         # Add haptic device collision body
         self.haptic_body_id = builder.add_body(

@@ -1,6 +1,16 @@
 from centrelines import CentrelinePointInfo, ClampConstraint
 import warp as wp
 import newton
+import json
+import importlib.util
+import time
+import sys
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
+
+import numpy as np
+
 
 @wp.struct
 class Tetrahedron:
@@ -338,3 +348,343 @@ def is_particle_within_radius(particle_pos, centre, radius):
     centre_pos = wp.vec3(centre[0], centre[1], centre[2])
     distance = wp.length(pos - centre_pos)
     return distance < radius
+
+
+@dataclass
+class WarpMeshConfig:
+    """Configuration describing how to source warp-format meshes via warp-cgal."""
+
+    mesh_path: Optional[str] = None
+    multi_label: bool = False
+    remesh_image: Optional[str] = None
+    remesh_output: Optional[str] = None
+    cgal_root: Optional[str] = None
+    criteria: Dict[str, float] = field(default_factory=dict)
+    subdomain_map: Dict[str, int] = field(default_factory=dict)
+
+    def is_active(self) -> bool:
+        return bool(self.mesh_path or self.remesh_image)
+
+
+_WARP_CGAL_MODULE_CACHE: Dict[str, Dict[str, Any]] = {}
+
+
+def _normalize_cache_key(path: Path) -> str:
+    resolved = str(path.resolve())
+    return resolved.replace('\\', '_').replace('/', '_')
+
+
+def _load_external_module(module_name: str, file_path: Path):
+    if not file_path.exists():
+        raise FileNotFoundError(f"Module file not found: {file_path}")
+    spec = importlib.util.spec_from_file_location(module_name, file_path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"Unable to load module from {file_path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)  # type: ignore[attr-defined]
+    return module
+
+
+def _resolve_cgal_root(config: WarpMeshConfig) -> Path:
+    if config.cgal_root:
+        candidate = Path(config.cgal_root).expanduser()
+    else:
+        candidate = Path(__file__).resolve().parent.parent / "warp-cgal"
+    if not candidate.exists():
+        raise FileNotFoundError(
+            f"Unable to locate warp-cgal directory. Checked: {candidate}"
+        )
+    return candidate
+
+
+def _get_warp_cgal_modules(root: Path) -> Dict[str, Any]:
+    cache_key = _normalize_cache_key(root)
+    if cache_key in _WARP_CGAL_MODULE_CACHE:
+        return _WARP_CGAL_MODULE_CACHE[cache_key]
+
+    viewer_path = root / "viewer"
+    if not viewer_path.exists():
+        raise FileNotFoundError(
+            f"warp-cgal viewer directory not found at {viewer_path}"
+        )
+
+    viewer_mesh_loader = _load_external_module(
+        f"warp_cgal_viewer_mesh_loader_{cache_key}", viewer_path / "mesh_loader.py"
+    )
+
+    original_mesh_loader_module = sys.modules.get("mesh_loader")
+    sys.modules["mesh_loader"] = viewer_mesh_loader
+    try:
+        viewer_mesh_processing = _load_external_module(
+            f"warp_cgal_viewer_mesh_processing_{cache_key}", viewer_path / "mesh_processing.py"
+        )
+    finally:
+        if original_mesh_loader_module is not None:
+            sys.modules["mesh_loader"] = original_mesh_loader_module
+        else:
+            sys.modules.pop("mesh_loader", None)
+
+    modules = {
+        "mesh_loader": viewer_mesh_loader,
+        "mesh_processing": viewer_mesh_processing,
+        "warp_cgal_python": _load_external_module(
+            f"warp_cgal_python_{cache_key}", root / "warp_cgal_python.py"
+        ),
+    }
+
+    _WARP_CGAL_MODULE_CACHE[cache_key] = modules
+    return modules
+
+
+def _build_generation_criteria(overrides: Dict[str, float]) -> Dict[str, float]:
+    defaults = {
+        "facet_angle": 30.0,
+        "facet_size": 6.0,
+        "facet_distance": 0.5,
+        "cell_radius_edge_ratio": 3.0,
+        "cell_size": 8.0,
+    }
+    for key, value in overrides.items():
+        if value is None:
+            continue
+        if key not in defaults:
+            raise KeyError(f"Unknown mesh criteria parameter: {key}")
+        defaults[key] = float(value)
+    return defaults
+
+
+def _clear_warp_folder(folder: Path):
+    folder.mkdir(parents=True, exist_ok=True)
+    for filename in ("model.vertices", "model.tetras", "model.edges", "model.tris", "model.uvs", "model.labels"):
+        file_path = folder / filename
+        if file_path.exists():
+            file_path.unlink()
+
+
+def _generate_mesh_if_requested(config: WarpMeshConfig, root: Path, modules: Dict[str, Any]) -> Optional[Path]:
+    if not config.remesh_image:
+        return None
+
+    image_path = Path(config.remesh_image).expanduser()
+    if not image_path.exists():
+        raise FileNotFoundError(f"Image not found for remeshing: {image_path}")
+
+    if config.remesh_output:
+        output_dir = Path(config.remesh_output).expanduser()
+    else:
+        timestamp = time.strftime("%Y%m%d_%H%M%S")
+        output_dir = root / "temp_generated_mesh_warp" / f"generated_{timestamp}"
+
+    _clear_warp_folder(output_dir)
+
+    generator_cls = getattr(modules["warp_cgal_python"], "WarpCGALMeshGenerator")
+    generator = generator_cls()
+    if not generator.load_image(str(image_path)):
+        raise RuntimeError(f"Failed to load image for remeshing: {image_path}")
+
+    criteria = _build_generation_criteria(config.criteria)
+    generator.set_criteria(
+        facet_angle=criteria["facet_angle"],
+        facet_size=criteria["facet_size"],
+        facet_distance=criteria["facet_distance"],
+        cell_radius_edge_ratio=criteria["cell_radius_edge_ratio"],
+        cell_size=criteria["cell_size"],
+    )
+
+    if not generator.generate_mesh():
+        raise RuntimeError("warp-cgal failed to generate mesh from image")
+
+    if not generator.export_mesh_warp_format(str(output_dir)):
+        raise RuntimeError(f"Failed to export warp-format mesh to {output_dir}")
+
+    return output_dir
+
+
+def _load_warp_mesh_data(modules: Dict[str, Any], mesh_path: Path, multi_label: bool):
+    loader = modules["mesh_loader"].MeshLoader
+    if multi_label:
+        raise NotImplementedError("Multi-label warp mesh loading is not yet supported in the simulation bridge")
+    return loader.load_warp_format(str(mesh_path))
+
+
+def _ensure_array(data: Optional[np.ndarray], expected_rank: int, description: str) -> np.ndarray:
+    if data is None:
+        raise ValueError(f"Warp mesh is missing {description} data")
+    array = np.asarray(data)
+    if array.ndim == expected_rank:
+        return array
+    if array.ndim == expected_rank - 1 and expected_rank == 2:
+        return array.reshape((-1, array.shape[0]))
+    raise ValueError(f"Unexpected shape for {description}: {array.shape}")
+
+
+def _is_contiguous(indices: List[int]) -> bool:
+    return all(indices[i] + 1 == indices[i + 1] for i in range(len(indices) - 1)) if indices else False
+
+
+def _compute_mesh_ranges(
+    vertex_count: int,
+    triangle_index_count: int,
+    edge_count: int,
+    tet_count: int,
+    subdomain_labels: Optional[np.ndarray],
+    config: WarpMeshConfig,
+) -> Dict[str, Dict[str, Any]]:
+    mesh_ranges: Dict[str, Dict[str, Any]] = {
+        "cgal_mesh": {
+            "vertex_start": 0,
+            "vertex_count": vertex_count,
+            "index_start": 0,
+            "index_count": triangle_index_count,
+            "edge_start": 0,
+            "edge_count": edge_count,
+            "tet_start": 0,
+            "tet_count": tet_count,
+        }
+    }
+
+    if subdomain_labels is None or not config.subdomain_map:
+        return mesh_ranges
+
+    label_array = np.asarray(subdomain_labels, dtype=np.int32)
+    for name, label in config.subdomain_map.items():
+        indices = np.nonzero(label_array == int(label))[0].tolist()
+        info: Dict[str, Any] = {
+            "label": int(label),
+            "tet_count": len(indices),
+            "tet_indices": indices,
+            "vertex_start": None,
+            "vertex_count": 0,
+            "index_start": None,
+            "index_count": 0,
+            "edge_start": None,
+            "edge_count": 0,
+        }
+        if indices and _is_contiguous(indices):
+            info["tet_start"] = indices[0]
+        else:
+            info["tet_start"] = None
+        mesh_ranges[name] = info
+
+    return mesh_ranges
+
+
+def load_warp_mesh_and_build_model(
+    builder: newton.ModelBuilder,
+    particle_mass: float,
+    config: WarpMeshConfig,
+    vertical_offset: float = 0.0,
+    spring_stiffness: float = 1.0,
+    spring_dampen: float = 0.0,
+    tetra_stiffness_mu: float = 1.0e3,
+    tetra_stiffness_lambda: float = 1.0e3,
+    tetra_dampen: float = 0.0,
+):
+    """Load a warp-format mesh via warp-cgal and build the simulation model."""
+
+    if config is None or not config.is_active():
+        raise ValueError("Warp mesh configuration is inactive; provide mesh_path or remesh_image")
+
+    root = _resolve_cgal_root(config)
+    modules = _get_warp_cgal_modules(root)
+
+    mesh_dir = config.mesh_path
+    generated = False
+    if config.remesh_image:
+        generated_path = _generate_mesh_if_requested(config, root, modules)
+        if generated_path is None:
+            raise RuntimeError("Remeshing was requested but no mesh was generated")
+        mesh_dir = str(generated_path)
+        generated = True
+
+    if not mesh_dir:
+        raise ValueError("No warp mesh path resolved after processing configuration")
+
+    mesh_path = Path(mesh_dir).expanduser()
+    if not mesh_path.exists():
+        raise FileNotFoundError(f"Warp mesh directory not found: {mesh_path}")
+
+    mesh_data = _load_warp_mesh_data(modules, mesh_path, config.multi_label)
+
+    vertices = _ensure_array(mesh_data.vertices, 2, "vertex")
+    tetrahedra = _ensure_array(mesh_data.tetrahedra, 2, "tetrahedron")
+    triangles = np.asarray(mesh_data.triangles) if mesh_data.triangles is not None else np.zeros((0, 3), dtype=np.int32)
+    edges = np.asarray(mesh_data.edges) if mesh_data.edges is not None else np.zeros((0, 2), dtype=np.int32)
+    uvs = np.asarray(mesh_data.uvs) if mesh_data.uvs is not None else np.zeros((0, 2), dtype=np.float32)
+
+    vertex_list = vertices.tolist()
+    triangle_list = triangles.astype(np.int32).tolist()
+    edge_list = edges.astype(np.int32).tolist()
+    uv_list = uvs.astype(np.float32).tolist()
+
+    for position in vertex_list:
+        pos = wp.vec3(position)
+        pos[1] += vertical_offset
+        if is_particle_within_radius(pos, [0.5, 1.5, -5.0], 1.0):
+            builder.add_particle(pos, wp.vec3(0, 0, 0), mass=0, radius=0.01)
+        else:
+            builder.add_particle(pos, wp.vec3(0, 0, 0), mass=particle_mass, radius=0.01)
+
+    for edge in edge_list:
+        builder.add_spring(int(edge[0]), int(edge[1]), spring_stiffness, spring_dampen, 0)
+
+    surface_tris: List[int] = []
+    for tri in triangle_list:
+        ids = [int(tri[0]), int(tri[1]), int(tri[2])]
+        builder.add_triangle(ids[0], ids[1], ids[2])
+        surface_tris.extend(ids)
+
+    tetrahedra_structs: List[Tetrahedron] = []
+    for tet in tetrahedra.astype(np.int32):
+        ids = [int(tet[0]), int(tet[1]), int(tet[2]), int(tet[3])]
+        p0 = wp.vec3(vertex_list[ids[0]])
+        p1 = wp.vec3(vertex_list[ids[1]])
+        p2 = wp.vec3(vertex_list[ids[2]])
+        p3 = wp.vec3(vertex_list[ids[3]])
+        tet_struct = Tetrahedron()
+        tet_struct.ids = wp.vec4i(ids[0], ids[1], ids[2], ids[3])
+        tet_struct.rest_volume = compute_tet_volume(p0, p1, p2, p3)
+        tetrahedra_structs.append(tet_struct)
+        builder.add_tetrahedron(ids[0], ids[1], ids[2], ids[3], tetra_stiffness_mu, tetra_stiffness_lambda, tetra_dampen)
+
+    connectors_wp = wp.zeros(0, dtype=TriPointsConnector, device=wp.get_device())
+    tetrahedra_wp = wp.array(tetrahedra_structs, dtype=Tetrahedron, device=wp.get_device())
+
+    subdomain_labels = None
+    if getattr(mesh_data, "subdomain_labels", None) is not None:
+        label_array = np.asarray(mesh_data.subdomain_labels, dtype=np.int32)
+        if len(label_array) == len(tetrahedra_structs):
+            subdomain_labels = label_array
+            tet_labels_wp = wp.array(label_array.tolist(), dtype=wp.int32, device=wp.get_device())
+        else:
+            tet_labels_wp = None
+    else:
+        tet_labels_wp = None
+
+    mesh_ranges = _compute_mesh_ranges(
+        vertex_count=len(vertex_list),
+        triangle_index_count=len(surface_tris),
+        edge_count=len(edge_list),
+        tet_count=len(tetrahedra_structs),
+        subdomain_labels=subdomain_labels,
+        config=config,
+    )
+
+    metadata = {
+        "mesh_path": str(mesh_path),
+        "generated": generated,
+        "vertex_count": len(vertex_list),
+        "tet_count": len(tetrahedra_structs),
+        "subdomain_ids": sorted(np.unique(subdomain_labels).tolist()) if subdomain_labels is not None else [],
+        "subdomain_map": dict(config.subdomain_map),
+    }
+
+    return (
+        connectors_wp,
+        surface_tris,
+        uv_list,
+        mesh_ranges,
+        tetrahedra_wp,
+        tet_labels_wp,
+        metadata,
+    )
