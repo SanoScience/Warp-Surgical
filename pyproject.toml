@@ -29,3 +29,4 @@ url = "https://pypi.org/simple"
 [tool.uv.sources]
 newton = { path = "../newton", editable = true }
 #warp-lang = { path = "../warp", editable = true }
+pyopenhaptics = { path = "../pyOpenHaptics", editable = true }
