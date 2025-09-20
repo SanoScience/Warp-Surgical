@@ -665,6 +665,15 @@ def CreateSurgSimRenderer(renderer):
             self._contact_points1 = None
 
             gl = self.gl
+            # Postprocess pipeline (can be disabled via env)
+            self.enable_postprocess = True
+            try:
+                import os
+                if os.environ.get('WARP_DISABLE_POSTPROCESS', '0') in ('1', 'true', 'True'):
+                    self.enable_postprocess = False
+            except Exception:
+                pass
+
             self._postprocess_shader = ShaderProgram(
                 Shader(post_vertex_shader, "vertex"),
                 Shader(post_fragment_shader, "fragment")
@@ -1462,6 +1471,8 @@ def CreateSurgSimRenderer(renderer):
 
         def _render_post(self):
             gl = self.gl
+            if not getattr(self, 'enable_postprocess', True):
+                return
             
             # Create a temporary texture to hold the original color buffer
             if not hasattr(self, '_temp_color_texture'):

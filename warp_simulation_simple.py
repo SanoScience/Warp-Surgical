@@ -74,6 +74,11 @@ class WarpSim:
         # Initialize model
         self._build_model()
         self.vertex_colors = wp.zeros(self.model.particle_count, dtype=wp.vec4f, device=wp.get_device())
+        # Precompute and cache vertex colors (avoid per-frame regeneration)
+        try:
+            self._vertex_colors = self._create_vertex_colors_for_labels()
+        except Exception:
+            self._vertex_colors = None
         
         # Connectivity setup
         vertex_count = self.model.particle_count
@@ -198,8 +203,15 @@ class WarpSim:
         self.use_opengl = use_opengl
         
         if self.use_opengl:
-            #self.renderer = SurgSimRendererOpenGL(self.model, "Warp Surgical Simulation", scaling=1.0, near_plane=0.05, far_plane = 25)
-            self.renderer = SurgSimRendererOpenGL(self.model, "Warp Surgical Simulation", scaling=1.0, near_plane=0.05, far_plane = 25)
+            # Prefer mesh rendering only (points off) for performance
+            self.renderer = SurgSimRendererOpenGL(
+                self.model,
+                "Warp Surgical Simulation",
+                scaling=1.0,
+                near_plane=0.05,
+                far_plane=25,
+                show_particles=False,
+            )
         elif stage_path:
             self.renderer = newton.render.SimRenderer(self.model, stage_path, scaling=20.0)
         else:
@@ -278,8 +290,8 @@ class WarpSim:
                 # )
 
 
-                # Create per-vertex colors for multi-label visualization (only once)
-                if not hasattr(self, '_vertex_colors') or True:  # Regenerate per frame for simplicity
+                # Create per-vertex colors for multi-label visualization (cached)
+                if not hasattr(self, '_vertex_colors') or self._vertex_colors is None:
                     self._vertex_colors = self._create_vertex_colors_for_labels()
                 
                 self.renderer.render_mesh_warp(
@@ -364,7 +376,7 @@ class WarpSim:
                     vertex_colors[vid, 3] = 1.0
 
                 self.subdomain_color_map = color_map
-                print(f"Applied subdomain-based coloring with {len(color_map)} colors")
+                # Cache on device once; no per-frame printing
                 return wp.array(vertex_colors, dtype=wp.vec4, device=wp.get_device())
             else:
                 print('Warning: Unable to map subdomain labels to tetrahedra; using spatial coloring fallback')
@@ -381,7 +393,7 @@ class WarpSim:
         y_min, y_max = np.min(y_coords), np.max(y_coords)
         z_min, z_max = np.min(z_coords), np.max(z_coords)
 
-        print(f"Mesh bounds: X[{x_min:.3f}, {x_max:.3f}], Y[{y_min:.3f}, {y_max:.3f}], Z[{z_min:.3f}, {z_max:.3f}]")
+        # Bounds useful for debugging but noisy; skip in production path
 
         label_colors = [
             (0.8, 0.2, 0.2, 1.0),
@@ -404,7 +416,7 @@ class WarpSim:
             vertex_colors[i] = label_colors[label_idx]
             label_counts[label_idx] += 1
 
-        print(f"Spatial vertex coloring fallback: {num_vertices} vertices -> counts {label_counts}")
+        # Return cached device array without per-frame logging
         return wp.array(vertex_colors, dtype=wp.vec4, device=wp.get_device())
 
     def update_haptic_position(self, position):
