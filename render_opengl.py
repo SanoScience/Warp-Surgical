@@ -115,9 +115,11 @@ void main()
     specular += specularStrength * spec * lightColor * 0.3;
 
     vec3 baseColor = texture(textureSampler, TexCoord).rgb;
-    
-    // Use vertex color if it's not zero (black), otherwise use base texture color
-    vec3 finalColor = baseColor * (1.0 - VertexColor);
+
+    // Prefer per-vertex color when provided (non-near-zero)
+    // otherwise fall back to the sampled base texture color.
+    float useVertex = float(any(greaterThan(VertexColor, vec3(0.001))));
+    vec3 finalColor = mix(baseColor, VertexColor, useVertex);
 
     vec3 result = (ambient + diffuse + specular) * finalColor;
     FragColor = vec4(result, 1.0);

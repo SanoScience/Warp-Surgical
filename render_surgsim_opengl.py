@@ -817,9 +817,19 @@ def CreateSurgSimRenderer(renderer):
 
             # Fast path: update existing shape without topology changes
             if not update_topology and shape_id is not None:
-                self._update_shape_vertices_gpu_direct_with_colors(shape_id, points, texture_coords_2d, vertex_colors, scale)
-                if diffuse_maps is not None:
-                    self._update_shape_texture(shape_id, diffuse_maps)
+                # Ensure we are on the correct GL context before mapping GL buffers
+                try:
+                    self._switch_context()
+                except Exception:
+                    pass
+
+                self._update_shape_vertices_gpu_direct_with_colors(
+                    shape_id, points, texture_coords_2d, vertex_colors, scale
+                )
+
+                # Keep texture bindings consistent (expecting [diffuse, normal, specular])
+                if diffuse_maps is not None or normal_maps is not None or specular_maps is not None:
+                    self._update_shape_texture(shape_id, [diffuse_maps, normal_maps, specular_maps])
                 return shape_id
 
             # Slow path: create new shape or topology changed
@@ -1051,14 +1061,20 @@ def CreateSurgSimRenderer(renderer):
                 """Update vertices, texture coordinates, and vertex colors using direct GPU-to-GPU copy"""
                 if shape not in self._shape_gl_buffers:
                     return
-                    
+
+                # Make sure GL context is current before mapping registered buffers
+                try:
+                    self._switch_context()
+                except Exception:
+                    pass
+
                 cuda_buffer = self._shape_gl_buffers[shape][4]
                 vertex_count = points.shape[0]
-                
+
                 try:
                     # Map with 15 components: pos(3) + normal(3) + tangent(3) + uv(2) + color(4)
                     vbo_vertices = cuda_buffer.map(dtype=wp.float32, shape=(vertex_count, 15))
-                    
+
                     wp.launch(
                         update_mesh_vertices_optimized_with_colors,
                         dim=vertex_count,
@@ -1066,7 +1082,7 @@ def CreateSurgSimRenderer(renderer):
                         outputs=[vbo_vertices],
                         device=self._device,
                     )
-                    
+
                     cuda_buffer.unmap()
                 except Exception as e:
                     print(f"Warning: Could not update vertices with colors: {e}")
@@ -1468,6 +1484,14 @@ def CreateSurgSimRenderer(renderer):
 
             gl.glBindVertexArray(0)
             self._render_post()
+
+        # Ensure points rendering works reliably by switching to the active GL context
+        def render_points(self, name: str, points, radius, colors=None, as_spheres: bool = True, visible: bool = True):
+            try:
+                self._switch_context()
+            except Exception:
+                pass
+            return super().render_points(name, points, radius, colors=colors, as_spheres=as_spheres, visible=visible)
 
         def _render_post(self):
             gl = self.gl

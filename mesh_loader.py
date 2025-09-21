@@ -129,6 +129,7 @@ def _build_model_from_warp_mesh(
     tetra_stiffness_mu: float,
     tetra_stiffness_lambda: float,
     tetra_dampen: float,
+    scale: float = 1.0,
 ):
     import os
 
@@ -207,8 +208,8 @@ def _build_model_from_warp_mesh(
     uvs = np.asarray(combined.get('uvs', np.zeros((0, 2), dtype=np.float32)), dtype=np.float32)
     subdomain_labels = np.asarray(combined.get('subdomain_labels', np.zeros((0,), dtype=np.int32)), dtype=np.int32)
     label_ranges = combined.get('label_ranges', {})
-
-    vertex_rows = vertices.shape[0]
+    for v in vertices:
+        v *= 0.003
     edge_pairs = edges.reshape(-1, 2) if edges.size else np.empty((0, 2), dtype=np.int32)
     triangle_indices = triangles.reshape(-1, 3) if triangles.size else np.empty((0, 3), dtype=np.int32)
 
@@ -222,7 +223,6 @@ def _build_model_from_warp_mesh(
 
     for position in vertices:
         pos = wp.vec3(float(position[0]), float(position[1]) + vertical_offset, float(position[2]))
-        pos = pos * 0.01
         builder.add_particle(pos, wp.vec3(0.0, 0.0, 0.0), mass=particle_mass, radius=0.01)
 
     for edge in edge_pairs:

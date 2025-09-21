@@ -1,4 +1,7 @@
 import warp as wp
+import warp
+import warp.sim
+import warp.sim.render
 import newton
 
 # from newton.utils.render import SimRendererOpenGL
@@ -73,12 +76,35 @@ class WarpSim:
 
         # Initialize model
         self._build_model()
-        self.vertex_colors = wp.zeros(self.model.particle_count, dtype=wp.vec4f, device=wp.get_device())
+        self.vertex_colors = wp.zeros(self.model.particle_count, dtype=wp.vec3f, device=wp.get_device())
         # Precompute and cache vertex colors (avoid per-frame regeneration)
         try:
             self._vertex_colors = self._create_vertex_colors_for_labels()
         except Exception:
             self._vertex_colors = None
+        # Expose to renderer/model for dynamic per-vertex color rendering
+        try:
+            if self._vertex_colors is not None:
+                self.model.vertex_colors = self._vertex_colors
+        except Exception:
+            pass
+        # Prepare vec4 colors for renderers that expect RGBA/weights
+        try:
+            if self._vertex_colors is not None:
+                import numpy as _np
+                cols = self._vertex_colors.numpy()
+                if cols.ndim == 2 and cols.shape[1] == 3:
+                    _w = _np.zeros((cols.shape[0], 1), dtype=cols.dtype)
+                    _cols4 = _np.concatenate([cols, _w], axis=1)
+                    self._vertex_colors4 = wp.array(_cols4, dtype=wp.vec4, device=wp.get_device())
+                elif cols.ndim == 2 and cols.shape[1] == 4:
+                    self._vertex_colors4 = self._vertex_colors
+                else:
+                    self._vertex_colors4 = wp.zeros(self.model.particle_count, dtype=wp.vec4, device=wp.get_device())
+            else:
+                self._vertex_colors4 = wp.zeros(self.model.particle_count, dtype=wp.vec4, device=wp.get_device())
+        except Exception:
+            self._vertex_colors4 = wp.zeros(self.model.particle_count, dtype=wp.vec4, device=wp.get_device())
         
         # Connectivity setup
         vertex_count = self.model.particle_count
@@ -177,12 +203,39 @@ class WarpSim:
                 density=10
             )
         )
+
+        builder.add_particle_grid(
+            dim_x=4,
+            dim_y=4,
+            dim_z=4,
+            cell_x=0.2,
+            cell_y=0.2,
+            cell_z=0.2,
+            pos=wp.vec3(0.0, 0.0, 0.0),
+            rot=wp.quat_identity(),
+            vel=wp.vec3(0.0, 0.0, 0.0),
+            mass=1.0,
+            jitter=0.001,
+        )
         
         self.model = builder.finalize()
         self.model.tetrahedra_wp = tetrahedra_wp
         self.model.tet_active = wp.ones(self.model.tetrahedra_wp.shape[0], dtype=wp.int32, device=wp.get_device())
         self.model.tri_points_connectors = tri_points_connectors
         self.model.particle_max_velocity = 10.0
+
+        # Build UV array to match particle_count (after model is finalized)
+        try:
+            import numpy as _np
+            total = int(self.model.particle_count)
+            uvs_np = _np.zeros((total, 2), dtype=_np.float32)
+            if isinstance(uvs, (list, tuple)) and len(uvs) > 0:
+                src = _np.asarray(uvs, dtype=_np.float32)
+                count = min(src.shape[0], total)
+                uvs_np[:count, :] = src[:count, :]
+            self.uvs_wp = wp.array(uvs_np, dtype=wp.vec2f, device=wp.get_device())
+        except Exception:
+            self.uvs_wp = wp.zeros(self.model.particle_count, dtype=wp.vec2f, device=wp.get_device())
 
 
     def _setup_simulation(self):
@@ -203,17 +256,23 @@ class WarpSim:
         self.use_opengl = use_opengl
         
         if self.use_opengl:
-            # Prefer mesh rendering only (points off) for performance
+            # Use the surgical OpenGL renderer which supports vertex colors and
+            # robust shading for meshes without bound textures.
             self.renderer = SurgSimRendererOpenGL(
                 self.model,
                 "Warp Surgical Simulation",
                 scaling=1.0,
-                near_plane=0.05,
-                far_plane=25,
-                show_particles=False,
+                near_plane=0.01,
+                far_plane=100.0,
             )
+            try:
+                self.renderer._camera_pos = [0.2, 1.2, -1.0]
+                if hasattr(self.renderer, 'update_view_matrix'):
+                    self.renderer.update_view_matrix()
+            except Exception:
+                pass
         elif stage_path:
-            self.renderer = newton.render.SimRenderer(self.model, stage_path, scaling=20.0)
+            self.renderer = newton.viewer.RendererUsd(self.model, stage_path, scaling=1.0)
         else:
             self.renderer = None
 
@@ -239,12 +298,12 @@ class WarpSim:
             self.state_1.clear_forces()
 
             # Update haptic device position
-            wp.launch(
-                set_body_position,
-                dim=1,
-                inputs=[self.state_0.body_q, self.state_0.body_qd, self.haptic_body_id, self.integrator.dev_pos_buffer, self.substep_dt],
-                device=self.state_0.body_q.device,
-            )
+            # wp.launch(
+            #     set_body_position,
+            #     dim=1,
+            #     inputs=[self.state_0.body_q, self.state_0.body_qd, self.haptic_body_id, self.integrator.dev_pos_buffer, self.substep_dt],
+            #     device=self.state_0.body_q.device,
+            # )
 
             # Run collision detection and integration
             #self.contacts = self.model.collide(self.state_0)
@@ -283,23 +342,33 @@ class WarpSim:
                 #     [0.0, 0.0, 0.0, 1.0],
                 #     0.025,
                 # )
+                # self.renderer.render(self.state_0)
 
-
+                try:
+                    pr = float(self.model.particle_radius.numpy())
+                except Exception:
+                    pr = 0.0
+                # Ensure a visible point radius in case model radius is unset/zero
+                render_radius = pr if pr and pr > 0.0 else 0.05
                 # self.renderer.render_points(
-                #     "particles", self.model.particle_q, radius=self.model.particle_radius.numpy(), colors=(0.8, 0.3, 0.2)
+                #     "particles", self.model.particle_q, radius=render_radius, colors=(0.8, 0.3, 0.2)
                 # )
 
 
                 # Create per-vertex colors for multi-label visualization (cached)
-                if not hasattr(self, '_vertex_colors') or self._vertex_colors is None:
-                    self._vertex_colors = self._create_vertex_colors_for_labels()
+                # if not hasattr(self, '_vertex_colors') or self._vertex_colors is None:
+                #     self._vertex_colors = self._create_vertex_colors_for_labels()
                 
+                # Explicit mesh render (manual path), driven by current simulation state
                 self.renderer.render_mesh_warp(
-                    "surface",
-                    self.model.particle_q,
-                    self.model.tri_indices,
-                    vertex_colors=self._vertex_colors,
-                    basic_color=(1.0, 1.0, 1.0),  # White base to let vertex colors show through
+                    name="surface",
+                    points=self.state_0.particle_q,
+                    indices=self.surface_tris_wp,
+                    texture_coords=self.uvs_wp,
+                    vertex_colors=self._vertex_colors4,
+                    basic_color=(1.0, 1.0, 1.0),
+                    smooth_shading=True,
+                    update_topology=False,
                 )
 
                 # # render springs
@@ -329,13 +398,12 @@ class WarpSim:
         positions = self.model.particle_q.numpy()
         num_vertices = positions.shape[0]
 
-        vertex_colors = np.zeros((num_vertices, 4), dtype=np.float32)
+        vertex_colors = np.zeros((num_vertices, 3), dtype=np.float32)
 
         # None: return white
         if str(self.coloring_mode).lower() == 'none':
             vertex_colors[:, 0:3] = (1.0, 1.0, 1.0)
-            vertex_colors[:, 3] = 1.0
-            return wp.array(vertex_colors, dtype=wp.vec4, device=wp.get_device())
+            return wp.array(vertex_colors, dtype=wp.vec3, device=wp.get_device())
 
         # Subdomain coloring when labels available
         if str(self.coloring_mode).lower() == 'subdomain' and getattr(self, 'tet_subdomain_labels', None) is not None and len(self.tet_subdomain_labels):
@@ -373,11 +441,10 @@ class WarpSim:
                         rgb = colorsys.hsv_to_rgb(hue, 0.65, 0.95)
                         color_map[int(label)] = rgb
                     vertex_colors[vid, 0:3] = rgb
-                    vertex_colors[vid, 3] = 1.0
 
                 self.subdomain_color_map = color_map
                 # Cache on device once; no per-frame printing
-                return wp.array(vertex_colors, dtype=wp.vec4, device=wp.get_device())
+                return wp.array(vertex_colors, dtype=wp.vec3, device=wp.get_device())
             else:
                 print('Warning: Unable to map subdomain labels to tetrahedra; using spatial coloring fallback')
 
@@ -396,9 +463,9 @@ class WarpSim:
         # Bounds useful for debugging but noisy; skip in production path
 
         label_colors = [
-            (0.8, 0.2, 0.2, 1.0),
-            (0.2, 0.8, 0.2, 1.0),
-            (0.2, 0.2, 0.8, 1.0),
+            (0.8, 0.2, 0.2),
+            (0.2, 0.8, 0.2),
+            (0.2, 0.2, 0.8),
         ]
 
         y_range = max(y_max - y_min, 1e-6)
@@ -417,7 +484,7 @@ class WarpSim:
             label_counts[label_idx] += 1
 
         # Return cached device array without per-frame logging
-        return wp.array(vertex_colors, dtype=wp.vec4, device=wp.get_device())
+        return wp.array(vertex_colors, dtype=wp.vec3, device=wp.get_device())
 
     def update_haptic_position(self, position):
         """Update the haptic device position in the simulation."""
