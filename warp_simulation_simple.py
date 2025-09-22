@@ -258,19 +258,10 @@ class WarpSim:
         if self.use_opengl:
             # Use the surgical OpenGL renderer which supports vertex colors and
             # robust shading for meshes without bound textures.
-            self.renderer = SurgSimRendererOpenGL(
-                self.model,
-                "Warp Surgical Simulation",
-                scaling=1.0,
-                near_plane=0.01,
-                far_plane=100.0,
-            )
-            try:
-                self.renderer._camera_pos = [0.2, 1.2, -1.0]
-                if hasattr(self.renderer, 'update_view_matrix'):
-                    self.renderer.update_view_matrix()
-            except Exception:
-                pass
+            self.renderer = SurgSimRendererOpenGL(self.model,"Warp Surgical Simulation", scaling=1.0, near_plane=0.01, far_plane=100.0)
+            #self.renderer = newton.viewer.ViewerGL()
+            #self.renderer.set_model(self.model)
+           
         elif stage_path:
             self.renderer = newton.viewer.RendererUsd(self.model, stage_path, scaling=1.0)
         else:
@@ -334,7 +325,7 @@ class WarpSim:
 
         with wp.ScopedTimer("render"):
             if self.use_opengl:
-                self.renderer.begin_frame()
+                self.renderer.begin_frame(self.sim_time)
 
                 # self.renderer.render_sphere(
                 #     "haptic_proxy_sphere",
@@ -342,7 +333,7 @@ class WarpSim:
                 #     [0.0, 0.0, 0.0, 1.0],
                 #     0.025,
                 # )
-                # self.renderer.render(self.state_0)
+                #self.renderer.render(self.state_0)
 
                 try:
                     pr = float(self.model.particle_radius.numpy())
@@ -354,6 +345,7 @@ class WarpSim:
                 #     "particles", self.model.particle_q, radius=render_radius, colors=(0.8, 0.3, 0.2)
                 # )
 
+                #self.renderer.log_points("particles", self.state_0.particle_q, self.model.particle_radius, self.model.particle_colors)
 
                 # Create per-vertex colors for multi-label visualization (cached)
                 # if not hasattr(self, '_vertex_colors') or self._vertex_colors is None:
@@ -368,7 +360,7 @@ class WarpSim:
                     vertex_colors=self._vertex_colors4,
                     basic_color=(1.0, 1.0, 1.0),
                     smooth_shading=True,
-                    update_topology=False,
+                    update_topology=True,
                 )
 
                 # # render springs

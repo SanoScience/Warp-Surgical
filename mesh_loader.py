@@ -1,4 +1,6 @@
+import os
 import sys
+import json
 from pathlib import Path
 from typing import Optional
 
@@ -32,6 +34,96 @@ def _get_warp_bridge():
 
     _BRIDGE_CACHE = (load_warp_mesh_dataset, flatten_mesh_dataset)
     return _BRIDGE_CACHE
+
+
+# -------- Mesh cache helpers --------
+
+_CACHE_ENV_DISABLE = "MESH_CACHE_DISABLE"
+_CACHE_ENV_REBUILD = "MESH_CACHE_REBUILD"
+
+
+def _cache_enabled() -> bool:
+    return os.environ.get(_CACHE_ENV_DISABLE, "0") not in ("1", "true", "True")
+
+
+def _cache_force_rebuild() -> bool:
+    return os.environ.get(_CACHE_ENV_REBUILD, "0") in ("1", "true", "True")
+
+
+def _stat_file(p: Path) -> dict:
+    try:
+        st = p.stat()
+        return {"path": str(p), "size": int(st.st_size), "mtime": float(st.st_mtime)}
+    except FileNotFoundError:
+        return {"path": str(p), "size": -1, "mtime": -1.0}
+
+
+def _load_component_cache(base_dir: Path, cache_stem: str, sources: list[Path]):
+    if not _cache_enabled():
+        return None
+    cache_npz = base_dir / f"{cache_stem}.cache.npz"
+    cache_meta = base_dir / f"{cache_stem}.cache.meta.json"
+
+    if _cache_force_rebuild():
+        return None
+
+    if not (cache_npz.exists() and cache_meta.exists()):
+        return None
+
+    try:
+        with cache_meta.open("r", encoding="utf-8") as f:
+            meta = json.load(f)
+        recorded = meta.get("sources", {})
+        # Validate sources mtimes/sizes
+        for s in sources:
+            stat = _stat_file(s)
+            rec = recorded.get(str(s))
+            if rec is None or int(rec.get("size", -1)) != stat["size"] or float(rec.get("mtime", -1.0)) != stat["mtime"]:
+                return None
+
+        data = np.load(cache_npz, allow_pickle=False)
+        positions = data["positions"]
+        indices = data["indices"]
+        edges = data["edges"]
+        tri_indices = data["tri_indices"]
+        uvs = data["uvs"]
+        return positions, indices, edges, tri_indices, uvs
+    except Exception:
+        return None
+
+
+def _write_component_cache(base_dir: Path, cache_stem: str, sources: list[Path],
+                           positions: np.ndarray, indices: np.ndarray, edges: np.ndarray,
+                           tri_indices: np.ndarray, uvs: np.ndarray) -> None:
+    if not _cache_enabled():
+        return
+    cache_npz = base_dir / f"{cache_stem}.cache.npz"
+    cache_meta = base_dir / f"{cache_stem}.cache.meta.json"
+    try:
+        np.savez(cache_npz,
+                 positions=positions.astype(np.float32, copy=False),
+                 indices=indices.astype(np.int32, copy=False),
+                 edges=edges.astype(np.int32, copy=False),
+                 tri_indices=tri_indices.astype(np.int32, copy=False),
+                 uvs=uvs.astype(np.float32, copy=False))
+        meta = {
+            "version": 1,
+            "sources": {str(p): _stat_file(p) for p in sources},
+        }
+        with cache_meta.open("w", encoding="utf-8") as f:
+            json.dump(meta, f)
+    except Exception:
+        # Cache write failures should never be fatal
+        try:
+            if cache_npz.exists():
+                cache_npz.unlink(missing_ok=True)
+        except Exception:
+            pass
+        try:
+            if cache_meta.exists():
+                cache_meta.unlink(missing_ok=True)
+        except Exception:
+            pass
 
 @wp.struct
 class Tetrahedron:
@@ -76,48 +168,86 @@ def compute_tet_volume(p0, p1, p2, p3):
     )
 
 def load_mesh_component(base_path, offset=0, scale=1.0):
-    """Load a single mesh component and return positions, indices, and edges."""
-    positions = []
-    indices = []
-    edges = []
-    tri_surface_indices = []
-    uvs = []
-    
-    vertices_file = base_path + "model.vertices"
-    indices_file = base_path + "model.tetras"
-    edges_file = base_path + "model.edges"
-    surface_indices_file = base_path + "model.tris"
-    uvs_file = base_path + "model.uvs"
+    """Load a single mesh component and return positions, indices, edges, tris, uvs.
 
+    Uses a simple .npz-based cache for fast reloads. Cache auto-invalidates when
+    any source text file changes size or mtime. Control via env:
+      - MESH_CACHE_DISABLE=1 to disable cache
+      - MESH_CACHE_REBUILD=1 to force rebuild
+    """
+    base_dir = Path(base_path)
+    vertices_file = base_dir / "model.vertices"
+    indices_file = base_dir / "model.tetras"
+    edges_file = base_dir / "model.edges"
+    surface_indices_file = base_dir / "model.tris"
+    uvs_file = base_dir / "model.uvs"
 
-    # Load vertices
-    with open(vertices_file, 'r') as f:
-        for line in f:
-            pos = [float(x) * scale for x in line.split()]
-            positions.append(pos)
-    
-    # Load indices
-    with open(indices_file, 'r') as f:
-        for line in f:
-            indices.extend([int(x) + offset for x in line.split()])
-    
-    # Load edges
-    with open(edges_file, 'r') as f:
-        for line in f:
-            edges.extend([int(x) + offset for x in line.split()])
+    sources = [vertices_file, indices_file, edges_file, surface_indices_file, uvs_file]
 
-    # Load surface triangle indices
-    with open(surface_indices_file, 'r') as f:
-        for line in f:
-            tri_surface_indices.extend([int(x) + offset for x in line.split()])
-    
-    # Load uvs
-    with open(uvs_file, 'r') as f:
-        for line in f:
-            uv = [float(x) for x in line.split()]
-            uvs.append(uv)
+    cached = _load_component_cache(base_dir, "model", sources)
+    if cached is None:
+        # Build from source text files
+        pos_list: list[list[float]] = []
+        idx_list: list[int] = []
+        edge_list: list[int] = []
+        tri_list: list[int] = []
+        uv_list: list[list[float]] = []
 
-    return positions, indices, edges, tri_surface_indices, uvs
+        with vertices_file.open("r") as f:
+            for line in f:
+                if line.strip():
+                    pos_list.append([float(x) for x in line.split()])
+
+        with indices_file.open("r") as f:
+            for line in f:
+                if line.strip():
+                    idx_list.extend([int(x) for x in line.split()])
+
+        with edges_file.open("r") as f:
+            for line in f:
+                if line.strip():
+                    edge_list.extend([int(x) for x in line.split()])
+
+        with surface_indices_file.open("r") as f:
+            for line in f:
+                if line.strip():
+                    tri_list.extend([int(x) for x in line.split()])
+
+        with uvs_file.open("r") as f:
+            for line in f:
+                if line.strip():
+                    uv_list.append([float(x) for x in line.split()])
+
+        positions_np = np.asarray(pos_list, dtype=np.float32)
+        indices_np = np.asarray(idx_list, dtype=np.int32)
+        edges_np = np.asarray(edge_list, dtype=np.int32)
+        tri_np = np.asarray(tri_list, dtype=np.int32)
+        uvs_np = np.asarray(uv_list, dtype=np.float32)
+
+        # Write cache best-effort
+        _write_component_cache(base_dir, "model", sources, positions_np, indices_np, edges_np, tri_np, uvs_np)
+    else:
+        positions_np, indices_np, edges_np, tri_np, uvs_np = cached
+
+    # Apply scale/offset at load time
+    if scale != 1.0:
+        positions_np = positions_np * float(scale)
+    if offset:
+        # Apply to indices that index vertex arrays: tets, edges, tris
+        if indices_np.size:
+            indices_np = indices_np + int(offset)
+        if edges_np.size:
+            edges_np = edges_np + int(offset)
+        if tri_np.size:
+            tri_np = tri_np + int(offset)
+
+    return (
+        positions_np.tolist(),
+        indices_np.tolist(),
+        edges_np.tolist(),
+        tri_np.tolist(),
+        uvs_np.tolist(),
+    )
 
 def _build_model_from_warp_mesh(
     builder: newton.ModelBuilder,
@@ -131,8 +261,6 @@ def _build_model_from_warp_mesh(
     tetra_dampen: float,
     scale: float = 1.0,
 ):
-    import os
-
     load_warp_mesh_dataset, flatten_mesh_dataset = _get_warp_bridge()
 
     reconstruct_flag = os.environ.get('WARP_CGAL_RECONSTRUCT_SURFACE', '1')
@@ -141,65 +269,170 @@ def _build_model_from_warp_mesh(
     split_flag = os.environ.get('WARP_CGAL_SPLIT_SUBDOMAINS', '0')
     split_subdomains = split_flag in ('1', 'true', 'True')
 
-    # Load without reconstruction; we will optionally force-reconstruct below for consistent winding
-    dataset = load_warp_mesh_dataset(str(warp_mesh_path), reconstruct_surface=False)
-    if not dataset:
-        raise ValueError(f'No mesh data found at {warp_mesh_path}')
+    # Warp dataset cache helpers (cache after optional reconstruction/splitting)
+    base_dir = Path(warp_mesh_path)
+    # Encode flags into cache stem to avoid thrashing when toggling
+    cache_stem = f"warp_dataset_rs{int(reconstruct_surface)}_ss{int(split_subdomains)}_fw{int(os.environ.get('WARP_CGAL_FORCE_FLIP_WINDING', '0') in ('1','true','True'))}"
 
-    # Optionally force surface reconstruction for all meshes to ensure consistent winding
-    if reconstruct_surface:
+    def _collect_warp_sources(p: Path) -> list[Path]:
+        if p.is_dir():
+            names = ["model.vertices", "model.tetras", "model.edges", "model.tris", "model.uvs", "model.labels"]
+            files = [p / n for n in names if (p / n).exists()]
+            return files
+        # If not a directory, we don't have a defined source list; skip caching
+        return []
+
+    def _load_warp_cache(p: Path, stem: str, sources: list[Path]):
+        if not _cache_enabled() or _cache_force_rebuild():
+            return None
+        npz = p / f"{stem}.npz"
+        meta_file = p / f"{stem}.meta.json"
+        if not (npz.exists() and meta_file.exists()):
+            return None
         try:
-            import simulation_bridge as _viewer_bridge  # type: ignore
-            ProcessorCls = getattr(_viewer_bridge, 'MeshProcessor', None)
+            with meta_file.open('r', encoding='utf-8') as f:
+                meta = json.load(f)
+            rec_sources = meta.get('sources', {})
+            flags_ok = (meta.get('reconstruct_surface') == reconstruct_surface and
+                        meta.get('split_subdomains') == split_subdomains)
+            if not flags_ok:
+                return None
+            for s in sources:
+                st = _stat_file(s)
+                rec = rec_sources.get(str(s))
+                if rec is None or int(rec.get('size', -1)) != st['size'] or float(rec.get('mtime', -1.0)) != st['mtime']:
+                    return None
+            data = np.load(npz, allow_pickle=False)
+            payload = {
+                'vertices': data['vertices'],
+                'tetrahedra': data['tetrahedra'],
+                'edges': data['edges'],
+                'triangles': data['triangles'],
+                'uvs': data['uvs'],
+                'subdomain_labels': data['subdomain_labels'],
+            }
+            label_ranges = meta.get('label_ranges', {})
+            return payload, label_ranges
         except Exception:
-            ProcessorCls = None
+            return None
 
-        if ProcessorCls is not None:
-            processor = ProcessorCls()
-            _recon_count = 0
-            for lbl, mesh in list(dataset.items()):
-                # Only attempt if tetrahedra exist
-                try:
-                    if mesh.tetrahedra is not None and len(mesh.tetrahedra):
-                        if processor.reconstruct_surface(mesh):
-                            _recon_count += 1
-                except Exception as _e:
-                    # Non-fatal; keep existing triangles
-                    pass
+    def _write_warp_cache(p: Path, stem: str, sources: list[Path], payload: dict, label_ranges: dict):
+        if not _cache_enabled():
+            return
+        npz = p / f"{stem}.npz"
+        meta_file = p / f"{stem}.meta.json"
+        try:
+            np.savez(
+                npz,
+                vertices=np.asarray(payload.get('vertices', np.zeros((0, 3), np.float32)), dtype=np.float32),
+                tetrahedra=np.asarray(payload.get('tetrahedra', np.zeros((0, 4), np.int32)), dtype=np.int32),
+                edges=np.asarray(payload.get('edges', np.zeros((0, 2), np.int32)), dtype=np.int32),
+                triangles=np.asarray(payload.get('triangles', np.zeros((0, 3), np.int32)), dtype=np.int32),
+                uvs=np.asarray(payload.get('uvs', np.zeros((0, 2), np.float32)), dtype=np.float32),
+                subdomain_labels=np.asarray(payload.get('subdomain_labels', np.zeros((0,), np.int32)), dtype=np.int32),
+            )
+            meta = {
+                'version': 1,
+                'sources': {str(s): _stat_file(s) for s in sources},
+                'reconstruct_surface': reconstruct_surface,
+                'split_subdomains': split_subdomains,
+                'label_ranges': {int(k): {kk: int(vv) for kk, vv in v.items()} for k, v in label_ranges.items()},
+            }
+            with meta_file.open('w', encoding='utf-8') as f:
+                json.dump(meta, f)
+        except Exception:
             try:
-                if _recon_count:
-                    print(f"warp-cgal: forced surface reconstruction on {int(_recon_count)} mesh(es)")
+                if npz.exists():
+                    npz.unlink(missing_ok=True)
+            except Exception:
+                pass
+            try:
+                if meta_file.exists():
+                    meta_file.unlink(missing_ok=True)
             except Exception:
                 pass
 
-    # Optionally split meshes into per-subdomain isolated geometry prior to flattening
-    if split_subdomains:
-        # Import MeshProcessor from the viewer's simulation bridge (handles local loader isolation)
-        try:
-            import simulation_bridge as _viewer_bridge  # type: ignore
-            ProcessorCls = getattr(_viewer_bridge, 'MeshProcessor', None)
-        except Exception:
-            ProcessorCls = None
+    # Attempt to load flattened warp dataset cache (after optional processing)
+    sources = _collect_warp_sources(base_dir)
+    cached = _load_warp_cache(base_dir, cache_stem, sources)
+    if cached is None:
+        # Load without reconstruction; we will optionally force-reconstruct below for consistent winding
+        dataset = load_warp_mesh_dataset(str(warp_mesh_path), reconstruct_surface=False)
+        if not dataset:
+            raise ValueError(f'No mesh data found at {warp_mesh_path}')
 
-        processor = ProcessorCls() if ProcessorCls is not None else None
-        new_dataset = {}
-        for label, mesh in dataset.items():
-            # If labels are present, separate per subdomain; otherwise keep as-is
-            if processor is not None and getattr(mesh, 'subdomain_labels', None) is not None and mesh.subdomain_labels is not None and mesh.tetrahedra is not None:
-                separated = processor.reconstruct_subdomain_meshes(mesh)
-                if separated:
-                    for sub_id, sub_mesh in separated.items():
-                        # Build unique numeric label combining original label and subdomain id
-                        new_label = int(label) * 1000 + int(sub_id)
-                        sub_mesh.label = new_label
-                        new_dataset[new_label] = sub_mesh
+        # Optionally force surface reconstruction for all meshes to ensure consistent winding
+        if reconstruct_surface:
+            try:
+                import simulation_bridge as _viewer_bridge  # type: ignore
+                ProcessorCls = getattr(_viewer_bridge, 'MeshProcessor', None)
+            except Exception:
+                ProcessorCls = None
+
+            if ProcessorCls is not None:
+                processor = ProcessorCls()
+                _recon_count = 0
+                for lbl, mesh in list(dataset.items()):
+                    # Only attempt if tetrahedra exist
+                    try:
+                        if mesh.tetrahedra is not None and len(mesh.tetrahedra):
+                            if processor.reconstruct_surface(mesh):
+                                _recon_count += 1
+                    except Exception as _e:
+                        # Non-fatal; keep existing triangles
+                        pass
+                try:
+                    if _recon_count:
+                        print(f"warp-cgal: forced surface reconstruction on {int(_recon_count)} mesh(es)")
+                except Exception:
+                    pass
+
+        # Optionally split meshes into per-subdomain isolated geometry prior to flattening
+        if split_subdomains:
+            # Import MeshProcessor from the viewer's simulation bridge (handles local loader isolation)
+            try:
+                import simulation_bridge as _viewer_bridge  # type: ignore
+                ProcessorCls = getattr(_viewer_bridge, 'MeshProcessor', None)
+            except Exception:
+                ProcessorCls = None
+
+            processor = ProcessorCls() if ProcessorCls is not None else None
+            new_dataset = {}
+            for label, mesh in dataset.items():
+                # If labels are present, separate per subdomain; otherwise keep as-is
+                if processor is not None and getattr(mesh, 'subdomain_labels', None) is not None and mesh.subdomain_labels is not None and mesh.tetrahedra is not None:
+                    separated = processor.reconstruct_subdomain_meshes(mesh)
+                    if separated:
+                        for sub_id, sub_mesh in separated.items():
+                            # Build unique numeric label combining original label and subdomain id
+                            new_label = int(label) * 1000 + int(sub_id)
+                            sub_mesh.label = new_label
+                            new_dataset[new_label] = sub_mesh
+                    else:
+                        new_dataset[int(label)] = mesh
                 else:
                     new_dataset[int(label)] = mesh
-            else:
-                new_dataset[int(label)] = mesh
-        dataset = new_dataset
+            dataset = new_dataset
 
-    combined = flatten_mesh_dataset(dataset)
+        combined = flatten_mesh_dataset(dataset)
+        # Persist cache (best-effort)
+        try:
+            payload = {
+                'vertices': np.asarray(combined.get('vertices', np.zeros((0, 3), dtype=np.float32)), dtype=np.float32),
+                'tetrahedra': np.asarray(combined.get('tetrahedra', np.zeros((0, 4), dtype=np.int32)), dtype=np.int32),
+                'edges': np.asarray(combined.get('edges', np.zeros((0, 2), dtype=np.int32)), dtype=np.int32),
+                'triangles': np.asarray(combined.get('triangles', np.zeros((0, 3), dtype=np.int32)), dtype=np.int32),
+                'uvs': np.asarray(combined.get('uvs', np.zeros((0, 2), dtype=np.float32)), dtype=np.float32),
+                'subdomain_labels': np.asarray(combined.get('subdomain_labels', np.zeros((0,), dtype=np.int32)), dtype=np.int32),
+            }
+            label_ranges = combined.get('label_ranges', {})
+            _write_warp_cache(base_dir, cache_stem, sources, payload, label_ranges)
+        except Exception:
+            pass
+    else:
+        # Cached flattened payload
+        payload, label_ranges = cached
+        combined = payload
 
     vertices = np.asarray(combined.get('vertices', np.zeros((0, 3), dtype=np.float32)), dtype=np.float32)
     tetrahedra = np.asarray(combined.get('tetrahedra', np.zeros((0, 4), dtype=np.int32)), dtype=np.int32)
@@ -207,9 +440,13 @@ def _build_model_from_warp_mesh(
     triangles = np.asarray(combined.get('triangles', np.zeros((0, 3), dtype=np.int32)), dtype=np.int32)
     uvs = np.asarray(combined.get('uvs', np.zeros((0, 2), dtype=np.float32)), dtype=np.float32)
     subdomain_labels = np.asarray(combined.get('subdomain_labels', np.zeros((0,), dtype=np.int32)), dtype=np.int32)
-    label_ranges = combined.get('label_ranges', {})
+    # If loaded from cache, label_ranges already provided; otherwise from combined
+    if 'label_ranges' in locals() and isinstance(label_ranges, dict):
+        label_ranges = label_ranges
+    else:
+        label_ranges = combined.get('label_ranges', {})
     for v in vertices:
-        v *= 0.003
+        v *= 0.01
     edge_pairs = edges.reshape(-1, 2) if edges.size else np.empty((0, 2), dtype=np.int32)
     triangle_indices = triangles.reshape(-1, 3) if triangles.size else np.empty((0, 3), dtype=np.int32)
 

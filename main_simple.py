@@ -1,4 +1,5 @@
 import argparse
+import os
 from pathlib import Path
 import warp as wp
 
@@ -37,6 +38,10 @@ def parse_arguments():
     
     parser.add_argument("--warp-mesh-path", type=lambda x: None if x == "None" else str(x),
                        default=None, help="Optional path to a Warp mesh folder (.mesh or WarpSim folder)")
+
+    # Mesh cache options
+    parser.add_argument("--rebuild-mesh-cache", action="store_true", help="Rebuild mesh caches before loading")
+    parser.add_argument("--no-mesh-cache", action="store_true", help="Disable mesh cache for this run")
 
     # Viewer/loader integration options
     parser.add_argument("--reconstruct-surface", dest="reconstruct_surface", action="store_true",
@@ -107,11 +112,15 @@ def run_simulation(args):
             mesh_path = None
 
     # Configure warp-cgal viewer bridge via environment
-    import os
     os.environ['WARP_CGAL_RECONSTRUCT_SURFACE'] = '1' if args.reconstruct_surface else '0'
     os.environ['WARP_CGAL_SPLIT_SUBDOMAINS'] = '1' if args.mesh_load_mode == 'split_subdomains' else '0'
     if args.flip_winding:
         os.environ['WARP_CGAL_FORCE_FLIP_WINDING'] = '1'
+    # Mesh cache behavior
+    if getattr(args, "no_mesh_cache", False):
+        os.environ['MESH_CACHE_DISABLE'] = '1'
+    if getattr(args, "rebuild_mesh_cache", False):
+        os.environ['MESH_CACHE_REBUILD'] = '1'
 
     # Initialize haptic controller
     #haptic_controller = HapticController(scale=1.0)

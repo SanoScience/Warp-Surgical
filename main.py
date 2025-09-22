@@ -1,4 +1,5 @@
 import argparse
+import os
 import sys
 import warp as wp
 
@@ -17,6 +18,9 @@ def parse_arguments():
     )
     parser.add_argument("--num_frames", type=int, default=300, help="Total number of frames.")
     parser.add_argument("--usd", action="store_true", help="Render to USD instead of OpenGL.")
+    # Mesh cache options
+    parser.add_argument("--rebuild-mesh-cache", action="store_true", help="Rebuild mesh caches before loading")
+    parser.add_argument("--no-mesh-cache", action="store_true", help="Disable mesh cache for this run")
     
     return parser.parse_known_args()[0]
 
@@ -24,6 +28,12 @@ def run_simulation(args):
     """Run the main simulation loop."""
 
     print("Python version:", sys.version)
+
+    # Configure mesh cache behavior via environment
+    if getattr(args, "no_mesh_cache", False):
+        os.environ["MESH_CACHE_DISABLE"] = "1"
+    if getattr(args, "rebuild_mesh_cache", False):
+        os.environ["MESH_CACHE_REBUILD"] = "1"
 
     # Initialize haptic controller
     haptic_controller = HapticController(scale=1.0)
