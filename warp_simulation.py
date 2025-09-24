@@ -1,15 +1,16 @@
 from centrelines import CentrelinePointInfo, ClampConstraint, attach_clip_to_nearest_centreline, compute_centreline_positions, cut_centrelines_near_haptic, emit_bleed_particles, update_bleed_particles, update_centreline_leaks
 from grasping import grasp_end, grasp_process, grasp_start
 from heating import heating_active_process, heating_conduction_process, heating_end, heating_start, paint_vertices_near_haptic_proxy, set_paint_strength
+from integrator_pbf import PBFIntegrator
 from stretching import stretching_breaking_process
 from surface_reconstruction import extract_surface_triangles_bucketed
 import warp as wp
 import newton
 from pxr import Usd, UsdGeom
 
-from newton.utils.render import SimRendererOpenGL
-from newton.solvers import XPBDSolver
-from newton.solvers import VBDSolver
+#from newton.utils.render import SimRendererOpenGL
+#from newton.solvers import XPBDSolver
+#from newton.solvers import VBDSolver
 import numpy as np
 import math
 
@@ -427,12 +428,56 @@ class WarpSim:
         self.centreline_cut_flags = wp.zeros(self.centreline_points.shape[0], dtype=wp.int32, device=wp.get_device())
 
         # Bleeding
-        self.max_bleed_particles = 4096 # Max number of particles used for bleeding
+        self.max_bleed_particles = 1000 # Max number of particles used for bleeding
         self.bleed_positions = wp.zeros(self.max_bleed_particles, dtype=wp.vec3f, device=wp.get_device())
         self.bleed_velocities = wp.zeros(self.max_bleed_particles, dtype=wp.vec3f, device=wp.get_device())
         self.bleed_lifetimes = wp.zeros(self.max_bleed_particles, dtype=wp.float32, device=wp.get_device())
         self.bleed_active = wp.zeros(self.max_bleed_particles, dtype=wp.int32, device=wp.get_device())
         self.bleed_next_id = wp.zeros(1, dtype=wp.int32, device=wp.get_device())
+
+        # PBF Fluid Simulation Setup
+        self.fluid_particle_count = 1000  # Number of particles dedicated to fluid simulation
+        self.fluid_particle_radius = 0.005
+        self.fluid_smoothing_radius = self.fluid_particle_radius * 4.0
+        self.fluid_rest_density = 1000.0
+        self.fluid_viscosity = 0.02
+        
+        # PBF particle state arrays
+        self.fluid_positions = wp.zeros(self.fluid_particle_count, dtype=wp.vec3, device=wp.get_device())
+        self.fluid_velocities = wp.zeros(self.fluid_particle_count, dtype=wp.vec3, device=wp.get_device())
+        self.fluid_forces = wp.zeros(self.fluid_particle_count, dtype=wp.vec3, device=wp.get_device())
+        self.fluid_masses = wp.full(self.fluid_particle_count, 6.4 * (self.fluid_particle_radius ** 3) * self.fluid_rest_density, dtype=wp.float32, device=wp.get_device())
+        self.fluid_inv_masses = wp.full(self.fluid_particle_count, 1.0 / (6.4 * (self.fluid_particle_radius ** 3) * self.fluid_rest_density), dtype=wp.float32, device=wp.get_device())
+        self.fluid_flags = wp.full(self.fluid_particle_count, 1, dtype=wp.uint32, device=wp.get_device())  # All active
+        self.fluid_active = wp.zeros(self.fluid_particle_count, dtype=wp.int32, device=wp.get_device())
+        
+        # Initialize fluid particle positions in a small cube
+        self._initialize_fluid_particles()
+        
+        # Create PBF integrator
+        '''
+        self.pbf_integrator = PBFIntegrator(
+            smoothing_radius=self.fluid_smoothing_radius,
+            rest_density=self.fluid_rest_density,
+            relaxation=1.0e-6,
+            iterations=4,
+            viscosity=self.fluid_viscosity,
+            vorticity=0.0,
+            surface_tension=0.0,
+            boundary_min=wp.vec3(-2.0, -1.0, -2.0),
+            boundary_max=wp.vec3(2.0, 4.0, 2.0),
+            boundary_padding=0.1,
+            restitution=0.8,
+            friction=0.9,
+        )
+        '''
+
+        # Create particle grid for PBF
+        self.fluid_particle_grid = wp.HashGrid(dim_x=64, dim_y=64, dim_z=64, device=wp.get_device())
+        
+        # Fluid density for rendering
+        self.fluid_density = wp.zeros(self.fluid_particle_count, dtype=wp.float32, device=wp.get_device())
+
 
         # Bleed marching cubes
         self.bleeding_field_resolution = 96  # Max grid resolution per axis
@@ -530,6 +575,201 @@ class WarpSim:
             ],
             device=wp.get_device()
         )
+
+    def _initialize_fluid_particles(self):
+        """Initialize fluid particles in a cube formation."""
+        import numpy as np
+        
+        # Create a small cube of particles
+        particles_per_axis = int(np.ceil(self.fluid_particle_count ** (1/3)))
+        spacing = self.fluid_particle_radius * 2.0
+        
+        positions = []
+        velocities = []
+        active_flags = []
+        
+        count = 0
+        for i in range(particles_per_axis):
+            for j in range(particles_per_axis):
+                for k in range(particles_per_axis):
+                    if count >= self.fluid_particle_count:
+                        break
+                    
+                    # Position particles in a cube
+                    pos = np.array([
+                        (i - particles_per_axis/2) * spacing,
+                        1.0 + j * spacing,  # Start above ground
+                        (k - particles_per_axis/2) * spacing
+                    ])
+                    
+                    positions.append(pos)
+                    velocities.append([0.0, 0.0, 0.0])
+                    active_flags.append(1)
+                    count += 1
+        
+        # Pad with inactive particles if needed
+        while len(positions) < self.fluid_particle_count:
+            positions.append([0.0, 0.0, 0.0])
+            velocities.append([0.0, 0.0, 0.0])
+            active_flags.append(0)
+        
+        # Copy to GPU
+        wp.copy(self.fluid_positions, wp.array(positions, dtype=wp.vec3, device=wp.get_device()))
+        wp.copy(self.fluid_velocities, wp.array(velocities, dtype=wp.vec3, device=wp.get_device()))
+        wp.copy(self.fluid_active, wp.array(active_flags, dtype=wp.int32, device=wp.get_device()))
+
+    # Add this method to simulate fluid
+    def simulate_fluid(self):
+        """Simulate PBF fluid particles."""
+        from integrator_pbf import _pbf_predict_positions, _pbf_compute_density, _pbf_compute_lambdas, _pbf_compute_position_deltas, _pbf_accumulate_delta, _pbf_update_velocities, _pbf_handle_boundaries
+        
+
+        # Create temporary buffers
+        if not hasattr(self, '_fluid_temp_positions'):
+            self._fluid_temp_positions = wp.zeros(self.fluid_particle_count, dtype=wp.vec3, device=wp.get_device())
+            self._fluid_temp_velocities = wp.zeros(self.fluid_particle_count, dtype=wp.vec3, device=wp.get_device())
+            self._fluid_temp_density = wp.zeros(self.fluid_particle_count, dtype=wp.float32, device=wp.get_device())
+            self._fluid_temp_lambdas = wp.zeros(self.fluid_particle_count, dtype=wp.float32, device=wp.get_device())
+            self._fluid_temp_delta = wp.zeros(self.fluid_particle_count, dtype=wp.vec3, device=wp.get_device())
+        
+        gravity = wp.vec3(0.0, -9.81, 0.0)
+        
+        # Predict positions
+        wp.launch(
+            kernel=_pbf_predict_positions,
+            dim=self.fluid_particle_count,
+            inputs=[
+                self.fluid_positions,
+                self.fluid_velocities,
+                self.fluid_forces,
+                self.fluid_inv_masses,
+                self.fluid_flags,
+                gravity,
+                self.substep_dt,
+                10.0,  # max velocity
+                self._fluid_temp_positions,
+                self._fluid_temp_velocities
+            ],
+            device=wp.get_device(),
+        )
+        return
+        # Build spatial grid
+        self.fluid_particle_grid.build(self._fluid_temp_positions, self.fluid_smoothing_radius)
+        
+        # PBF constraint iterations
+        for _ in range(1):  # num of iterations
+            # Compute density
+            wp.launch(
+                kernel=_pbf_compute_density,
+                dim=self.fluid_particle_count,
+                inputs=[
+                    self.fluid_particle_grid.id,
+                    self._fluid_temp_positions,
+                    self.fluid_masses,
+                    self.fluid_flags,
+                    self.fluid_smoothing_radius,
+                    self.pbf_integrator._poly6_coeff,
+                    self.fluid_rest_density,
+                ],
+                outputs=[self._fluid_temp_density],
+                device=wp.get_device(),
+            )
+            
+            # Compute lambdas
+            wp.launch(
+                kernel=_pbf_compute_lambdas,
+                dim=self.fluid_particle_count,
+                inputs=[
+                    self.fluid_particle_grid.id,
+                    self._fluid_temp_positions,
+                    self.fluid_masses,
+                    self.fluid_flags,
+                    self._fluid_temp_density,
+                    self.fluid_smoothing_radius,
+                    self.pbf_integrator._spiky_coeff,
+                    self.fluid_rest_density,
+                    1.0e-6,  # relaxation
+                ],
+                outputs=[self._fluid_temp_lambdas],
+                device=wp.get_device(),
+            )
+            
+            # Compute position deltas
+            wp.launch(
+                kernel=_pbf_compute_position_deltas,
+                dim=self.fluid_particle_count,
+                inputs=[
+                    self.fluid_particle_grid.id,
+                    self._fluid_temp_positions,
+                    self.fluid_masses,
+                    self.fluid_flags,
+                    self._fluid_temp_lambdas,
+                    self._fluid_temp_density,
+                    self.fluid_smoothing_radius,
+                    self.pbf_integrator._spiky_coeff,
+                    self.pbf_integrator._poly6_coeff,
+                    0.0,  # surface_tension
+                    0.0,  # tensile_instability
+                    self.pbf_integrator._scorr_w0,
+                    4.0,  # scorr_power
+                    self.fluid_rest_density,
+                ],
+                outputs=[self._fluid_temp_delta],
+                device=wp.get_device(),
+            )
+            
+            # Apply deltas
+            wp.launch(
+                kernel=_pbf_accumulate_delta,
+                dim=self.fluid_particle_count,
+                inputs=[self._fluid_temp_positions, self._fluid_temp_delta],
+                outputs=[self._fluid_temp_positions],
+                device=wp.get_device(),
+            )
+            
+            # Handle boundaries
+            wp.launch(
+                kernel=_pbf_handle_boundaries,
+                dim=self.fluid_particle_count,
+                inputs=[
+                    self._fluid_temp_positions,
+                    self._fluid_temp_velocities,
+                    self.fluid_flags,
+                    wp.vec3(-2.0, -1.0, -2.0),  # boundary_min
+                    wp.vec3(2.0, 4.0, 2.0),     # boundary_max
+                    0.1,  # padding
+                    0.8,  # restitution
+                    0.9,  # friction
+                ],
+                outputs=[self._fluid_temp_positions, self._fluid_temp_velocities],
+                device=wp.get_device(),
+            )
+        
+        # Update velocities
+        wp.launch(
+            kernel=_pbf_update_velocities,
+            dim=self.fluid_particle_count,
+            inputs=[
+                self.fluid_positions,
+                self._fluid_temp_positions,
+                self.fluid_flags,
+                self.fluid_inv_masses,
+                self.substep_dt,
+                10.0,  # max velocity
+            ],
+            outputs=[self._fluid_temp_velocities],
+            device=wp.get_device(),
+        )
+
+        assert self.fluid_positions.shape[0] == self.fluid_particle_count
+        assert self._fluid_temp_positions.shape[0] == self.fluid_particle_count
+
+        # Update positions and velocities
+        wp.copy(self.fluid_positions, self._fluid_temp_positions)
+        wp.copy(self.fluid_velocities, self._fluid_temp_velocities)
+        
+        # Store final density for rendering
+        wp.copy(self.fluid_density, self._fluid_temp_density)
 
 #endregion
 
@@ -1334,11 +1574,15 @@ class WarpSim:
             #self.contacts = self.model.collide(self.state_0)
             #if self.contacts:
             #    print(f"Contacts detected: {self.contacts.soft_contact_normal}")
+            
+            self.simulate_fluid()
 
             self.integrator.step(self.model, self.state_0, self.state_1, None, self.contacts, self.substep_dt)
 
+
             # Recompute connectivity
             wp.copy(self.vertex_vneighbor_counts, wp.zeros(self.model.particle_count, dtype=wp.int32, device=wp.get_device()))
+            
             wp.launch(
                 build_vertex_neighbor_table,
                 dim=self.model.tetrahedra_wp.shape[0],
@@ -1716,50 +1960,50 @@ class WarpSim:
                 )
 
                 # Generate bleeding mesh using marching cubes
-                mesh_data = self.generate_bleeding_mesh()
-                if mesh_data is not None and mesh_data['triangle_count'] > 0:
+                fluid_mesh_data = self.generate_fluid_mesh()
+                if fluid_mesh_data is not None and fluid_mesh_data['triangle_count'] > 0:
                     # Transform vertices from grid space to world space
-                    vertex_count = mesh_data['vertices'].shape[0]
+                    vertex_count = fluid_mesh_data['vertices'].shape[0]
                     transformed_vertices = wp.zeros(vertex_count, dtype=wp.vec3f, device=wp.get_device())
                     
                     wp.launch(
                         transform_mesh_vertices,
                         dim=vertex_count,
                         inputs=[
-                            mesh_data['vertices'],
-                            mesh_data['origin'],
-                            mesh_data['spacing'],
+                            fluid_mesh_data['vertices'],
+                            fluid_mesh_data['origin'],
+                            fluid_mesh_data['spacing'],
                             transformed_vertices
                         ],
                         device=wp.get_device()
                     )
                     
-                    # Render the bleeding mesh with a blood-like color
+                    # Render the fluid mesh with a water-like color
                     self.renderer.render_mesh_warp(
-                        name="bleeding_mesh",
+                        name="fluid_mesh",
                         points=transformed_vertices,
-                        indices=mesh_data['indices'],
+                        indices=fluid_mesh_data['indices'],
                         pos=(0.0, 0.0, 0.0),
                         rot=(0.0, 0.0, 0.0, 1.0),
                         scale=(1.0, 1.0, 1.0),
-                        basic_color=(0.35, 0.0, 0.05),
+                        basic_color=(0.1, 0.3, 0.8),  # Blue fluid color
                         update_topology=True,
                         smooth_shading=True,
                         visible=True
                     )
                 else:
-                    # Render empty mesh when no bleeding
+                    # Render empty mesh when no fluid
                     empty_vertices = wp.zeros(1, dtype=wp.vec3f, device=wp.get_device())
                     empty_indices = wp.zeros(3, dtype=wp.int32, device=wp.get_device())
                     
                     self.renderer.render_mesh_warp(
-                        name="bleeding_mesh",
+                        name="fluid_mesh",
                         points=empty_vertices,
                         indices=empty_indices,
                         pos=(0.0, 0.0, 0.0),
                         rot=(0.0, 0.0, 0.0, 1.0),
                         scale=(1.0, 1.0, 1.0),
-                        basic_color=(0.35, 0.0, 0.05),
+                        basic_color=(0.1, 0.3, 0.8),
                         update_topology=True,
                         smooth_shading=True,
                         visible=False
@@ -1795,26 +2039,83 @@ class WarpSim:
                 self.renderer.render(self.state_0)
                 self.renderer.end_frame()
 
-    def compute_bleeding_field(self):
-        """Compute scalar field from bleeding particles for marching cubes."""
-        # Count active particles
-        active_count = int(np.sum(self.bleed_active.numpy()))
-        print(f"Active bleeding particles: {active_count}")
+    def generate_fluid_mesh(self):
+        """Generate mesh from fluid particles using marching cubes."""
+        # Reuse the bleeding mesh generation infrastructure but for fluid particles
+        field_data = self.compute_fluid_field()
+        if field_data is None:
+            return None
+        
+        field = field_data['field']
+        dims = field_data['dims']
+        
+        # Initialize/resize marching cubes if needed
+        if (self.bleeding_marching_cubes is None or 
+            self.bleeding_marching_cubes.nx != dims[0] - 1 or
+            self.bleeding_marching_cubes.ny != dims[1] - 1 or
+            self.bleeding_marching_cubes.nz != dims[2] - 1):
+            
+            total_cubes = (dims[0] - 1) * (dims[1] - 1) * (dims[2] - 1)
+            max_verts = min(total_cubes * 12, 100000)
+            max_tris = min(total_cubes * 5, 200000)
+            
+            if self.bleeding_marching_cubes is None:
+                self.bleeding_marching_cubes = wp.MarchingCubes(
+                    nx=dims[0],
+                    ny=dims[1], 
+                    nz=dims[2],
+                    max_verts=max_verts,
+                    max_tris=max_tris,
+                    device=wp.get_device()
+                )
+            else:
+                self.bleeding_marching_cubes.resize(
+                    nx=dims[0],
+                    ny=dims[1],
+                    nz=dims[2],
+                    max_verts=max_verts,
+                    max_tris=max_tris
+                )
+        
+        # Extract isosurface
+        self.bleeding_marching_cubes.surface(field, 0.0)  # Use 0 threshold for fluids
+        
+        # Get the generated mesh
+        vertices = self.bleeding_marching_cubes.verts
+        indices = self.bleeding_marching_cubes.indices
+        
+        triangle_count = len(indices.numpy()) // 3
+        
+        if triangle_count > 0:
+            return {
+                'vertices': vertices,
+                'indices': indices,
+                'triangle_count': triangle_count,
+                'origin': field_data['origin'],
+                'spacing': field_data['spacing']
+            }
+        else:
+            return None
+
+    def compute_fluid_field(self):
+        """Compute scalar field from fluid particles for marching cubes."""
+        # Count active fluid particles
+        active_count = int(np.sum(self.fluid_active.numpy()))
         if active_count == 0:
             return None
         
-        # Reset AABB with large/small values
+        # Reuse AABB computation infrastructure
         wp.copy(self.bleeding_field_aabb_min, wp.array([1e6, 1e6, 1e6], dtype=wp.float32, device=wp.get_device()))
         wp.copy(self.bleeding_field_aabb_max, wp.array([-1e6, -1e6, -1e6], dtype=wp.float32, device=wp.get_device()))
         
-        # Compute AABB from active particles
+        # Compute AABB from active fluid particles
         wp.launch(
             compute_aabb_from_particles,
-            dim=self.max_bleed_particles,
+            dim=self.fluid_particle_count,
             inputs=[
-                self.bleed_positions,
-                self.bleed_active,
-                self.max_bleed_particles,
+                self.fluid_positions,
+                self.fluid_active,
+                self.fluid_particle_count,
                 self.bleeding_field_aabb_min,
                 self.bleeding_field_aabb_max
             ],
@@ -1824,8 +2125,6 @@ class WarpSim:
         # AABB values
         aabb_min_array = self.bleeding_field_aabb_min.numpy()
         aabb_max_array = self.bleeding_field_aabb_max.numpy()
-        
-        print(f"AABB: min={aabb_min_array}, max={aabb_max_array}")
         
         aabb_min = wp.vec3f(aabb_min_array[0], aabb_min_array[1], aabb_min_array[2])
         aabb_max = wp.vec3f(aabb_max_array[0], aabb_max_array[1], aabb_max_array[2])
@@ -1839,10 +2138,7 @@ class WarpSim:
         field_size = field_max - field_min
         max_extent = max(field_size[0], field_size[1], field_size[2])
         
-        print(f"Field size: {field_size}, max_extent: {max_extent}")
-        
         if max_extent <= 0:
-            print("Max extent <= 0, returning None")
             return None
             
         self.bleeding_field_spacing = max_extent / float(self.bleeding_field_resolution)
@@ -1854,26 +2150,21 @@ class WarpSim:
             int(math.ceil(field_size[2] / self.bleeding_field_spacing)) + 1
         )
         
-        print(f"Field dims: {self.bleeding_field_dims}, spacing: {self.bleeding_field_spacing}")
-        
         self.bleeding_field_origin = field_min
         
         # Allocate field if needed
         field_shape = (self.bleeding_field_dims[0], self.bleeding_field_dims[1], self.bleeding_field_dims[2])
         if self.bleeding_scalar_field is None or self.bleeding_scalar_field.shape != field_shape:
             self.bleeding_scalar_field = wp.zeros(field_shape, dtype=wp.float32, device=wp.get_device())
-            print(f"Allocated new field with shape: {field_shape}")
         else:
-            # Clear existing field
             wp.launch(
                 fill_float32_3d,
                 dim=self.bleeding_scalar_field.shape,
                 inputs=[self.bleeding_scalar_field, 0.0],
                 device=wp.get_device()
             )
-            print("Cleared existing field")
         
-        # Compute SDF field
+        # Compute SDF field using fluid particles
         wp.launch(
             compute_sdf_field,
             dim=self.bleeding_field_dims,
@@ -1882,15 +2173,13 @@ class WarpSim:
                 self.bleeding_field_dims,
                 self.bleeding_field_origin,
                 self.bleeding_field_spacing,
-                self.bleed_positions,
-                self.bleed_active,
-                self.max_bleed_particles,
-                self.bleeding_particle_sdf_radius
+                self.fluid_positions,
+                self.fluid_active,
+                self.fluid_particle_count,
+                self.fluid_particle_radius
             ],
             device=wp.get_device()
         )
-        
-        print("SDF field computed")
         
         return {
             'field': self.bleeding_scalar_field,

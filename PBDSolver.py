@@ -1,5 +1,5 @@
 import warp as wp
-from newton.sim import Contacts, Control, Model, State
+from newton import Contacts, Control, Model, State
 from newton.solvers.xpbd.solver_xpbd import XPBDSolver
 from newton.solvers.xpbd.kernels import (
     apply_body_delta_velocities,
