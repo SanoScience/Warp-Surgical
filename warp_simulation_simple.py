@@ -128,6 +128,9 @@ class WarpSim:
         # Setup CUDA graph if available
         self._setup_cuda_graph()
 
+        # Optional UI draw callback (e.g., ImGui overlay)
+        self.ui_draw_callback = None
+
 
 #endregion
     def _on_key_press(self, symbol, modifiers):
@@ -317,6 +320,68 @@ class WarpSim:
 
         self.sim_time += self.frame_dt
 #endregion
+
+    # region Runtime Parameter Setters
+    def set_ui_draw_callback(self, callback):
+        """Register a callable executed inside render() between begin/end frame."""
+        self.ui_draw_callback = callback
+
+    def set_substeps(self, substeps: int):
+        try:
+            substeps = int(max(1, substeps))
+        except Exception:
+            return
+        self.sim_substeps = substeps
+        self.substep_dt = self.frame_dt / float(self.sim_substeps)
+
+    def set_iterations(self, iterations: int):
+        try:
+            iterations = int(max(1, iterations))
+        except Exception:
+            return
+        if hasattr(self, "integrator"):
+            self.integrator.iterations = iterations
+
+    def set_distance_stiffness(self, stiffness: float):
+        try:
+            val = float(max(0.0, stiffness))
+        except Exception:
+            return
+        try:
+            if hasattr(self.model, "spring_stiffness") and self.model.spring_stiffness is not None:
+                self.model.spring_stiffness.fill_(val)
+        except Exception:
+            pass
+
+    def set_distance_damping(self, damping: float):
+        try:
+            val = float(max(0.0, damping))
+        except Exception:
+            return
+        try:
+            if hasattr(self.model, "spring_damping") and self.model.spring_damping is not None:
+                self.model.spring_damping.fill_(val)
+        except Exception:
+            pass
+
+    def set_volume_enabled(self, enabled: bool):
+        try:
+            if hasattr(self, "integrator"):
+                self.integrator.volCnstrs = bool(enabled)
+        except Exception:
+            pass
+
+    def set_volume_stiffness(self, stiffness: float):
+        try:
+            val = float(max(0.0, stiffness))
+        except Exception:
+            return
+        try:
+            if hasattr(self, "integrator") and hasattr(self.integrator, "vol_stiffness"):
+                self.integrator.vol_stiffness = val
+        except Exception:
+            pass
+#endregion
     # region Rendering
     def render(self):
         """Render the current simulation state."""
@@ -362,6 +427,13 @@ class WarpSim:
                     smooth_shading=True,
                     update_topology=True,
                 )
+
+                # Draw overlay UI if provided (execute after scene, before swap)
+                try:
+                    if callable(self.ui_draw_callback):
+                        self.ui_draw_callback()
+                except Exception:
+                    pass
 
                 # # render springs
                 # self.render_line_list(

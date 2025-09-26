@@ -683,6 +683,9 @@ def CreateSurgSimRenderer(renderer):
             self._loc_postprocess_invproj = gl.glGetUniformLocation(self._postprocess_shader.id, str_buffer("invProjection"))
             self._loc_postprocess_screensize = gl.glGetUniformLocation(self._postprocess_shader.id, str_buffer("screenSize"))
 
+            # 2D overlay callback pipeline (e.g., ImGui overlay)
+            self.render_2d_callbacks = []
+
         def set_input_callbacks(self, on_key_press=None, on_key_release=None):
             """Set callback functions for input events."""
             self.on_key_press_callback = on_key_press
@@ -1742,6 +1745,13 @@ def CreateSurgSimRenderer(renderer):
 
         def _get_new_color(self):
             return tab10_color_map(self.instance_count)
+
+        # Defer 2D overlays to base renderer's draw path which
+        # invokes render_2d_callbacks at the correct time (after blit).
+        # Calling them here (pre-draw) can render into the wrong buffer
+        # and get cleared by subsequent passes.
+        def end_frame(self):
+            return super().end_frame()
 
 
     return SimRenderer

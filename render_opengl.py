@@ -1084,14 +1084,16 @@ class ShapeInstancer:
         gl.glBufferData(gl.GL_ARRAY_BUFFER, colors2.nbytes, colors2.ctypes.data, gl.GL_STATIC_DRAW)
 
         gl.glBindBuffer(gl.GL_ARRAY_BUFFER, self.instance_color1_buffer)
-        gl.glVertexAttribPointer(7, 3, gl.GL_FLOAT, gl.GL_FALSE, colors1[0].nbytes, ctypes.c_void_p(0))
-        gl.glEnableVertexAttribArray(7)
-        gl.glVertexAttribDivisor(7, 1)
-
-        gl.glBindBuffer(gl.GL_ARRAY_BUFFER, self.instance_color2_buffer)
-        gl.glVertexAttribPointer(8, 3, gl.GL_FLOAT, gl.GL_FALSE, colors2[0].nbytes, ctypes.c_void_p(0))
+        # Use attribute location 8 for instance color 1 (matches shader)
+        gl.glVertexAttribPointer(8, 3, gl.GL_FLOAT, gl.GL_FALSE, colors1[0].nbytes, ctypes.c_void_p(0))
         gl.glEnableVertexAttribArray(8)
         gl.glVertexAttribDivisor(8, 1)
+
+        gl.glBindBuffer(gl.GL_ARRAY_BUFFER, self.instance_color2_buffer)
+        # Use attribute location 9 for instance color 2 (matches shader)
+        gl.glVertexAttribPointer(9, 3, gl.GL_FLOAT, gl.GL_FALSE, colors2[0].nbytes, ctypes.c_void_p(0))
+        gl.glEnableVertexAttribArray(9)
+        gl.glVertexAttribDivisor(9, 1)
 
     def allocate_instances(self, positions, rotations=None, colors1=None, colors2=None, scalings=None):
         gl = ShapeInstancer.gl
@@ -1159,13 +1161,15 @@ class ShapeInstancer:
 
         gl.glBindBuffer(gl.GL_ARRAY_BUFFER, self.instance_transform_gl_buffer)
 
-        # we can only send vec4s to the shader, so we need to split the instance transforms matrix into its column vectors
+        # we can only send vec4s to the shader, so we need to split
+        # the instance transform matrix into its column vectors.
+        # Use attribute locations 4-7 (matches shader layout).
         for i in range(4):
             gl.glVertexAttribPointer(
-                3 + i, 4, gl.GL_FLOAT, gl.GL_FALSE, matrix_size, ctypes.c_void_p(i * matrix_size // 4)
+                4 + i, 4, gl.GL_FLOAT, gl.GL_FALSE, matrix_size, ctypes.c_void_p(i * matrix_size // 4)
             )
-            gl.glEnableVertexAttribArray(3 + i)
-            gl.glVertexAttribDivisor(3 + i, 1)
+            gl.glEnableVertexAttribArray(4 + i)
+            gl.glVertexAttribDivisor(4 + i, 1)
 
         gl.glBindVertexArray(0)
 

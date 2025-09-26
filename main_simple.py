@@ -6,6 +6,13 @@ import warp as wp
 #from haptic_device import HapticController
 from warp_simulation_simple import WarpSim
 
+# Optional ImGui overlay using Warp's ImGuiManager (best-integrated path)
+try:
+    from warp.render.imgui_manager import ImGuiManager as _WarpImGuiManager
+    _IMGUI_AVAILABLE = True
+except Exception:
+    _IMGUI_AVAILABLE = False
+
 def parse_arguments():
     """Parse command line arguments."""
     parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
@@ -134,6 +141,13 @@ def run_simulation(args):
         coloring_mode=args.coloring,
     )
 
+    # Helper: setup an ImGui overlay that draws inside the renderer window via Warp ImGuiManager
+    if _IMGUI_AVAILABLE and not args.usd:
+        try:
+            setup_imgui_overlay(sim)
+        except Exception:
+            pass
+
     if args.usd:
         # Offline rendering mode
         for _ in range(args.num_frames):
@@ -171,3 +185,114 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+# ---------------- ImGui helpers (overlay) ----------------
+class _UIState:
+    def __init__(self, sim: WarpSim):
+        # Read initial parameters from simulation
+        self.substeps = int(getattr(sim, 'sim_substeps', 16))
+        self.iterations = int(getattr(getattr(sim, 'integrator', None), 'iterations', 5))
+        # Distance constraints
+        self.dist_stiffness = 1.0
+        self.dist_damping = 0.2
+        try:
+            if hasattr(sim.model, 'spring_stiffness') and sim.model.spring_stiffness is not None and len(sim.model.spring_stiffness) > 0:
+                self.dist_stiffness = float(sim.model.spring_stiffness.numpy()[0])
+        except Exception:
+            pass
+        try:
+            if hasattr(sim.model, 'spring_damping') and sim.model.spring_damping is not None and len(sim.model.spring_damping) > 0:
+                self.dist_damping = float(sim.model.spring_damping.numpy()[0])
+        except Exception:
+            pass
+
+        # Volume constraints
+        self.vol_enabled = bool(getattr(getattr(sim, 'integrator', None), 'volCnstrs', True))
+        self.vol_stiffness = float(getattr(getattr(sim, 'integrator', None), 'vol_stiffness', 0.1))
+
+
+def setup_imgui_overlay(sim: WarpSim):
+    if not hasattr(sim, 'renderer') or sim.renderer is None:
+        return
+    if not hasattr(sim.renderer, 'render_2d_callbacks'):
+        return
+
+    state = _UIState(sim)
+
+    class _SimImGuiManager(_WarpImGuiManager):
+        def __init__(self, renderer, sim_ref, state_ref):
+            super().__init__(renderer)
+            self.sim = sim_ref
+            self.state = state_ref
+            # pick nice defaults
+            self.window_pos = (10, 10)
+            self.window_size = (360, 260)
+
+        def draw_ui(self):
+            if not self.is_available:
+                return
+
+            imgui = self.imgui
+            imgui.set_next_window_size(self.window_size[0], self.window_size[1], imgui.ONCE)
+            imgui.set_next_window_position(self.window_pos[0], self.window_pos[1], imgui.ONCE)
+
+            imgui.begin("Simulation Controls")
+
+            changed = False
+            # Substeps
+            ok, val = imgui.slider_int("Substeps", int(self.state.substeps), 1, 64)
+            if ok and val != self.state.substeps:
+                self.state.substeps = int(val)
+                self.sim.set_substeps(self.state.substeps)
+                changed = True
+
+            # Iterations
+            ok, ival = imgui.slider_int("Iterations", int(self.state.iterations), 1, 50)
+            if ok and ival != self.state.iterations:
+                self.state.iterations = int(ival)
+                self.sim.set_iterations(self.state.iterations)
+                changed = True
+
+            imgui.separator()
+            imgui.text("Distance Constraints")
+            ok, ds = imgui.slider_float("Stiffness", float(self.state.dist_stiffness), 0.0, 10.0)
+            if ok and abs(ds - self.state.dist_stiffness) > 1e-6:
+                self.state.dist_stiffness = float(ds)
+                self.sim.set_distance_stiffness(self.state.dist_stiffness)
+                changed = True
+
+            ok, dd = imgui.slider_float("Damping", float(self.state.dist_damping), 0.0, 5.0)
+            if ok and abs(dd - self.state.dist_damping) > 1e-6:
+                self.state.dist_damping = float(dd)
+                self.sim.set_distance_damping(self.state.dist_damping)
+                changed = True
+
+            imgui.separator()
+            imgui.text("Volume Constraints")
+            ok, ve = imgui.checkbox("Enabled", bool(self.state.vol_enabled))
+            if ok and ve != self.state.vol_enabled:
+                self.state.vol_enabled = bool(ve)
+                self.sim.set_volume_enabled(self.state.vol_enabled)
+                changed = True
+
+            ok, vs = imgui.slider_float("Vol. Stiffness", float(self.state.vol_stiffness), 0.0, 5.0)
+            if ok and abs(vs - self.state.vol_stiffness) > 1e-6:
+                self.state.vol_stiffness = float(vs)
+                self.sim.set_volume_stiffness(self.state.vol_stiffness)
+                changed = True
+
+            if changed:
+                imgui.text_colored("Updated", 0.6, 0.9, 0.7)
+
+            imgui.end()
+
+    mgr = _SimImGuiManager(sim.renderer, sim, state)
+    if getattr(mgr, 'is_available', False):
+        # Wire into renderer’s 2D overlay callbacks
+        sim.renderer.render_2d_callbacks.append(mgr.render_frame)
+        # Keep a reference alive for the session
+        sim._imgui_manager = mgr
+
+
+# No standalone draw function needed; overlay is driven inside sim.render()

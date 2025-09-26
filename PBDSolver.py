@@ -46,6 +46,8 @@ class PBDSolver(SolverXPBD):
     def __init__(self, model: Model, **kwargs):
         super().__init__(model, **kwargs)
         self.volCnstrs = True
+        # Stiffness for volume constraints (used by custom kernel launch)
+        self.vol_stiffness: float = 0.1
         self.dev_pos_buffer = None
         self.self_contact_radius: float = 0.002
         self.self_contact_margin: float = 0.002
@@ -348,7 +350,7 @@ class PBDSolver(SolverXPBD):
                                         model.particle_inv_mass,
                                         model.tetrahedra_wp,
                                         model.tet_active,
-                                        0.1  # stiffness
+                                        wp.float32(self.vol_stiffness)  # stiffness (runtime adjustable)
                                     ],
                                     outputs=[
                                         particle_deltas_accumulator,
