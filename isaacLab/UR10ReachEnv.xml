@@ -1,0 +1,97 @@
+<mujoco model="MuJoCo Model">
+  <compiler angle="radian"/>
+
+  <option timestep="0.01" integrator="implicitfast" ls_iterations="10"/>
+
+  <default>
+    <geom friction="1 0.5 0.001"/>
+  </default>
+
+  <worldbody>
+    <geom name="/World/ground/GroundPlane/CollisionPlane_0" size="5 5 5" pos="0 0 -1.05" type="plane" contype="2" conaffinity="2147483645" friction="0.5 0.25 0.0005" rgba="0 0.3 0.6 1"/>
+    <body name="/World/envs/env_0/Robot/base_link">
+      <inertial pos="0 0 0" quat="0.5 0.5 -0.5 0.5" mass="200" diaginertia="0.00149103 0.000785276 0.000785276"/>
+      <geom name="/World/envs/env_0/Robot/base_link/cylinder_1" size="0.075 0.015" pos="0 0 0.02" type="cylinder" contype="4" conaffinity="2147483643" friction="0.5 0.25 0.0005"/>
+      <body name="/World/envs/env_0/Robot/shoulder_link" pos="0 -9.53675e-09 0.1273" quat="1 0 -1.49012e-07 0">
+        <inertial pos="0 0 0" quat="0.999845 0.0176028 0 0" mass="7.1" diaginertia="0.016289 0.0156912 0.0132716"/>
+        <joint name="/World/envs/env_0/Robot/base_link/shoulder_pan_joint" pos="0 9.53674e-09 0" axis="3.57628e-07 0 1" limited="true" range="-6.28318 6.28318" armature="0.001" frictionloss="1e-05"/>
+        <geom name="/World/envs/env_0/Robot/shoulder_link/cylinder_2" size="0.075 0.085" pos="0 -2.38419e-09 0.0026999" type="cylinder" contype="4" conaffinity="2147483643" friction="0.5 0.25 0.0005"/>
+        <geom name="/World/envs/env_0/Robot/shoulder_link/cylinder_0_3" size="0.075 0.0425" pos="0 0.0425 0.000699915" quat="0.707107 0.707107 0 0" type="cylinder" contype="4" conaffinity="2147483643" friction="0.5 0.25 0.0005"/>
+        <body name="/World/envs/env_0/Robot/upper_arm_link" pos="0 0.220941 0" quat="0.707107 -6.05081e-09 0.707107 0">
+          <inertial pos="0 0 0" mass="12.7" diaginertia="0.652271 0.647741 0.028455"/>
+          <joint name="/World/envs/env_0/Robot/shoulder_link/shoulder_lift_joint" pos="0 0 0" axis="1.19209e-07 1 0" limited="true" range="-6.28318 6.28318" armature="0.001" frictionloss="1e-05"/>
+          <geom name="/World/envs/env_0/Robot/upper_arm_link/cylinder_4" size="0.075 0.0875" pos="-0.000700006 -0.044941 1.86423e-10" quat="0.5 0.5 -0.5 0.5" type="cylinder" contype="4" conaffinity="2147483643" friction="0.5 0.25 0.0005"/>
+          <geom name="/World/envs/env_0/Robot/upper_arm_link/cylinder_0_5" size="0.06 0.306" pos="-0.000699925 -0.044941 0.306" quat="1 0 3.332e-08 0" type="cylinder" contype="4" conaffinity="2147483643" friction="0.5 0.25 0.0005"/>
+          <geom name="/World/envs/env_0/Robot/upper_arm_link/cylinder_1_6" size="0.06 0.068" pos="-0.000699844 -0.044941 0.612" quat="0.5 0.5 -0.5 0.5" type="cylinder" contype="4" conaffinity="2147483643" friction="0.5 0.25 0.0005"/>
+          <body name="/World/envs/env_0/Robot/forearm_link" pos="0 -0.1719 0.612" quat="1 -2.98023e-08 4.18033e-08 0">
+            <inertial pos="0 0 0" quat="0.999995 -0.00328511 0 0" mass="4.27" diaginertia="0.29372 0.292612 0.00896185"/>
+            <joint name="/World/envs/env_0/Robot/upper_arm_link/elbow_joint" pos="0 0 0" axis="1.19209e-07 1 5.96046e-08" limited="true" range="-6.28318 6.28318" armature="0.001" frictionloss="1e-05"/>
+            <geom name="/World/envs/env_0/Robot/forearm_link/cylinder_7" size="0.06 0.063" pos="-0.000700045 -0.00415104 -3.79605e-08" quat="0.5 0.5 -0.5 0.5" type="cylinder" contype="4" conaffinity="2147483643" friction="0.5 0.25 0.0005"/>
+            <geom name="/World/envs/env_0/Robot/forearm_link/cylinder_0_8" size="0.047 0.286" pos="-0.000699968 -0.00104104 0.286" quat="1 0 3.332e-08 0" type="cylinder" contype="4" conaffinity="2147483643" friction="0.5 0.25 0.0005"/>
+            <geom name="/World/envs/env_0/Robot/forearm_link/cylinder_1_9" size="0.047 0.059" pos="-0.000699892 0.00175896 0.572" quat="0.5 0.5 -0.5 0.5" type="cylinder" contype="4" conaffinity="2147483643" friction="0.5 0.25 0.0005"/>
+            <body name="/World/envs/env_0/Robot/wrist_1_link" pos="0 0 0.5723" quat="0.707107 6.05081e-09 0.707107 0">
+              <inertial pos="0 0 0" quat="0.999714 -0.0239215 0 0" mass="1" diaginertia="0.00190835 0.001827 0.0014074"/>
+              <joint name="/World/envs/env_0/Robot/forearm_link/wrist_1_joint" pos="0 0 0" axis="1.19209e-07 1 0" limited="true" range="-6.28318 6.28318" armature="0.001" frictionloss="1e-05"/>
+              <geom name="/World/envs/env_0/Robot/wrist_1_link/cylinder_10" size="0.047 0.0275" pos="0.000299911 0.0874591 -0.000700064" quat="0 0 0.707107 -0.707107" type="cylinder" contype="4" conaffinity="2147483643" friction="0.5 0.25 0.0005"/>
+              <geom name="/World/envs/env_0/Robot/wrist_1_link/cylinder_0_11" size="0.047 0.059" pos="0.000299911 0.114959 0.00209994" quat="0 0 1 0" type="cylinder" contype="4" conaffinity="2147483643" friction="0.5 0.25 0.0005"/>
+              <body name="/World/envs/env_0/Robot/wrist_2_link" pos="0 0.1149 0" quat="1 0 -8.9407e-08 -6.35737e-10">
+                <inertial pos="0 0 0" quat="0.690932 0.72292 0 0" mass="1" diaginertia="0.00188988 0.00181923 0.00138903"/>
+                <joint name="/World/envs/env_0/Robot/wrist_1_link/wrist_2_joint" pos="0 0 0" axis="1.19209e-07 0 1" limited="true" range="-6.28318 6.28318" armature="0.001" frictionloss="1e-05"/>
+                <geom name="/World/envs/env_0/Robot/wrist_2_link/cylinder_12" size="0.047 0.027" pos="0.000299911 5.89943e-05 0.0882998" quat="0 0 1 0" type="cylinder" contype="4" conaffinity="2147483643" friction="0.5 0.25 0.0005"/>
+                <geom name="/World/envs/env_0/Robot/wrist_2_link/cylinder_0_13" size="0.047 0.059" pos="0.000299911 0.002859 0.1153" quat="0 0 0.707107 -0.707107" type="cylinder" contype="4" conaffinity="2147483643" friction="0.5 0.25 0.0005"/>
+                <body name="/World/envs/env_0/Robot/wrist_3_link" pos="0 0 0.1157">
+                  <inertial pos="0 0 0" quat="0.707107 0 0 0.707107" mass="0.365" diaginertia="0.000229949 0.000130589 0.000130589"/>
+                  <joint name="/World/envs/env_0/Robot/wrist_2_link/wrist_3_joint" pos="0 0 0" axis="1.19209e-07 1 0" limited="true" range="-6.28318 6.28318" armature="0.001" frictionloss="1e-05"/>
+                  <geom name="/World/envs/env_0/Robot/wrist_3_link/cylinder_14" size="0.047 0.015" pos="0.000299911 0.077059 -0.000400075" quat="0 0 0.707107 -0.707107" type="cylinder" contype="4" conaffinity="2147483643" friction="0.5 0.25 0.0005"/>
+                  <body name="/World/envs/env_0/Robot/ee_link" pos="0 0.0922 0" quat="-0.5 -0.5 -0.5 -0.5">
+                    <inertial pos="0 0 0" mass="0.01" diaginertia="7.14498e-07 7.14498e-07 7.14498e-07"/>
+                  </body>
+                </body>
+              </body>
+            </body>
+          </body>
+        </body>
+      </body>
+    </body>
+  </worldbody>
+
+  <contact>
+    <exclude body1="/World/envs/env_0/Robot/base_link" body2="/World/envs/env_0/Robot/shoulder_link"/>
+    <exclude body1="/World/envs/env_0/Robot/base_link" body2="/World/envs/env_0/Robot/upper_arm_link"/>
+    <exclude body1="/World/envs/env_0/Robot/base_link" body2="/World/envs/env_0/Robot/forearm_link"/>
+    <exclude body1="/World/envs/env_0/Robot/base_link" body2="/World/envs/env_0/Robot/wrist_1_link"/>
+    <exclude body1="/World/envs/env_0/Robot/base_link" body2="/World/envs/env_0/Robot/wrist_2_link"/>
+    <exclude body1="/World/envs/env_0/Robot/base_link" body2="/World/envs/env_0/Robot/wrist_3_link"/>
+    <exclude body1="/World/envs/env_0/Robot/base_link" body2="/World/envs/env_0/Robot/ee_link"/>
+    <exclude body1="/World/envs/env_0/Robot/shoulder_link" body2="/World/envs/env_0/Robot/upper_arm_link"/>
+    <exclude body1="/World/envs/env_0/Robot/shoulder_link" body2="/World/envs/env_0/Robot/forearm_link"/>
+    <exclude body1="/World/envs/env_0/Robot/shoulder_link" body2="/World/envs/env_0/Robot/wrist_1_link"/>
+    <exclude body1="/World/envs/env_0/Robot/shoulder_link" body2="/World/envs/env_0/Robot/wrist_2_link"/>
+    <exclude body1="/World/envs/env_0/Robot/shoulder_link" body2="/World/envs/env_0/Robot/wrist_3_link"/>
+    <exclude body1="/World/envs/env_0/Robot/shoulder_link" body2="/World/envs/env_0/Robot/ee_link"/>
+    <exclude body1="/World/envs/env_0/Robot/upper_arm_link" body2="/World/envs/env_0/Robot/forearm_link"/>
+    <exclude body1="/World/envs/env_0/Robot/upper_arm_link" body2="/World/envs/env_0/Robot/wrist_1_link"/>
+    <exclude body1="/World/envs/env_0/Robot/upper_arm_link" body2="/World/envs/env_0/Robot/wrist_2_link"/>
+    <exclude body1="/World/envs/env_0/Robot/upper_arm_link" body2="/World/envs/env_0/Robot/wrist_3_link"/>
+    <exclude body1="/World/envs/env_0/Robot/upper_arm_link" body2="/World/envs/env_0/Robot/ee_link"/>
+    <exclude body1="/World/envs/env_0/Robot/forearm_link" body2="/World/envs/env_0/Robot/wrist_1_link"/>
+    <exclude body1="/World/envs/env_0/Robot/forearm_link" body2="/World/envs/env_0/Robot/wrist_2_link"/>
+    <exclude body1="/World/envs/env_0/Robot/forearm_link" body2="/World/envs/env_0/Robot/wrist_3_link"/>
+    <exclude body1="/World/envs/env_0/Robot/forearm_link" body2="/World/envs/env_0/Robot/ee_link"/>
+    <exclude body1="/World/envs/env_0/Robot/wrist_1_link" body2="/World/envs/env_0/Robot/wrist_2_link"/>
+    <exclude body1="/World/envs/env_0/Robot/wrist_1_link" body2="/World/envs/env_0/Robot/wrist_3_link"/>
+    <exclude body1="/World/envs/env_0/Robot/wrist_1_link" body2="/World/envs/env_0/Robot/ee_link"/>
+    <exclude body1="/World/envs/env_0/Robot/wrist_2_link" body2="/World/envs/env_0/Robot/wrist_3_link"/>
+    <exclude body1="/World/envs/env_0/Robot/wrist_2_link" body2="/World/envs/env_0/Robot/ee_link"/>
+    <exclude body1="/World/envs/env_0/Robot/wrist_3_link" body2="/World/envs/env_0/Robot/ee_link"/>
+  </contact>
+
+  <actuator>
+    <general joint="/World/envs/env_0/Robot/base_link/shoulder_pan_joint" forcerange="-87 87" biastype="affine" gainprm="800" biasprm="0 -800 -40"/>
+    <general joint="/World/envs/env_0/Robot/shoulder_link/shoulder_lift_joint" forcerange="-87 87" biastype="affine" gainprm="800" biasprm="0 -800 -40"/>
+    <general joint="/World/envs/env_0/Robot/upper_arm_link/elbow_joint" forcerange="-87 87" biastype="affine" gainprm="800" biasprm="0 -800 -40"/>
+    <general joint="/World/envs/env_0/Robot/forearm_link/wrist_1_joint" forcerange="-87 87" biastype="affine" gainprm="800" biasprm="0 -800 -40"/>
+    <general joint="/World/envs/env_0/Robot/wrist_1_link/wrist_2_joint" forcerange="-87 87" biastype="affine" gainprm="800" biasprm="0 -800 -40"/>
+    <general joint="/World/envs/env_0/Robot/wrist_2_link/wrist_3_joint" forcerange="-87 87" biastype="affine" gainprm="800" biasprm="0 -800 -40"/>
+  </actuator>
+</mujoco>
