@@ -4,8 +4,8 @@ from dataclasses import dataclass
 
 import warp as wp
 
-from warp.sim.integrator import Integrator
-from warp.sim.model import PARTICLE_FLAG_ACTIVE, Model, State
+from newton.solvers import SolverBase
+from newton import ParticleFlags, Model, State
 
 
 POLY6_BASE = 315.0 / (64.0 * math.pi)
@@ -64,23 +64,25 @@ def _pbf_predict_positions(
     x: wp.array(dtype=wp.vec3),
     v: wp.array(dtype=wp.vec3),
     f: wp.array(dtype=wp.vec3),
-    inv_mass: wp.array(dtype=float),
-    flags: wp.array(dtype=wp.uint32),
+    inv_mass: wp.array(dtype=wp.float32),
+    flags: wp.array(dtype=wp.int32),
     gravity: wp.vec3,
-    dt: float,
-    v_max: float,
+    dt: wp.float32,
+    v_max: wp.float32,
     x_pred: wp.array(dtype=wp.vec3),
     v_out: wp.array(dtype=wp.vec3),
 ):
     tid = wp.tid()
 
+
     x0 = x[tid]
     vel = v[tid]
 
-    if (flags[tid] & PARTICLE_FLAG_ACTIVE) == 0:
+    if (flags[tid] & ParticleFlags.ACTIVE) == 0:
         x_pred[tid] = x0
         v_out[tid] = wp.vec3(0.0)
         return
+    
 
     w = inv_mass[tid]
     if w > 0.0:
@@ -88,6 +90,7 @@ def _pbf_predict_positions(
         vel = vel + accel * dt
     else:
         vel = wp.vec3(0.0)
+
 
     speed = wp.length(vel)
     if speed > v_max:
@@ -102,15 +105,16 @@ def _pbf_compute_density(
     grid_id: wp.uint64,
     x_pred: wp.array(dtype=wp.vec3),
     masses: wp.array(dtype=float),
-    flags: wp.array(dtype=wp.uint32),
+    flags: wp.array(dtype=wp.int32),
     h: float,
     coeff_poly6: float,
     rest_density: float,
     density_out: wp.array(dtype=float),
 ):
     tid = wp.tid()
+    test = flags[tid] & ParticleFlags.ACTIVE
 
-    if (flags[tid] & PARTICLE_FLAG_ACTIVE) == 0 or masses[tid] == 0.0:
+    if test == 0 or masses[tid] == 0.0:
         density_out[tid] = rest_density
         return
 
@@ -121,7 +125,7 @@ def _pbf_compute_density(
     for j in neighbors:
         if j == tid:
             continue
-        if (flags[j] & PARTICLE_FLAG_ACTIVE) == 0 or masses[j] == 0.0:
+        if (flags[j] & ParticleFlags.ACTIVE) == 0 or masses[j] == 0.0:
             continue
         rho += masses[j] * _poly6_kernel(xi - x_pred[j], h, coeff_poly6)
 
@@ -133,7 +137,7 @@ def _pbf_compute_lambdas(
     grid_id: wp.uint64,
     x_pred: wp.array(dtype=wp.vec3),
     masses: wp.array(dtype=float),
-    flags: wp.array(dtype=wp.uint32),
+    flags: wp.array(dtype=wp.int32),
     density: wp.array(dtype=float),
     h: float,
     coeff_spiky: float,
@@ -143,7 +147,7 @@ def _pbf_compute_lambdas(
 ):
     tid = wp.tid()
 
-    if (flags[tid] & PARTICLE_FLAG_ACTIVE) == 0 or masses[tid] == 0.0:
+    if (flags[tid] & ParticleFlags.ACTIVE) == 0 or masses[tid] == 0.0:
         lambdas_out[tid] = 0.0
         return
 
@@ -159,7 +163,7 @@ def _pbf_compute_lambdas(
     for j in neighbors:
         if j == tid:
             continue
-        if (flags[j] & PARTICLE_FLAG_ACTIVE) == 0 or masses[j] == 0.0:
+        if (flags[j] & ParticleFlags.ACTIVE) == 0 or masses[j] == 0.0:
             continue
         grad = _spiky_gradient(xi - x_pred[j], h, coeff_spiky)
         grad *= masses[j] * inv_rest_density
@@ -180,7 +184,7 @@ def _pbf_compute_position_deltas(
     grid_id: wp.uint64,
     x_pred: wp.array(dtype=wp.vec3),
     masses: wp.array(dtype=float),
-    flags: wp.array(dtype=wp.uint32),
+    flags: wp.array(dtype=wp.int32),
     lambdas: wp.array(dtype=float),
     density: wp.array(dtype=float),
     h: float,
@@ -195,7 +199,7 @@ def _pbf_compute_position_deltas(
 ):
     tid = wp.tid()
 
-    if (flags[tid] & PARTICLE_FLAG_ACTIVE) == 0 or masses[tid] == 0.0:
+    if (flags[tid] & ParticleFlags.ACTIVE) == 0 or masses[tid] == 0.0:
         delta_out[tid] = wp.vec3(0.0)
         return
 
@@ -210,7 +214,7 @@ def _pbf_compute_position_deltas(
     for j in neighbors:
         if j == tid:
             continue
-        if (flags[j] & PARTICLE_FLAG_ACTIVE) == 0 or masses[j] == 0.0:
+        if (flags[j] & ParticleFlags.ACTIVE) == 0 or masses[j] == 0.0:
             continue
         rij = xi - x_pred[j]
         grad = _spiky_gradient(rij, h, coeff_spiky)
@@ -258,7 +262,7 @@ def _pbf_accumulate_delta(
 def _pbf_update_velocities(
     x_orig: wp.array(dtype=wp.vec3),
     x_pred: wp.array(dtype=wp.vec3),
-    flags: wp.array(dtype=wp.uint32),
+    flags: wp.array(dtype=wp.int32),
     inv_mass: wp.array(dtype=float),
     dt: float,
     v_max: float,
@@ -266,7 +270,7 @@ def _pbf_update_velocities(
 ):
     tid = wp.tid()
 
-    if (flags[tid] & PARTICLE_FLAG_ACTIVE) == 0 or inv_mass[tid] == 0.0:
+    if (flags[tid] & ParticleFlags.ACTIVE) == 0 or inv_mass[tid] == 0.0:
         v_out[tid] = wp.vec3(0.0)
         return
 
@@ -283,7 +287,7 @@ def _pbf_apply_viscosity(
     grid_id: wp.uint64,
     x_pred: wp.array(dtype=wp.vec3),
     v: wp.array(dtype=wp.vec3),
-    flags: wp.array(dtype=wp.uint32),
+    flags: wp.array(dtype=wp.int32),
     h: float,
     coeff_poly6: float,
     rest_density: float,
@@ -291,7 +295,7 @@ def _pbf_apply_viscosity(
 ):
     tid = wp.tid()
 
-    if (flags[tid] & PARTICLE_FLAG_ACTIVE) == 0:
+    if (flags[tid] & ParticleFlags.ACTIVE) == 0:
         return
 
     xi = x_pred[tid]
@@ -302,7 +306,7 @@ def _pbf_apply_viscosity(
     for j in neighbors:
         if j == tid:
             continue
-        if (flags[j] & PARTICLE_FLAG_ACTIVE) == 0:
+        if (flags[j] & ParticleFlags.ACTIVE) == 0:
             continue
         delta_v -= (vi - v[j]) * _poly6_kernel(xi - x_pred[j], h, coeff_poly6)
 
@@ -316,7 +320,7 @@ def _pbf_compute_curl(
     x_pred: wp.array(dtype=wp.vec3),
     v: wp.array(dtype=wp.vec3),
     masses: wp.array(dtype=float),
-    flags: wp.array(dtype=wp.uint32),
+    flags: wp.array(dtype=wp.int32),
     h: float,
     coeff_spiky: float,
     rest_density: float,
@@ -325,7 +329,7 @@ def _pbf_compute_curl(
 ):
     tid = wp.tid()
 
-    if (flags[tid] & PARTICLE_FLAG_ACTIVE) == 0 or masses[tid] == 0.0:
+    if (flags[tid] & ParticleFlags.ACTIVE) == 0 or masses[tid] == 0.0:
         curl_out[tid] = wp.vec3(0.0)
         curl_mag_out[tid] = 0.0
         return
@@ -339,7 +343,7 @@ def _pbf_compute_curl(
     for j in neighbors:
         if j == tid:
             continue
-        if (flags[j] & PARTICLE_FLAG_ACTIVE) == 0 or masses[j] == 0.0:
+        if (flags[j] & ParticleFlags.ACTIVE) == 0 or masses[j] == 0.0:
             continue
         grad = _spiky_gradient(xi - x_pred[j], h, coeff_spiky)
         mass_term = masses[j] * inv_rest_density
@@ -356,7 +360,7 @@ def _pbf_apply_vorticity_correction(
     v: wp.array(dtype=wp.vec3),
     masses: wp.array(dtype=float),
     inv_mass: wp.array(dtype=float),
-    flags: wp.array(dtype=wp.uint32),
+    flags: wp.array(dtype=wp.int32),
     curl: wp.array(dtype=wp.vec3),
     curl_mag: wp.array(dtype=float),
     h: float,
@@ -367,7 +371,7 @@ def _pbf_apply_vorticity_correction(
 ):
     tid = wp.tid()
 
-    if (flags[tid] & PARTICLE_FLAG_ACTIVE) == 0 or masses[tid] == 0.0 or inv_mass[tid] == 0.0:
+    if (flags[tid] & ParticleFlags.ACTIVE) == 0 or masses[tid] == 0.0 or inv_mass[tid] == 0.0:
         return
 
     omega_i = curl[tid]
@@ -380,7 +384,7 @@ def _pbf_apply_vorticity_correction(
     for j in neighbors:
         if j == tid:
             continue
-        if (flags[j] & PARTICLE_FLAG_ACTIVE) == 0 or masses[j] == 0.0:
+        if (flags[j] & ParticleFlags.ACTIVE) == 0 or masses[j] == 0.0:
             continue
         grad = _spiky_gradient(xi - x_pred[j], h, coeff_spiky)
         mass_term = masses[j] * inv_rest_density
@@ -398,7 +402,7 @@ def _pbf_apply_vorticity_correction(
 def _pbf_handle_boundaries(
     x_pred_in: wp.array(dtype=wp.vec3),
     v_in: wp.array(dtype=wp.vec3),
-    flags: wp.array(dtype=wp.uint32),
+    flags: wp.array(dtype=wp.int32),
     bounds_min: wp.vec3,
     bounds_max: wp.vec3,
     padding: float,
@@ -412,7 +416,7 @@ def _pbf_handle_boundaries(
     pos = x_pred_in[tid]
     vel = v_in[tid]
 
-    if (flags[tid] & PARTICLE_FLAG_ACTIVE) == 0:
+    if (flags[tid] & ParticleFlags.ACTIVE) == 0:
         x_pred_out[tid] = pos
         v_out[tid] = vel
         return
@@ -467,9 +471,10 @@ def _pbf_handle_boundaries(
     v_out[tid] = vel
 
 
-class PBFIntegrator(Integrator):
+class PBFIntegrator(SolverBase):
     def __init__(
         self,
+        model,
         smoothing_radius: float,
         rest_density: float,
         relaxation: float = 1.0e-6,
@@ -484,7 +489,7 @@ class PBFIntegrator(Integrator):
         restitution: float = 1.0,
         friction: float = 1.0,
     ) -> None:
-        super().__init__()
+        super().__init__(model)
         self.smoothing_radius = smoothing_radius
         self.rest_density = max(rest_density, MIN_REST_DENSITY)
         self.relaxation = relaxation
@@ -549,6 +554,7 @@ class PBFIntegrator(Integrator):
     def set_friction(self, friction: float) -> None:
         self.friction = max(float(friction), 0.0)
 
+    '''
     def _get_temps(self, model: Model) -> _TempBuffers:
         temp = self._temps.get(model)
         count = model.particle_count
@@ -778,3 +784,4 @@ class PBFIntegrator(Integrator):
 
         if state_out.particle_f and state_in.particle_f:
             state_out.particle_f.assign(state_in.particle_f)
+    '''

@@ -234,7 +234,7 @@ def compute_ik_jacobian_fk_dls(
 class Example:
     def __init__(self, stage_path="example_quadruped.usd", num_envs=8):
 
-        self.dev_pos_buffer = wp.array([0.0, 0.0, 0.0], dtype=wp.vec3, device=wp.get_device())
+        self.dev_pos_target_buffer = wp.array([0.0, 0.0, 0.0], dtype=wp.vec3, device=wp.get_device())
         self.dev_pos_prev_buffer = wp.array([0.0, 0.0, 0.0], dtype=wp.vec3, device=wp.get_device())
         self.ik_target_buffer = wp.array([0.0, 0.0, 0.0], dtype=wp.vec3, device=wp.get_device())
 
@@ -389,7 +389,7 @@ class Example:
             wp.launch(
                 set_body_position,
                 dim=1,
-                inputs=[self.state_0.body_q, self.state_0.body_qd, self.haptic_body_id, self.dev_pos_buffer, self.sim_dt],
+                inputs=[self.state_0.body_q, self.state_0.body_qd, self.haptic_body_id, self.dev_pos_current_buffer, self.sim_dt],
                 device=self.state_0.body_q.device,
             )
             
@@ -497,7 +497,7 @@ class Example:
         haptic_pos = wp.vec3(position[2], position[0], position[1])  # Offset to avoid collision with ground
         self.haptic_pos_right = [haptic_pos[0], haptic_pos[1], haptic_pos[2]]
 
-        wp.copy(self.dev_pos_buffer, wp.array([haptic_pos], dtype=wp.vec3, device=wp.get_device()))
+        wp.copy(self.dev_pos_target_buffer, wp.array([haptic_pos], dtype=wp.vec3, device=wp.get_device()))
         
         # Update IK target based on haptic position with offset
         ik_target = wp.vec3(haptic_pos[0], haptic_pos[1] + 3.0, haptic_pos[2] + 3.0)  # Offset for reachable workspace

@@ -1,4 +1,5 @@
-from centrelines import CentrelinePointInfo, ClampConstraint, attach_clip_to_nearest_centreline, compute_centreline_positions, cut_centrelines_near_haptic, emit_bleed_particles, update_bleed_particles, update_centreline_leaks
+from centrelines import CentrelinePointInfo, ClampConstraint, attach_clip_to_nearest_centreline, check_centreline_leaks, compute_centreline_positions, cut_centrelines_near_haptic, emit_bleed_particles, update_bleed_particles, update_centreline_leaks
+from connectivity import generate_connectivity, recompute_connectivity, setup_connectivity
 from grasping import grasp_end, grasp_process, grasp_start
 from heating import heating_active_process, heating_conduction_process, heating_end, heating_start, paint_vertices_near_haptic_proxy, set_paint_strength
 from integrator_pbf import PBFIntegrator
@@ -11,11 +12,14 @@ from pxr import Usd, UsdGeom
 #from newton.utils.render import SimRendererOpenGL
 #from newton.solvers import XPBDSolver
 #from newton.solvers import VBDSolver
+from newton import ParticleFlags
 import numpy as np
 import math
 
 from PBDSolver import PBDSolver
 from render_surgsim_opengl import SurgSimRendererOpenGL
+import fluids
+import instruments
 
 from mesh_loader import Tetrahedron, load_background_mesh, load_mesh_and_build_model, parse_centreline_file
 from render_opengl import CustomOpenGLRenderer
@@ -74,219 +78,6 @@ def set_active_tets_near_haptic(
     if dist < radius:
         tet_active[tid] = 0
 
-@wp.kernel
-def build_vertex_neighbor_table(
-    tet_active: wp.array(dtype=wp.int32),         # [num_tets]
-    tets: wp.array(dtype=Tetrahedron),            # [num_tets]
-    vertex_neighbors: wp.array(dtype=wp.int32, ndim = 2),   # [num_vertices, max_neighbors]
-    vertex_neighbor_counts: wp.array(dtype=wp.int32),       # [num_vertices]
-    num_tets: int,
-    max_neighbors: int
-):
-    tid = wp.tid()
-    if tid >= num_tets:
-        return
-
-    if tet_active[tid] == 0:
-        return
-
-    tet = tets[tid]
-    for i in range(4):
-        v = tet.ids[i]
-
-        for j in range(4):
-            if i == j:
-                continue
-
-            n = tet.ids[j]
-
-            # Atomically add neighbor if not already present
-            # (no duplicate check)
-            idx = wp.atomic_add(vertex_neighbor_counts, v, 1)
-            if idx < max_neighbors:
-                vertex_neighbors[v, idx] = n
-
-
-@wp.kernel
-def build_tet_edge_table(
-    tets: wp.array(dtype=Tetrahedron),                # [num_tets]
-    springs: wp.array(dtype=wp.int32),                # [num_springs * 2], flat array
-    tet_to_edges: wp.array(dtype=wp.int32, ndim=2),   # [num_tets, 6]
-    tet_edge_counts: wp.array(dtype=wp.int32),        # [num_tets]
-    num_tets: int,
-    num_springs: int,
-):
-    tid = wp.tid()
-    if tid >= num_tets:
-        return
-
-    tet = tets[tid]
-    tet_ids = tet.ids
-    count = int(0)
-    for i in range(num_springs):
-
-        spring_a = springs[i * 2 + 0]
-        spring_b = springs[i * 2 + 1]
-        # Edge 0: (0,1)
-        a = tet_ids[0]
-        b = tet_ids[1]
-        if ((spring_a == a and spring_b == b) or (spring_a == b and spring_b == a)):
-            idx = wp.atomic_add(tet_edge_counts, tid, 1)
-            if idx < 6:
-                tet_to_edges[tid, idx] = i
-            count += 1
-        # Edge 1: (0,2)
-        a = tet_ids[0]
-        b = tet_ids[2]
-        if ((spring_a == a and spring_b == b) or (spring_a == b and spring_b == a)):
-            idx = wp.atomic_add(tet_edge_counts, tid, 1)
-            if idx < 6:
-                tet_to_edges[tid, idx] = i
-            count += 1
-        # Edge 2: (0,3)
-        a = tet_ids[0]
-        b = tet_ids[3]
-        if ((spring_a == a and spring_b == b) or (spring_a == b and spring_b == a)):
-            idx = wp.atomic_add(tet_edge_counts, tid, 1)
-            if idx < 6:
-                tet_to_edges[tid, idx] = i
-            count += 1
-        # Edge 3: (1,2)
-        a = tet_ids[1]
-        b = tet_ids[2]
-        if ((spring_a == a and spring_b == b) or (spring_a == b and spring_b == a)):
-            idx = wp.atomic_add(tet_edge_counts, tid, 1)
-            if idx < 6:
-                tet_to_edges[tid, idx] = i
-            count += 1
-        # Edge 4: (1,3)
-        a = tet_ids[1]
-        b = tet_ids[3]
-        if ((spring_a == a and spring_b == b) or (spring_a == b and spring_b == a)):
-            idx = wp.atomic_add(tet_edge_counts, tid, 1)
-            if idx < 6:
-                tet_to_edges[tid, idx] = i
-            count += 1
-        # Edge 5: (2,3)
-        a = tet_ids[2]
-        b = tet_ids[3]
-        if ((spring_a == a and spring_b == b) or (spring_a == b and spring_b == a)):
-            idx = wp.atomic_add(tet_edge_counts, tid, 1)
-            if idx < 6:
-                tet_to_edges[tid, idx] = i
-            count += 1
-
-
-@wp.kernel
-def build_vertex_edge_table(
-    spring_indices: wp.array(dtype=wp.int32),              # [num_springs * 2]
-    vertex_to_edges: wp.array(dtype=wp.int32, ndim=2),     # [num_vertices, max_edges]
-    vertex_edge_counts: wp.array(dtype=wp.int32),           # [num_vertices]
-    num_springs: int,
-    max_edges: int
-):
-    eid = wp.tid()
-    if eid >= num_springs:
-        return
-
-    a = spring_indices[eid * 2 + 0]
-    b = spring_indices[eid * 2 + 1]
-
-    idx_a = wp.atomic_add(vertex_edge_counts, a, 1)
-    if idx_a < max_edges:
-        vertex_to_edges[a, idx_a] = eid
-
-    idx_b = wp.atomic_add(vertex_edge_counts, b, 1)
-    if idx_b < max_edges:
-        vertex_to_edges[b, idx_b] = eid
-
-@wp.kernel
-def fill_float32_3d(arr: wp.array(dtype=wp.float32, ndim=3), value: float):
-    i, j, k = wp.tid()
-    if i < arr.shape[0] and j < arr.shape[1] and k < arr.shape[2]:
-        arr[i, j, k] = value
-
-@wp.kernel
-def reverse_triangle_winding(
-    indices: wp.array(dtype=wp.int32),
-    triangle_count: int
-):
-    tid = wp.tid()
-    if tid >= triangle_count:
-        return
-    
-    base_idx = tid * 3
-    temp = indices[base_idx + 1]
-    indices[base_idx + 1] = indices[base_idx + 2]
-    indices[base_idx + 2] = temp
-
-@wp.kernel
-def compute_aabb_from_particles(
-    positions: wp.array(dtype=wp.vec3f),
-    active: wp.array(dtype=wp.int32),
-    num_particles: int,
-    aabb_min: wp.array(dtype=wp.float32),  # [3] - separate x,y,z components required for atomic_min/max
-    aabb_max: wp.array(dtype=wp.float32)   # [3] - ^ as above
-):
-    tid = wp.tid()
-    if tid >= num_particles:
-        return
-    
-    if active[tid] == 0:
-        return
-    
-    pos = positions[tid]
-    
-    # Atomic min/max operations on individual components
-    wp.atomic_min(aabb_min, 0, pos[0])
-    wp.atomic_min(aabb_min, 1, pos[1])
-    wp.atomic_min(aabb_min, 2, pos[2])
-    
-    wp.atomic_max(aabb_max, 0, pos[0])
-    wp.atomic_max(aabb_max, 1, pos[1])
-    wp.atomic_max(aabb_max, 2, pos[2])
-
-@wp.kernel
-def compute_sdf_field(
-    field: wp.array(dtype=wp.float32, ndim=3),
-    field_dims: wp.vec3i,
-    field_origin: wp.vec3f,
-    field_spacing: wp.float32,
-    particle_positions: wp.array(dtype=wp.vec3f),
-    particle_active: wp.array(dtype=wp.int32),
-    num_particles: int,
-    particle_radius: wp.float32
-):
-    i, j, k = wp.tid()
-    
-    if i >= field_dims[0] or j >= field_dims[1] or k >= field_dims[2]:
-        return
-    
-    # Convert grid coordinates to world position
-    world_pos = field_origin + wp.vec3f(
-        wp.float32(i) * field_spacing,
-        wp.float32(j) * field_spacing,
-        wp.float32(k) * field_spacing
-    )
-    
-    # Find minimum distance to any active particle
-    min_distance = float(1e6)
-    
-    for p in range(num_particles):
-        if particle_active[p] == 0:
-            continue
-            
-        particle_pos = particle_positions[p]
-        dist = wp.length(world_pos - particle_pos)
-        
-        # SDF of sphere: distance to surface
-        sdf_dist = dist - particle_radius
-        
-        if sdf_dist < min_distance:
-            min_distance = sdf_dist
-    
-    # Store SDF
-    field[i, j, k] = -min_distance
 
 @wp.kernel
 def transform_mesh_vertices(
@@ -304,73 +95,39 @@ def transform_mesh_vertices(
     world_pos = origin + grid_pos * spacing
     transformed_vertices[tid] = world_pos
 
+@wp.kernel
+def interpolate_haptic_position(
+    haptic_pos_src: wp.array(dtype=wp.vec3f),         # [1]
+    haptic_pos_dst: wp.array(dtype=wp.vec3f),         # [1]
+    haptic_pos_result: wp.array(dtype=wp.vec3f),      # [1]
+    factor: float,
+):
+    tid = wp.tid()
+    if tid >= 1:
+        return
 
-def check_centreline_leaks(states, num_points, device=None):
-    """
-    Launch the update_centreline_leaks kernel and return results as Python values.
+    pos_src = haptic_pos_src[0]
+    pos_dst = haptic_pos_dst[0]
 
-    Args:
-        states: wp.array(dtype=wp.int32), shape=[num_points]
-        num_points: int
-        device: Warp device (optional)
+    result = wp.lerp(pos_src, pos_dst, factor)
+    haptic_pos_result[0] = result
 
-    Returns:
-        {
-            "clipping_ready_to_cut": bool,
-            "clipping_done": bool,
-            "clipping_error": bool,
-            "valid_ids_to_cut": list of int
-        }
-    """
-    if device is None:
-        device = wp.get_device()
 
-    out_clipping_ready_to_cut = wp.zeros(1, dtype=wp.int32, device=device)
-    out_clipping_done = wp.zeros(1, dtype=wp.int32, device=device)
-    out_clipping_error = wp.zeros(1, dtype=wp.int32, device=device)
-    out_valid_ids_to_cut = wp.zeros(num_points, dtype=wp.int32, device=device)
-    out_valid_ids_count = wp.zeros(1, dtype=wp.int32, device=device)
-
-    wp.launch(
-        update_centreline_leaks,
-        dim=1,
-        inputs=[
-            states,
-            num_points,
-            out_clipping_ready_to_cut,
-            out_clipping_done,
-            out_clipping_error,
-            out_valid_ids_to_cut,
-            out_valid_ids_count
-        ],
-        device=device
-    )
-
-    # Pull results to CPU
-    ready = bool(out_clipping_ready_to_cut.numpy()[0])
-    done = bool(out_clipping_done.numpy()[0])
-    error = bool(out_clipping_error.numpy()[0])
-    count = int(out_valid_ids_count.numpy()[0])
-    valid_ids = out_valid_ids_to_cut.numpy()[:count].tolist()
-
-    return {
-        "clipping_ready_to_cut": ready,
-        "clipping_done": done,
-        "clipping_error": error,
-        "valid_ids_to_cut": valid_ids
-    }
 
 class WarpSim:
     #region Initialization
-    def __init__(self, stage_path="output.usd", num_frames=300, use_opengl=True):
-        self.sim_substeps = 16
+    def __init__(self, stage_path="output.usd", num_frames=300, use_opengl=True, jaw_collider_profiles=None):
+        self.sim_substeps = 6
         self.num_frames = num_frames
-        self.fps = 120
+        self.fps = 60
 
         self.frame_dt = 1.0 / self.fps
         self.substep_dt = self.frame_dt / self.sim_substeps
         self.sim_time = 0.0
-        self.sim_constraint_iterations = 1
+        self.sim_constraint_iterations = 16
+
+        self.load_textures = False
+        self.allow_cuda_graph = False
 
         self.haptic_pos_right = None  # Haptic device position in simulation space
         self.haptic_rot_right = [0.0, 0.0, 0.0, 1.0]  # Haptic device rotation as quaternion
@@ -392,33 +149,20 @@ class WarpSim:
         print(f"Initializing WarpSim with {self.sim_substeps} substeps at {self.fps} FPS")
         print(f"Frame time: {self.frame_dt:.4f}s, Substep time: {self.substep_dt:.4f}s")
 
+        default_jaw_collider_profiles = {
+            "default": [
+                {"offset": (0.0, 0.0, 0.4), "radius": 0.1},
+            ]
+        }
+        self.jaw_collider_profiles = jaw_collider_profiles or default_jaw_collider_profiles
         self.jaw_colliders = []
-        self.jaw_collider_offsets = {}
 
         # Initialize model
         self._build_model()
         self.vertex_colors = wp.zeros(self.model.particle_count, dtype=wp.vec4f, device=wp.get_device())
         
         # Connectivity setup
-        vertex_count = self.model.particle_count
-        vertex_neighbour_count = 32
-
-        self.vertex_to_vneighbours = wp.zeros((vertex_count, vertex_neighbour_count), dtype=wp.int32, device=wp.get_device())
-        self.vertex_vneighbor_counts = wp.zeros(vertex_count, dtype=wp.int32, device=wp.get_device())
-        self.vneighbours_max = vertex_neighbour_count
-
-        # Vertex to edge mapping setup
-        vertex_edge_count = 32
-        self.vertex_to_edges = wp.zeros((vertex_count, vertex_edge_count), dtype=wp.int32, device=wp.get_device())
-        self.vertex_edge_counts = wp.zeros(vertex_count, dtype=wp.int32, device=wp.get_device())
-        self.vertex_edges_max = vertex_edge_count
-
-        # Tetrahedron to edge mapping setup
-        num_tets = self.model.tetrahedra_wp.shape[0]
-        num_springs = self.model.spring_indices.shape[0] // 2
-
-        self.tet_to_edges = wp.zeros((num_tets, 6), dtype=wp.int32, device=wp.get_device())
-        self.tet_edge_counts = wp.zeros(num_tets, dtype=wp.int32, device=wp.get_device())
+        setup_connectivity(self)
 
         self.max_clips = 64
         self.clip_attached = wp.zeros(self.centreline_points.shape[0], dtype=wp.int32, device=wp.get_device())
@@ -427,75 +171,8 @@ class WarpSim:
 
         self.centreline_cut_flags = wp.zeros(self.centreline_points.shape[0], dtype=wp.int32, device=wp.get_device())
 
-        # Bleeding
-        self.max_bleed_particles = 1000 # Max number of particles used for bleeding
-        self.bleed_positions = wp.zeros(self.max_bleed_particles, dtype=wp.vec3f, device=wp.get_device())
-        self.bleed_velocities = wp.zeros(self.max_bleed_particles, dtype=wp.vec3f, device=wp.get_device())
-        self.bleed_lifetimes = wp.zeros(self.max_bleed_particles, dtype=wp.float32, device=wp.get_device())
-        self.bleed_active = wp.zeros(self.max_bleed_particles, dtype=wp.int32, device=wp.get_device())
-        self.bleed_next_id = wp.zeros(1, dtype=wp.int32, device=wp.get_device())
-
-        # PBF Fluid Simulation Setup
-        self.fluid_particle_count = 1000  # Number of particles dedicated to fluid simulation
-        self.fluid_particle_radius = 0.005
-        self.fluid_smoothing_radius = self.fluid_particle_radius * 4.0
-        self.fluid_rest_density = 1000.0
-        self.fluid_viscosity = 0.02
-        
-        # PBF particle state arrays
-        self.fluid_positions = wp.zeros(self.fluid_particle_count, dtype=wp.vec3, device=wp.get_device())
-        self.fluid_velocities = wp.zeros(self.fluid_particle_count, dtype=wp.vec3, device=wp.get_device())
-        self.fluid_forces = wp.zeros(self.fluid_particle_count, dtype=wp.vec3, device=wp.get_device())
-        self.fluid_masses = wp.full(self.fluid_particle_count, 6.4 * (self.fluid_particle_radius ** 3) * self.fluid_rest_density, dtype=wp.float32, device=wp.get_device())
-        self.fluid_inv_masses = wp.full(self.fluid_particle_count, 1.0 / (6.4 * (self.fluid_particle_radius ** 3) * self.fluid_rest_density), dtype=wp.float32, device=wp.get_device())
-        self.fluid_flags = wp.full(self.fluid_particle_count, 1, dtype=wp.uint32, device=wp.get_device())  # All active
-        self.fluid_active = wp.zeros(self.fluid_particle_count, dtype=wp.int32, device=wp.get_device())
-        
-        # Initialize fluid particle positions in a small cube
-        self._initialize_fluid_particles()
-        
-        # Create PBF integrator
-        '''
-        self.pbf_integrator = PBFIntegrator(
-            smoothing_radius=self.fluid_smoothing_radius,
-            rest_density=self.fluid_rest_density,
-            relaxation=1.0e-6,
-            iterations=4,
-            viscosity=self.fluid_viscosity,
-            vorticity=0.0,
-            surface_tension=0.0,
-            boundary_min=wp.vec3(-2.0, -1.0, -2.0),
-            boundary_max=wp.vec3(2.0, 4.0, 2.0),
-            boundary_padding=0.1,
-            restitution=0.8,
-            friction=0.9,
-        )
-        '''
-
-        # Create particle grid for PBF
-        self.fluid_particle_grid = wp.HashGrid(dim_x=64, dim_y=64, dim_z=64, device=wp.get_device())
-        
-        # Fluid density for rendering
-        self.fluid_density = wp.zeros(self.fluid_particle_count, dtype=wp.float32, device=wp.get_device())
-
-
-        # Bleed marching cubes
-        self.bleeding_field_resolution = 96  # Max grid resolution per axis
-        self.bleeding_field_margin = 0.01    # Margin around AABB
-        self.bleeding_particle_sdf_radius = 0.007  # Particle radius for SDF
-        
-        self.bleeding_field_aabb_min = wp.zeros(3, dtype=wp.float32, device=wp.get_device())
-        self.bleeding_field_aabb_max = wp.zeros(3, dtype=wp.float32, device=wp.get_device())
-        self.bleeding_scalar_field = None
-        self.bleeding_field_dims = wp.vec3i(0, 0, 0)
-        self.bleeding_field_origin = wp.vec3f(0.0, 0.0, 0.0)
-        self.bleeding_field_spacing = 0.0
-
-        self.bleeding_marching_cubes = None
-        self.bleeding_mesh_vertices = None
-        self.bleeding_mesh_indices = None
-        self.bleeding_mesh_triangle_count = 0
-        self.bleeding_isosurface_threshold = 0.0
+        fluids.setup_fluids_data(self)
+        fluids.setup_fluids_rendering(self)
 
         # Initialize simulation components
         self._setup_simulation()
@@ -522,24 +199,23 @@ class WarpSim:
             self.background_normal = [self.renderer.load_texture("textures/cavity_normals.tga")]
             self.background_spec = [self.renderer.load_texture("textures/cavity_spec.png")]
 
-
-            for mesh_name, _ in self.mesh_ranges.items():
-                setattr(self, f"{mesh_name}_diffuse_maps", [self.renderer.load_texture(f"textures/{mesh_name}/diffuse-base.png"),
-                                                            self.renderer.load_texture(f"textures/{mesh_name}/diffuse-coag.png"),
-                                                            self.renderer.load_texture(f"textures/{mesh_name}/diffuse-damage.png"),
-                                                            self.renderer.load_texture(f"textures/{mesh_name}/diffuse-blood.png")])
-                
-                setattr(self, f"{mesh_name}_normal_maps", [self.renderer.load_texture(f"textures/{mesh_name}/normal-base.png"),
-                                                            self.renderer.load_texture(f"textures/{mesh_name}/normal-coag.png"),
-                                                            self.renderer.load_texture(f"textures/{mesh_name}/normal-damage.png"),
-                                                            self.renderer.load_texture(f"textures/{mesh_name}/normal-blood.png")])
-                
-                setattr(self, f"{mesh_name}_specular_maps", [self.renderer.load_texture(f"textures/{mesh_name}/spec-base.png"),
-                                                            self.renderer.load_texture(f"textures/{mesh_name}/spec-coag.png"),
-                                                            self.renderer.load_texture(f"textures/{mesh_name}/spec-damage.png"),
-                                                            self.renderer.load_texture(f"textures/{mesh_name}/spec-blood.png")])
-
-
+            if self.load_textures:
+                for mesh_name, _ in self.mesh_ranges.items():
+                    setattr(self, f"{mesh_name}_diffuse_maps", [self.renderer.load_texture(f"textures/{mesh_name}/diffuse-base.png"),
+                                                                self.renderer.load_texture(f"textures/{mesh_name}/diffuse-coag.png"),
+                                                                self.renderer.load_texture(f"textures/{mesh_name}/diffuse-damage.png"),
+                                                                self.renderer.load_texture(f"textures/{mesh_name}/diffuse-blood.png")])
+                    
+                    setattr(self, f"{mesh_name}_normal_maps", [self.renderer.load_texture(f"textures/{mesh_name}/normal-base.png"),
+                                                                self.renderer.load_texture(f"textures/{mesh_name}/normal-coag.png"),
+                                                                self.renderer.load_texture(f"textures/{mesh_name}/normal-damage.png"),
+                                                                self.renderer.load_texture(f"textures/{mesh_name}/normal-blood.png")])
+                    
+                    setattr(self, f"{mesh_name}_specular_maps", [self.renderer.load_texture(f"textures/{mesh_name}/spec-base.png"),
+                                                                self.renderer.load_texture(f"textures/{mesh_name}/spec-coag.png"),
+                                                                self.renderer.load_texture(f"textures/{mesh_name}/spec-damage.png"),
+                                                                self.renderer.load_texture(f"textures/{mesh_name}/spec-blood.png")])
+            
             self.renderer.set_input_callbacks(
                 on_key_press=self._on_key_press,
                 on_key_release=self._on_key_release
@@ -548,437 +224,12 @@ class WarpSim:
         # Setup CUDA graph if available
         self._setup_cuda_graph()
 
-        wp.launch(
-            build_tet_edge_table,
-            dim=num_tets,
-            inputs=[
-                self.model.tetrahedra_wp,
-                self.model.spring_indices,  # flat int32 array
-                self.tet_to_edges,
-                self.tet_edge_counts,
-                num_tets,
-                num_springs
-            ],
-            device=wp.get_device()
-        )
+        generate_connectivity(self)
 
-        # Build vertex to edge table
-        wp.launch(
-            build_vertex_edge_table,
-            dim=num_springs,
-            inputs=[
-                self.model.spring_indices,
-                self.vertex_to_edges,
-                self.vertex_edge_counts,
-                num_springs,
-                self.vertex_edges_max
-            ],
-            device=wp.get_device()
-        )
-
-    def _initialize_fluid_particles(self):
-        """Initialize fluid particles in a cube formation."""
-        import numpy as np
-        
-        # Create a small cube of particles
-        particles_per_axis = int(np.ceil(self.fluid_particle_count ** (1/3)))
-        spacing = self.fluid_particle_radius * 2.0
-        
-        positions = []
-        velocities = []
-        active_flags = []
-        
-        count = 0
-        for i in range(particles_per_axis):
-            for j in range(particles_per_axis):
-                for k in range(particles_per_axis):
-                    if count >= self.fluid_particle_count:
-                        break
-                    
-                    # Position particles in a cube
-                    pos = np.array([
-                        (i - particles_per_axis/2) * spacing,
-                        1.0 + j * spacing,  # Start above ground
-                        (k - particles_per_axis/2) * spacing
-                    ])
-                    
-                    positions.append(pos)
-                    velocities.append([0.0, 0.0, 0.0])
-                    active_flags.append(1)
-                    count += 1
-        
-        # Pad with inactive particles if needed
-        while len(positions) < self.fluid_particle_count:
-            positions.append([0.0, 0.0, 0.0])
-            velocities.append([0.0, 0.0, 0.0])
-            active_flags.append(0)
-        
-        # Copy to GPU
-        wp.copy(self.fluid_positions, wp.array(positions, dtype=wp.vec3, device=wp.get_device()))
-        wp.copy(self.fluid_velocities, wp.array(velocities, dtype=wp.vec3, device=wp.get_device()))
-        wp.copy(self.fluid_active, wp.array(active_flags, dtype=wp.int32, device=wp.get_device()))
-
-    # Add this method to simulate fluid
-    def simulate_fluid(self):
-        """Simulate PBF fluid particles."""
-        from integrator_pbf import _pbf_predict_positions, _pbf_compute_density, _pbf_compute_lambdas, _pbf_compute_position_deltas, _pbf_accumulate_delta, _pbf_update_velocities, _pbf_handle_boundaries
-        
-
-        # Create temporary buffers
-        if not hasattr(self, '_fluid_temp_positions'):
-            self._fluid_temp_positions = wp.zeros(self.fluid_particle_count, dtype=wp.vec3, device=wp.get_device())
-            self._fluid_temp_velocities = wp.zeros(self.fluid_particle_count, dtype=wp.vec3, device=wp.get_device())
-            self._fluid_temp_density = wp.zeros(self.fluid_particle_count, dtype=wp.float32, device=wp.get_device())
-            self._fluid_temp_lambdas = wp.zeros(self.fluid_particle_count, dtype=wp.float32, device=wp.get_device())
-            self._fluid_temp_delta = wp.zeros(self.fluid_particle_count, dtype=wp.vec3, device=wp.get_device())
-        
-        gravity = wp.vec3(0.0, -9.81, 0.0)
-        
-        # Predict positions
-        wp.launch(
-            kernel=_pbf_predict_positions,
-            dim=self.fluid_particle_count,
-            inputs=[
-                self.fluid_positions,
-                self.fluid_velocities,
-                self.fluid_forces,
-                self.fluid_inv_masses,
-                self.fluid_flags,
-                gravity,
-                self.substep_dt,
-                10.0,  # max velocity
-                self._fluid_temp_positions,
-                self._fluid_temp_velocities
-            ],
-            device=wp.get_device(),
-        )
-        return
-        # Build spatial grid
-        self.fluid_particle_grid.build(self._fluid_temp_positions, self.fluid_smoothing_radius)
-        
-        # PBF constraint iterations
-        for _ in range(1):  # num of iterations
-            # Compute density
-            wp.launch(
-                kernel=_pbf_compute_density,
-                dim=self.fluid_particle_count,
-                inputs=[
-                    self.fluid_particle_grid.id,
-                    self._fluid_temp_positions,
-                    self.fluid_masses,
-                    self.fluid_flags,
-                    self.fluid_smoothing_radius,
-                    self.pbf_integrator._poly6_coeff,
-                    self.fluid_rest_density,
-                ],
-                outputs=[self._fluid_temp_density],
-                device=wp.get_device(),
-            )
-            
-            # Compute lambdas
-            wp.launch(
-                kernel=_pbf_compute_lambdas,
-                dim=self.fluid_particle_count,
-                inputs=[
-                    self.fluid_particle_grid.id,
-                    self._fluid_temp_positions,
-                    self.fluid_masses,
-                    self.fluid_flags,
-                    self._fluid_temp_density,
-                    self.fluid_smoothing_radius,
-                    self.pbf_integrator._spiky_coeff,
-                    self.fluid_rest_density,
-                    1.0e-6,  # relaxation
-                ],
-                outputs=[self._fluid_temp_lambdas],
-                device=wp.get_device(),
-            )
-            
-            # Compute position deltas
-            wp.launch(
-                kernel=_pbf_compute_position_deltas,
-                dim=self.fluid_particle_count,
-                inputs=[
-                    self.fluid_particle_grid.id,
-                    self._fluid_temp_positions,
-                    self.fluid_masses,
-                    self.fluid_flags,
-                    self._fluid_temp_lambdas,
-                    self._fluid_temp_density,
-                    self.fluid_smoothing_radius,
-                    self.pbf_integrator._spiky_coeff,
-                    self.pbf_integrator._poly6_coeff,
-                    0.0,  # surface_tension
-                    0.0,  # tensile_instability
-                    self.pbf_integrator._scorr_w0,
-                    4.0,  # scorr_power
-                    self.fluid_rest_density,
-                ],
-                outputs=[self._fluid_temp_delta],
-                device=wp.get_device(),
-            )
-            
-            # Apply deltas
-            wp.launch(
-                kernel=_pbf_accumulate_delta,
-                dim=self.fluid_particle_count,
-                inputs=[self._fluid_temp_positions, self._fluid_temp_delta],
-                outputs=[self._fluid_temp_positions],
-                device=wp.get_device(),
-            )
-            
-            # Handle boundaries
-            wp.launch(
-                kernel=_pbf_handle_boundaries,
-                dim=self.fluid_particle_count,
-                inputs=[
-                    self._fluid_temp_positions,
-                    self._fluid_temp_velocities,
-                    self.fluid_flags,
-                    wp.vec3(-2.0, -1.0, -2.0),  # boundary_min
-                    wp.vec3(2.0, 4.0, 2.0),     # boundary_max
-                    0.1,  # padding
-                    0.8,  # restitution
-                    0.9,  # friction
-                ],
-                outputs=[self._fluid_temp_positions, self._fluid_temp_velocities],
-                device=wp.get_device(),
-            )
-        
-        # Update velocities
-        wp.launch(
-            kernel=_pbf_update_velocities,
-            dim=self.fluid_particle_count,
-            inputs=[
-                self.fluid_positions,
-                self._fluid_temp_positions,
-                self.fluid_flags,
-                self.fluid_inv_masses,
-                self.substep_dt,
-                10.0,  # max velocity
-            ],
-            outputs=[self._fluid_temp_velocities],
-            device=wp.get_device(),
-        )
-
-        assert self.fluid_positions.shape[0] == self.fluid_particle_count
-        assert self._fluid_temp_positions.shape[0] == self.fluid_particle_count
-
-        # Update positions and velocities
-        wp.copy(self.fluid_positions, self._fluid_temp_positions)
-        wp.copy(self.fluid_velocities, self._fluid_temp_velocities)
-        
-        # Store final density for rendering
-        wp.copy(self.fluid_density, self._fluid_temp_density)
-
+    
 #endregion
 
-    def debug_instrument_transforms(self, instrument_id):
-        instrument = self.instruments[instrument_id]
-        print(f"\n--- Instrument {instrument_id} Transform Debug ---")
-        
-        for i, piece in enumerate(instrument['pieces']):
-            print(f"Piece {i}: {piece['name']}")
-            print(f"  USD Local Transform: {piece['usd_local_transform']}")
-            print(f"  Runtime Local Transform: {piece['runtime_local_transform']}")
-            print(f"  World Transform: {piece['world_transform_matrix']}")
-            print(f"  Sample original vertex: {piece['original_vertices'].numpy()[0]}")
-            print(f"  Sample transformed vertex: {piece['vertices'].numpy()[0]}")
-            print("---")
-
-    def _load_instrument_from_usd(self, usd_path, builder, name="instrument"):
-        """Load surgical instrument mesh from USD file as a hierarchical instrument with separate pieces"""
-        import numpy as np
-        
-        # Open USD stage
-        stage = Usd.Stage.Open(usd_path)
-        if not stage:
-            print(f"Failed to load USD file: {usd_path}")
-            return None
-        
-        scale = 0.02
-        mesh_pieces = []
-        
-        def collect_mesh_hierarchy(prim, parent_transform=None, parent_piece_index=None):
-            """Recursively collect all mesh primitives with their hierarchy and transforms"""
-            # Get local transform
-            if prim.IsA(UsdGeom.Xformable):
-                xformable = UsdGeom.Xformable(prim)
-                local_matrix = xformable.GetLocalTransformation()
-                print(f"  Local transform for {prim.GetPath()}:")
-                print(f"    Raw USD matrix (column-major):\n{local_matrix}")
-            else:
-                local_matrix = [[1,0,0,0], [0,1,0,0], [0,0,1,0], [0,0,0,1]]
-            
-            # Convert to numpy array and ensure it's 4x4
-            local_transform = np.array(local_matrix, dtype=np.float64)
-            if local_transform.shape != (4, 4):
-                local_transform = np.eye(4, dtype=np.float64)
-            
-            # USD matrices are column-major, transpose to row-major
-            local_transform = local_transform.T
-            
-            print(f"    Corrected transform (row-major):\n{local_transform}")
-            print(f"    Translation: [{local_transform[0,3]:.3f}, {local_transform[1,3]:.3f}, {local_transform[2,3]:.3f}]")
-            
-            # Compute the world transform for the current primitive
-            if parent_transform is not None:
-                world_transform = np.dot(parent_transform, local_transform)
-            else:
-                world_transform = local_transform.copy()
-            
-            current_piece_index = parent_piece_index  # Start with parent piece index
-            
-            # If this is a mesh, create a piece for it
-            if prim.IsA(UsdGeom.Mesh):
-                current_piece_index = len(mesh_pieces)
-                
-                # Get mesh geometry
-                usd_geom = UsdGeom.Mesh(prim)
-                points_attr = usd_geom.GetPointsAttr()
-                face_indices_attr = usd_geom.GetFaceVertexIndicesAttr()
-                face_counts_attr = usd_geom.GetFaceVertexCountsAttr()
-                
-                if not (points_attr and face_indices_attr and face_counts_attr):
-                    print(f"  Warning: Mesh {prim.GetPath()} missing required attributes, skipping")
-                    # Continue with children using parent's transform and piece index
-                    for child in prim.GetChildren():
-                        collect_mesh_hierarchy(child, parent_transform, parent_piece_index)
-                    return
-                    
-                mesh_points = np.array(points_attr.Get(), dtype=np.float64)
-                mesh_face_vertex_indices = np.array(face_indices_attr.Get())
-                mesh_face_vertex_counts = np.array(face_counts_attr.Get())
-                
-                if len(mesh_points) == 0 or len(mesh_face_vertex_indices) == 0:
-                    print(f"  Warning: Empty mesh {prim.GetPath()}, skipping")
-                    # Continue with children using parent's transform and piece index
-                    for child in prim.GetChildren():
-                        collect_mesh_hierarchy(child, parent_transform, parent_piece_index)
-                    return
-                
-                print(f"  Processing mesh: {prim.GetPath()}")
-                print(f"  Points: {len(mesh_points)}")
-                print(f"  World transform translation: [{world_transform[0,3]:.3f}, {world_transform[1,3]:.3f}, {world_transform[2,3]:.3f}]")
-                
-                original_vertices = mesh_points * scale
-                initial_transformed_vertices = original_vertices
-                
-                print(f"  Sample original vertex: {original_vertices[0] if len(original_vertices) > 0 else 'N/A'}")
-                
-                # Triangulate faces
-                triangulated_indices = []
-                face_start = 0
-                
-                for face_vertex_count in mesh_face_vertex_counts:
-                    if face_vertex_count < 3:
-                        face_start += face_vertex_count
-                        continue
-                    elif face_vertex_count == 3:
-                        triangulated_indices.extend([
-                            mesh_face_vertex_indices[face_start],
-                            mesh_face_vertex_indices[face_start + 1], 
-                            mesh_face_vertex_indices[face_start + 2]
-                        ])
-                    else:
-                        first_vertex = mesh_face_vertex_indices[face_start]
-                        for j in range(1, face_vertex_count - 1):
-                            triangulated_indices.extend([
-                                first_vertex,
-                                mesh_face_vertex_indices[face_start + j],
-                                mesh_face_vertex_indices[face_start + j + 1]
-                            ])
-                    face_start += face_vertex_count
-                
-                # Convert to Warp format
-                vertices = wp.array(np.array(initial_transformed_vertices, dtype=np.float32), dtype=wp.vec3f, device=wp.get_device())
-                vertices_original = wp.array(np.array(original_vertices, dtype=np.float32), dtype=wp.vec3f, device=wp.get_device())
-                indices = wp.array(np.array(triangulated_indices, dtype=np.int32), dtype=wp.int32, device=wp.get_device())
-                
-                # Store the complete world transform from USD as the "USD local transform"
-                # (original positioning from USD)
-                usd_world_transform_wp = wp.mat44f(
-                    world_transform[0, 0], world_transform[0, 1], world_transform[0, 2], world_transform[0, 3] * scale,
-                    world_transform[1, 0], world_transform[1, 1], world_transform[1, 2], world_transform[1, 3] * scale,
-                    world_transform[2, 0], world_transform[2, 1], world_transform[2, 2], world_transform[2, 3] * scale,
-                    world_transform[3, 0], world_transform[3, 1], world_transform[3, 2], world_transform[3, 3]
-                )
-                
-                runtime_local_transform = wp.mat44f(1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0)
-                
-                piece_data = {
-                    'name': str(prim.GetPath()).split('/')[-1],
-                    'path': str(prim.GetPath()),
-                    'vertices': vertices,
-                    'indices': indices,
-                    'original_vertices': vertices_original,  # Mesh in original local space
-                    'usd_local_transform': usd_world_transform_wp,
-                    'runtime_local_transform': runtime_local_transform,
-                    'world_transform_matrix': wp.mat44f(1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0),
-                    'parent_index': parent_piece_index,  # parent piece index (None for root)
-                    'children_indices': [],
-                    'visible': True,
-                    'vertex_count': len(vertices),
-                    'triangle_count': len(triangulated_indices) // 3
-                }
-
-                # Temporary HACK: hide shaft, there is something wrong with handling its local translation
-                if piece_data['name'] == "shaft_color_001":
-                    piece_data["visible"] = False
-                
-                mesh_pieces.append(piece_data)
-                
-                # Add this piece as a child to its parent (if it has one)
-                if parent_piece_index is not None:
-                    mesh_pieces[parent_piece_index]['children_indices'].append(current_piece_index)
-                
-                print(f"  Created piece '{piece_data['name']}' with parent_index={parent_piece_index}")
-            
-            # Recurse to children, passing this node's world transform as the new parent transform
-            for child in prim.GetChildren():
-                collect_mesh_hierarchy(child, world_transform, current_piece_index)
-        
-        # Start from root and collect all meshes with hierarchy
-        root = stage.GetPseudoRoot()
-        for child in root.GetChildren():
-            collect_mesh_hierarchy(child)
-        
-        if not mesh_pieces:
-            print("No mesh primitives found in USD file")
-            return None
-        
-        print(f"\nFound {len(mesh_pieces)} mesh pieces:")
-        for i, piece in enumerate(mesh_pieces):
-            parent_name = mesh_pieces[piece['parent_index']]['name'] if piece['parent_index'] is not None else "None"
-            children_names = [mesh_pieces[idx]['name'] for idx in piece['children_indices']]
-            print(f"  {i}: '{piece['name']}' (parent: {parent_name}, children: {children_names})")
-        
-        instrument_data = {
-            'name': name,
-            'pieces': mesh_pieces,
-            'root_pieces': [i for i, piece in enumerate(mesh_pieces) if piece['parent_index'] is None],
-            'root_transform_matrix': wp.mat44f(1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0),
-            'visible': True
-        }
-        
-        if not hasattr(self, 'instruments'):
-            self.instruments = []
-        
-        self.instruments.append(instrument_data)
-        
-        # Update world transforms for all pieces (this will apply the root transform on top of USD transforms)
-        self._update_instrument_hierarchy_transforms(len(self.instruments) - 1)
-        
-        total_vertices = sum(piece['vertex_count'] for piece in mesh_pieces)
-        total_triangles = sum(piece['triangle_count'] for piece in mesh_pieces)
-        print(f"Successfully loaded instrument '{name}' with {len(mesh_pieces)} pieces, {total_vertices} total vertices and {total_triangles} total triangles")
-
-        self.debug_instrument_transforms(len(self.instruments) - 1)
-        self._setup_jaw_colliders(len(self.instruments) - 1, builder)
-
-
-        return len(self.instruments) - 1
-
+    
     def _matrix_to_quaternion(self, matrix):
         """Convert 3x3 rotation matrix to quaternion [x, y, z, w]"""
         trace = np.trace(matrix)
@@ -1266,130 +517,6 @@ class WarpSim:
             print(f"Error reading USD file {usd_path}: {e}")
             return []
 
-    def _setup_jaw_colliders(self, instrument_id, builder):
-        """Setup sphere colliders for jaw pieces"""
-        if not hasattr(self, 'instruments') or instrument_id >= len(self.instruments):
-            return
-        
-        instrument = self.instruments[instrument_id]
-        
-        # Find jaw pieces and create colliders for them
-        for piece_idx, piece in enumerate(instrument['pieces']):
-            piece_name = piece['name'].lower()
-            
-            if 'jaw' in piece_name or 'grasp' in piece_name:
-                # Create a collision body for this jaw
-                jaw_body_id = builder.add_body(
-                    xform=wp.transform([0.0, 0.0, 0.0], wp.quat_identity()),
-                    mass=0.0,  # Kinematic body
-                    armature=0.0
-                )
-                
-                # Add sphere shape to the body
-                collider_radius = 0.1
-                builder.add_shape_sphere(
-                    body=jaw_body_id,
-                    xform=wp.transform([0.0, 0.0, 0.0], wp.quat_identity()),
-                    radius=collider_radius,
-                    cfg=newton.ModelBuilder.ShapeConfig(
-                        density=10
-                    )
-                )
-                
-                # Store the collider info
-                collider_info = {
-                    'body_id': jaw_body_id,
-                    'piece_index': piece_idx,
-                    'piece_name': piece['name'],
-                    'radius': collider_radius,
-                    'instrument_id': instrument_id
-                }
-                
-                self.jaw_colliders.append(collider_info)
-                self.jaw_collider_offsets[f"{instrument_id}_{piece_idx}"] = wp.vec3f(0.0, 0.0, 0.4)
-                
-                print(f"Created jaw collider for piece '{piece['name']}' with body ID {jaw_body_id}")
-
-    @wp.kernel
-    def update_jaw_collider_transform(
-        body_positions: wp.array(dtype=wp.transformf),
-        body_velocities: wp.array(dtype=wp.spatial_vectorf),
-        body_id: int,
-        world_position: wp.vec3f,
-        world_rotation: wp.quat
-    ):
-        """Update jaw collider transform to follow jaw piece"""
-        if wp.tid() == 0:
-            # Set the body transform
-            new_transform = wp.transform(world_position, world_rotation)
-            body_positions[body_id] = new_transform
-            
-            # Zero out velocity for kinematic body
-            body_velocities[body_id] = wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
-
-    def _compute_jaw_collider_world_transform(self, instrument_id, piece_index):
-        """Compute world transform for a jaw collider based on its piece transform"""
-        if not hasattr(self, 'instruments') or instrument_id >= len(self.instruments):
-            return None, None
-        
-        instrument = self.instruments[instrument_id]
-        if piece_index >= len(instrument['pieces']):
-            return None, None
-        
-        piece = instrument['pieces'][piece_index]
-        
-        # Get the offset for this jaw collider
-        offset_key = f"{instrument_id}_{piece_index}"
-        local_offset = self.jaw_collider_offsets.get(offset_key, wp.vec3f(0.0, 0.0, 0.0))
-        
-        # Transform the offset by the piece's world transform matrix
-        offset_homo = wp.vec4f(local_offset[0], local_offset[1], local_offset[2], 1.0)
-        world_offset_homo = piece['world_transform_matrix'] * offset_homo
-        world_position = wp.vec3f(world_offset_homo[0], world_offset_homo[1], world_offset_homo[2])
-        
-        # Extract rotation from the world transform matrix
-        transform_matrix = piece['world_transform_matrix']
-        
-        # Create rotation quaternion from the 3x3 rotation part of the matrix
-        rotation_matrix = np.array([
-            [float(transform_matrix[0, 0]), float(transform_matrix[0, 1]), float(transform_matrix[0, 2])],
-            [float(transform_matrix[1, 0]), float(transform_matrix[1, 1]), float(transform_matrix[1, 2])],
-            [float(transform_matrix[2, 0]), float(transform_matrix[2, 1]), float(transform_matrix[2, 2])]
-        ])
-        
-        quat_components = self._matrix_to_quaternion(rotation_matrix)
-        world_rotation = wp.quat(quat_components[0], quat_components[1], quat_components[2], quat_components[3])
-        
-        return world_position, world_rotation
-
-    def _update_jaw_colliders(self):
-        """Update all jaw collider positions to follow their respective jaw pieces"""
-        for collider_info in self.jaw_colliders:
-            instrument_id = collider_info['instrument_id']
-            piece_index = collider_info['piece_index']
-            body_id = collider_info['body_id']
-            
-            # Compute world transform for this jaw collider
-            world_pos, world_rot = self._compute_jaw_collider_world_transform(instrument_id, piece_index)
-            # debug, should be using computed pos eventually when confirmed working
-            world_pos = self.haptic_pos_right
-            world_rot = wp.quat(0.0, 0.0, 0.0, 1.0)
-
-            if world_pos is not None and world_rot is not None:
-                # Update the collider body transform
-                wp.launch(
-                    self.update_jaw_collider_transform,
-                    dim=1,
-                    inputs=[
-                        self.state_0.body_q,
-                        self.state_0.body_qd,
-                        body_id,
-                        world_pos,
-                        world_rot
-                    ],
-                    device=wp.get_device()
-                )
-
     def _on_key_press(self, symbol, modifiers):
         from pyglet.window import key
         if symbol == key.C:
@@ -1412,6 +539,7 @@ class WarpSim:
             heating_end(self)
         elif symbol == key.B:
             grasp_end(self)
+
 #region  Model Setup
     def _build_model(self):
         """Build the simulation model with mesh and haptic device."""
@@ -1476,23 +604,23 @@ class WarpSim:
         self.centreline_avg_positions = wp.zeros(self.centreline_points.shape[0], dtype=wp.vec3f, device=wp.get_device())
 
         # Add haptic device collision body
-        self.haptic_body_id = builder.add_body(
-            xform=wp.transform([0.0, 0.0, 0.0], wp.quat_identity()),
-            mass=0.0,  # Zero mass makes it kinematic
-            armature=0.0
-        )
+        #self.haptic_body_id = builder.add_body(
+        #    xform=wp.transform([0.0, 0.0, 0.0], wp.quat_identity()),
+        #    mass=0.0,  # Zero mass makes it kinematic
+        #    armature=0.0
+        #)
 
-        builder.add_shape_sphere(
-            body=self.haptic_body_id,
-            xform=wp.transform([0.0, 0.0, 0.0], wp.quat_identity()),
-            radius=self.radius_collision,
-            cfg=newton.ModelBuilder.ShapeConfig(
-                density=10
-            )
-        )
+        #builder.add_shape_sphere(
+        #    body=self.haptic_body_id,
+        #    xform=wp.transform([0.0, 0.0, 0.0], wp.quat_identity()),
+        #    radius=self.radius_collision,
+        #    cfg=newton.ModelBuilder.ShapeConfig(
+        #        density=10
+        #    )
+        #)
 
         # Import instruments
-        self.instrument_id = self._load_instrument_from_usd("meshes/pgrasp.usdc", builder, "pgrasp")
+        self.instrument_id = instruments.load_instrument_from_usd(self, "meshes/pgrasp.usdc", builder, "pgrasp")
         if self.instrument_id is not None:
             print(f"Successfully loaded instrument with ID: {self.instrument_id}")
         else:
@@ -1514,15 +642,18 @@ class WarpSim:
 
     def _setup_simulation(self):
         """Initialize simulation states and integrator."""
-        self.integrator = PBDSolver(self.model, iterations=5)
+        self.integrator = PBDSolver(self.model, iterations=self.sim_constraint_iterations)
         
-        self.integrator.dev_pos_buffer = wp.array([0.0, 0.0, 0.0], dtype=wp.vec3, device=wp.get_device())
+        self.integrator.dev_pos_current_buffer = wp.array([0.0, 0.0, 0.0], dtype=wp.vec3, device=wp.get_device())
+        self.integrator.dev_pos_target_buffer = wp.array([0.0, 0.0, 0.0], dtype=wp.vec3, device=wp.get_device())
         self.integrator.dev_pos_prev_buffer = wp.array([0.0, 0.0, 0.0], dtype=wp.vec3, device=wp.get_device())
 
         self.rest = self.model.state()
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
         self.contacts = self.model.collide(self.state_0)
+        
+        instruments._update_jaw_colliders(self, states=[self.state_0, self.state_1], update_solver=True)
         
         # Create Jacobian accumulators
         # self.model.delta_accumulator = wp.zeros(self.model.particle_count, dtype=wp.vec3f, device=wp.get_device())
@@ -1544,7 +675,7 @@ class WarpSim:
 
     def _setup_cuda_graph(self):
         """Setup CUDA graph for performance optimization."""
-        self.use_cuda_graph = wp.get_device().is_cuda
+        self.use_cuda_graph = wp.get_device().is_cuda and self.allow_cuda_graph
         if self.use_cuda_graph:
             with wp.ScopedCapture() as capture:
                 self.simulate()
@@ -1556,61 +687,61 @@ class WarpSim:
 
         #self.integrator.collison_detection(self.state_0.particle_q)
 
-        for _ in range(self.sim_substeps):
+        for i in range(self.sim_substeps):
             self.state_0.clear_forces()
             self.state_1.clear_forces()
 
-            # Update haptic device position
+            factor = float(i) / float(self.sim_substeps)
             wp.launch(
-                set_body_position,
+                interpolate_haptic_position,
                 dim=1,
-                inputs=[self.state_0.body_q, self.state_0.body_qd, self.haptic_body_id, self.integrator.dev_pos_buffer, self.substep_dt],
-                device=self.state_0.body_q.device,
+                inputs=[
+                    self.integrator.dev_pos_prev_buffer,
+                    self.integrator.dev_pos_target_buffer,
+                    self.integrator.dev_pos_current_buffer,
+                    factor
+                ],
+                device=wp.get_device()
             )
 
-            self._update_jaw_colliders()
+            instruments._update_jaw_colliders(self, states=[self.state_0, self.state_1], update_solver=True)
+
+            # Update haptic device position
+            #wp.launch(
+            #    set_body_position,
+            #    dim=1,
+            #    inputs=[self.state_0.body_q, self.state_0.body_qd, self.haptic_body_id, self.integrator.dev_pos_current_buffer, self.substep_dt],
+            #    device=self.state_0.body_q.device,
+            #)
 
             # Run collision detection and integration
             #self.contacts = self.model.collide(self.state_0)
             #if self.contacts:
             #    print(f"Contacts detected: {self.contacts.soft_contact_normal}")
             
-            self.simulate_fluid()
+            fluids.simulate_fluid(self)
 
             self.integrator.step(self.model, self.state_0, self.state_1, None, self.contacts, self.substep_dt)
 
 
             # Recompute connectivity
-            wp.copy(self.vertex_vneighbor_counts, wp.zeros(self.model.particle_count, dtype=wp.int32, device=wp.get_device()))
-            
-            wp.launch(
-                build_vertex_neighbor_table,
-                dim=self.model.tetrahedra_wp.shape[0],
-                inputs=[
-                    self.model.tet_active,
-                    self.model.tetrahedra_wp,
-                    self.vertex_to_vneighbours,
-                    self.vertex_vneighbor_counts,
-                    self.model.tetrahedra_wp.shape[0],
-                    self.vneighbours_max
-                ],
-                device=wp.get_device()
-            )
+            recompute_connectivity(self)
 
             # Heat conduction
             heating_conduction_process(self)
             stretching_breaking_process(self)
             
             # Swap states
+            instruments._update_jaw_colliders(self, states=[self.state_1], update_solver=False)
             (self.state_0, self.state_1) = (self.state_1, self.state_0)
 
     def step(self):
         """Advance simulation by one frame."""
         with wp.ScopedTimer("step"):
-            #if self.use_cuda_graph:
-            #    wp.capture_launch(self.graph)
-            #else:
-            self.simulate()
+            if self.use_cuda_graph:
+                wp.capture_launch(self.graph)
+            else:
+                self.simulate()
 
         self.sim_time += self.frame_dt
 #endregion
@@ -1624,327 +755,340 @@ class WarpSim:
             if self.use_opengl:
                 self.renderer.begin_frame()
 
-                self.renderer.render_sphere(
-                    "haptic_proxy_sphere",
-                    [self.haptic_pos_right[0] * 0.01, self.haptic_pos_right[1] * 0.01, self.haptic_pos_right[2] * 0.01],
-                    [0.0, 0.0, 0.0, 1.0],
-                    0.025,
-                )
+                #self.renderer.render_sphere(
+                #    "haptic_proxy_sphere",
+                #    [self.haptic_pos_right[0] * 0.01, self.haptic_pos_right[1] * 0.01, self.haptic_pos_right[2] * 0.01],
+                #    [0.0, 0.0, 0.0, 1.0],
+                #    0.025,
+                #)
 
                 # Render background mesh
-                if self.background_mesh is not None and self.background_tri_indices is not None:
-                    self.renderer.render_mesh_warp(
-                        name="background_mesh",
-                        points=self.background_mesh,
-                        indices=self.background_tri_indices,
-                        texture_coords=self.background_uvs,
-                        vertex_colors=self.background_vertex_colors,
-                        diffuse_maps=self.background_diffuse,
-                        normal_maps=self.background_normal,
-                        specular_maps=self.background_spec,
-                        pos=(0.0, 1.0, -5.4),
-                        rot=(0.0, 0.0, 0.0, 1.0),
-                        scale=(1.2, 1.2, 1.2),
-                        update_topology=True, # TODO: Disable update-topology once it works properly
-                        smooth_shading=True,
-                        visible=True
-                    )
+                with wp.ScopedTimer("background"):
+                    if self.background_mesh is not None and self.background_tri_indices is not None:
+                        background_update = not self.background_mesh_uploaded
+                        shape_id = self.renderer.render_mesh_warp(
+                            name="background_mesh",
+                            points=self.background_mesh,
+                            indices=self.background_tri_indices,
+                            texture_coords=self.background_uvs,
+                            vertex_colors=self.background_vertex_colors,
+                            diffuse_maps=self.background_diffuse,
+                            normal_maps=self.background_normal,
+                            specular_maps=self.background_spec,
+                            pos=(0.0, 1.0, -5.4),
+                            rot=(0.0, 0.0, 0.0, 1.0),
+                            scale=(1.2, 1.2, 1.2),
+                            update_topology=True,
+                            smooth_shading=True,
+                            visible=True
+                        )
+                        if background_update and shape_id is not None:
+                            self.background_mesh_uploaded = True
+                            self.background_mesh_shape_id = shape_id
 
                 # detector = self.integrator.trimesh_collision_detector
                 # num_collisions = int(detector.vertex_colliding_triangles_count.numpy().sum())
                 # print(f"Vertex-triangle collisions detected: {num_collisions}")
 
                 # Grasping
-                if self.grasping_active:
-                    grasp_process(self)
+                with wp.ScopedTimer("grasping"):
+                    if self.grasping_active:
+                        grasp_process(self)
 
 
                 # Centreline update
-                wp.launch(
-                    compute_centreline_positions,
-                    dim=self.centreline_points.shape[0],
-                    inputs=[
-                        self.centreline_points,
-                        self.centreline_clamp_cnstr,
-                        self.state_0.particle_q,
-                        self.centreline_avg_positions
-                    ],
-                    device=wp.get_device()
-                )
-
-                if self.clipping:
+                with wp.ScopedTimer("centrelines"):
                     wp.launch(
-                        attach_clip_to_nearest_centreline,
-                        dim=1,
+                        compute_centreline_positions,
+                        dim=self.centreline_points.shape[0],
                         inputs=[
                             self.centreline_points,
-                            self.centreline_avg_positions,
-                            self.integrator.dev_pos_buffer,
-                            self.clip_attached,
-                            self.clip_indices,
-                            self.clip_count,
-                            self.max_clips,
-                            self.radius_clipping
+                            self.centreline_clamp_cnstr,
+                            self.state_0.particle_q,
+                            self.centreline_avg_positions
                         ],
                         device=wp.get_device()
                     )
-                    self.clipping = False
 
-                results = check_centreline_leaks(self.centreline_states, self.centreline_points.shape[0])
-                if results["clipping_ready_to_cut"]:
-                    print("Ready to cut between:", results["valid_ids_to_cut"])
-                if results["clipping_done"]:
-                    print("Clipping done!")
-                if results["clipping_error"]:
-                    print("Clipping error detected!")
-
-                # Draw centrelines
-                clip_count = int(self.clip_count.numpy()[0])
-                clip_indices = self.clip_indices.numpy()[:clip_count]
-                centreline_positions = self.centreline_avg_positions.numpy()
-                for i in range(self.max_clips):
-                    # Minor hack: for some reason, rendering warp meshes breaks registering instances,
-                    # so all instances registered after the warp mesh is rendered for the first time are broken.
-                    # To get around this, always render the instance (so they're registered from the start)
-                    if i < clip_count:
-                        idx = clip_indices[i]
-                        pos = centreline_positions[idx]
-                        self.renderer.render_sphere(
-                            name=f"clip_{i}",
-                            pos=[pos[0], pos[1], pos[2]],
-                            rot=[0.0, 0.0, 0.0, 1.0],
-                            color=[1.0, 0.2, 0.2], 
-                            radius=0.018
-                        )
-                    else:
-                        self.renderer.render_sphere(
-                            name=f"clip_{i}",
-                            pos=[0.0, 0.0, 0.0],
-                            rot=[0.0, 0.0, 0.0, 1.0],
-                            color=[1.0, 0.2, 0.2], 
-                            radius=0.018
-                        )
-
-                for mesh_name, mesh_info in self.mesh_ranges.items():
-                    tet_start = mesh_info.get('tet_start', 0)
-                    tet_count = mesh_info.get('tet_count', 0)
-                    if tet_count == 0:
-                        continue
-
-                    tet_surface_counter = getattr(self, f'{mesh_name}_tet_surface_counter')
-                    tet_surface_indices = getattr(self, f'{mesh_name}_tet_surface_indices')
-
-                    # Slice the tetrahedra for this mesh
-                    tet_active = self.model.tet_active[tet_start:tet_start+tet_count]
-                    mesh_tets = self.model.tetrahedra_wp[tet_start:tet_start+tet_count]
-
-                    # Handle cutting
-                    if self.cutting_active:
-                        if tet_count == 0:
-                            continue
-                        if tet_active is None:
-                            continue
-
+                    if self.clipping:
                         wp.launch(
-                            set_active_tets_near_haptic,
-                            dim=tet_count,
-                            inputs=[
-                                tet_active,
-                                mesh_tets,
-                                self.state_0.particle_q,
-                                self.integrator.dev_pos_buffer,
-                                self.radius_cutting,
-                                tet_count
-                            ],
-                            device=wp.get_device()
-                        )
-
-                        print("Cutting")
-                        wp.launch(
-                            cut_centrelines_near_haptic,
-                            dim=self.centreline_points.shape[0],
+                            attach_clip_to_nearest_centreline,
+                            dim=1,
                             inputs=[
                                 self.centreline_points,
                                 self.centreline_avg_positions,
-                                self.integrator.dev_pos_buffer,
+                                self.integrator.dev_pos_current_buffer,
+                                self.clip_attached,
+                                self.clip_indices,
+                                self.clip_count,
+                                self.max_clips,
+                                self.radius_clipping
+                            ],
+                            device=wp.get_device()
+                        )
+                        self.clipping = False
+
+                    results = check_centreline_leaks(self.centreline_states, self.centreline_points.shape[0])
+                    if results["clipping_ready_to_cut"]:
+                        print("Ready to cut between:", results["valid_ids_to_cut"])
+                    if results["clipping_done"]:
+                        print("Clipping done!")
+                    if results["clipping_error"]:
+                        print("Clipping error detected!")
+
+                    # Draw centrelines
+                    clip_count = int(self.clip_count.numpy()[0])
+                    clip_indices = self.clip_indices.numpy()[:clip_count]
+                    centreline_positions = self.centreline_avg_positions.numpy()
+                    for i in range(self.max_clips):
+                        # Minor hack: for some reason, rendering warp meshes breaks registering instances,
+                        # so all instances registered after the warp mesh is rendered for the first time are broken.
+                        # To get around this, always render the instance (so they're registered from the start)
+                        if i < clip_count:
+                            idx = clip_indices[i]
+                            pos = centreline_positions[idx]
+                            self.renderer.render_sphere(
+                                name=f"clip_{i}",
+                                pos=[pos[0], pos[1], pos[2]],
+                                rot=[0.0, 0.0, 0.0, 1.0],
+                                color=[1.0, 0.2, 0.2], 
+                                radius=0.018
+                            )
+                        else:
+                            self.renderer.render_sphere(
+                                name=f"clip_{i}",
+                                pos=[0.0, 0.0, 0.0],
+                                rot=[0.0, 0.0, 0.0, 1.0],
+                                color=[1.0, 0.2, 0.2], 
+                                radius=0.018
+                            )
+
+                with wp.ScopedTimer("rendering meshes"):
+                    for mesh_name, mesh_info in self.mesh_ranges.items():
+                        tet_start = mesh_info.get('tet_start', 0)
+                        tet_count = mesh_info.get('tet_count', 0)
+                        if tet_count == 0:
+                            continue
+
+                        tet_surface_counter = getattr(self, f'{mesh_name}_tet_surface_counter')
+                        tet_surface_indices = getattr(self, f'{mesh_name}_tet_surface_indices')
+
+                        # Slice the tetrahedra for this mesh
+                        tet_active = self.model.tet_active[tet_start:tet_start+tet_count]
+                        mesh_tets = self.model.tetrahedra_wp[tet_start:tet_start+tet_count]
+
+                        # Handle cutting
+                        if self.cutting_active:
+                            if tet_count == 0:
+                                continue
+                            if tet_active is None:
+                                continue
+
+                            wp.launch(
+                                set_active_tets_near_haptic,
+                                dim=tet_count,
+                                inputs=[
+                                    tet_active,
+                                    mesh_tets,
+                                    self.state_0.particle_q,
+                                    self.integrator.dev_pos_current_buffer,
+                                    self.radius_cutting,
+                                    tet_count
+                                ],
+                                device=wp.get_device()
+                            )
+
+                            print("Cutting")
+                            wp.launch(
+                                cut_centrelines_near_haptic,
+                                dim=self.centreline_points.shape[0],
+                                inputs=[
+                                    self.centreline_points,
+                                    self.centreline_avg_positions,
+                                    self.integrator.dev_pos_current_buffer,
+                                    self.centreline_cut_flags,
+                                    self.radius_cutting
+                                ],
+                                device=wp.get_device()
+                            )
+
+                        # Handle heating
+                        if self.heating_active:
+                            heating_active_process(self)
+
+                        # Emit new bleed particles from cut centrelines
+                        wp.launch(
+                            emit_bleed_particles,
+                            dim=self.centreline_points.shape[0],
+                            inputs=[
+                                self.centreline_avg_positions,
                                 self.centreline_cut_flags,
-                                self.radius_cutting
+                                self.fluid_positions,
+                                self.fluid_velocities,
+                                self.fluid_active,
+                                self.bleed_next_id,
+                                self.fluid_particle_count,
+                                self.sim_time,
+                                self.frame_dt
                             ],
                             device=wp.get_device()
                         )
 
-                    # Handle heating
-                    if self.heating_active:
-                        heating_active_process(self)
-
-                    # Emit new bleed particles from cut centrelines
-                    wp.launch(
-                        emit_bleed_particles,
-                        dim=self.centreline_points.shape[0],
-                        inputs=[
-                            self.centreline_avg_positions,
-                            self.centreline_cut_flags,
-                            self.bleed_positions,
-                            self.bleed_velocities,
-                            self.bleed_lifetimes,
-                            self.bleed_active,
-                            self.bleed_next_id,
-                            self.max_bleed_particles,
-                            self.sim_time,
-                            self.frame_dt
-                        ],
-                        device=wp.get_device()
-                    )
-
-               
-                    # Extract surface
-                    bucket_counters = getattr(self, f'{mesh_name}_bucket_counters')
-                    bucket_storage = getattr(self, f'{mesh_name}_bucket_storage')
-                    num_buckets = getattr(self, f'{mesh_name}_bucket_count')
-                    bucket_size = getattr(self, f'{mesh_name}_bucket_size')
-
-                    extract_surface_triangles_bucketed(
-                        mesh_tets,
-                        tet_active,
-                        tet_surface_indices,
-                        tet_surface_counter,
-                        bucket_counters,
-                        bucket_storage,
-                        num_buckets,
-                        bucket_size
-                    )
-
-                    num_triangles = int(tet_surface_counter.numpy()[0])
-                    if num_triangles > 0:
-                        diffuse_maps = getattr(self, f"{mesh_name}_diffuse_maps", None)
-                        normal_maps = getattr(self, f"{mesh_name}_normal_maps", None)
-                        specular_maps = getattr(self, f"{mesh_name}_specular_maps", None)
-
-
-                        self.renderer.render_mesh_warp_range(
-                            name=f"{mesh_name}_mesh",
-                            points=self.state_0.particle_q,
-                            indices=tet_surface_indices,
-                            texture_coords=self.uvs_wp,
-                            diffuse_maps=diffuse_maps,
-                            normal_maps=normal_maps,
-                            specular_maps=specular_maps,
-                            colors=self.vertex_colors,
-                            index_start=0,
-                            index_count=num_triangles,
-                            update_topology=True
-                        )
-
-
-            if not hasattr(self, "jaw_angle"):
-                self.jaw_angle = 0.0
-            
-            target_angle = 0.0 if self.grasping_active else 0.5
-            self.jaw_angle = wp.lerp(self.jaw_angle, target_angle, self.frame_dt * 30.0)
-
-            # Debug jaw collider render
-            for i, collider_info in enumerate(self.jaw_colliders):
-                # Get collider transform from physics state
-                collider_transform = self.state_0.body_q.numpy()[collider_info['body_id']]
-                pos = [
-                    self.haptic_pos_right[0] * 0.01, 
-                    self.haptic_pos_right[1] * 0.01, 
-                    self.haptic_pos_right[2] * 0.01
-                ] #[collider_transform[0], collider_transform[1], collider_transform[2]]
-                rot = wp.quat_identity() # [collider_transform[3], collider_transform[4], collider_transform[5], collider_transform[6]]
                 
-                # Render debug sphere for jaw collider
-                self.renderer.render_sphere(
-                    name=f"debug_jaw_collider_{i}",
-                    pos=pos,
-                    rot=rot,
-                    color=[0.0, 1.0, 0.0], 
-                    radius=collider_info['radius']
+                        # Extract surface
+                        bucket_counters = getattr(self, f'{mesh_name}_bucket_counters')
+                        bucket_storage = getattr(self, f'{mesh_name}_bucket_storage')
+                        num_buckets = getattr(self, f'{mesh_name}_bucket_count')
+                        bucket_size = getattr(self, f'{mesh_name}_bucket_size')
+
+                        extract_surface_triangles_bucketed(
+                            mesh_tets,
+                            tet_active,
+                            tet_surface_indices,
+                            tet_surface_counter,
+                            bucket_counters,
+                            bucket_storage,
+                            num_buckets,
+                            bucket_size
                         )
 
-            if hasattr(self, 'instruments'):
-                for instrument_idx, instrument in enumerate(self.instruments):
-                    if not instrument['visible']:
-                        continue
-                    
-                    # Update instrument position and rotation to follow haptic device
-                    if instrument_idx == 0:
-                        haptic_pos = [
-                            self.haptic_pos_right[0] * 0.01, 
-                            self.haptic_pos_right[1] * 0.01, 
-                            self.haptic_pos_right[2] * 0.01
-                        ]
-                        
-                        # Flip rotation so it's pointing away from the device
-                        flip_rotation = axis_angle_to_quat([0.0, 1.0, 0.0], np.pi)  # 180 degrees around Y
-                        
-                        haptic_quat = np.array(self.haptic_rot_right)
-                        flip_quat = np.array(flip_rotation)
-                        
-                        combined_rotation = multiply_quaternions(haptic_quat, flip_quat)
+                        num_triangles = int(tet_surface_counter.numpy()[0])
+                        if num_triangles > 0:
+                            diffuse_maps = getattr(self, f"{mesh_name}_diffuse_maps", None)
+                            normal_maps = getattr(self, f"{mesh_name}_normal_maps", None)
+                            specular_maps = getattr(self, f"{mesh_name}_specular_maps", None)
 
-                        # Extract forward direction from rotation quaternion
-                        x, y, z, w = combined_rotation
-                        forward_x = 2.0 * (x*z + w*y)
-                        forward_y = 2.0 * (y*z - w*x)
-                        forward_z = 2.0 * (z*z + w*w) - 1.0
+
+                            self.renderer.render_mesh_warp_range(
+                                name=f"{mesh_name}_mesh",
+                                points=self.state_0.particle_q,
+                                indices=tet_surface_indices,
+                                texture_coords=self.uvs_wp,
+                                diffuse_maps=diffuse_maps,
+                                normal_maps=normal_maps,
+                                specular_maps=specular_maps,
+                                colors=self.vertex_colors,
+                                index_start=0,
+                                index_count=num_triangles,
+                                update_topology=True
+                            )
+
+
+                if not hasattr(self, "jaw_angle"):
+                    self.jaw_angle = 0.0
+                
+                target_angle = 0.0 if self.grasping_active else 0.5
+                self.jaw_angle = wp.lerp(self.jaw_angle, target_angle, self.frame_dt * 30.0)
+
+                # Debug jaw collider render
+                with wp.ScopedTimer("rendering instruments"):
+                    for i, collider_info in enumerate(self.jaw_colliders):
+                        world_pos = collider_info.get('world_position')
+                        if world_pos is not None:
+                            pos = [world_pos[0], world_pos[1], world_pos[2]]
+                        else:
+                            collider_transform = self.state_0.body_q.numpy()[collider_info['body_id']]
+                            pos = [collider_transform[0], collider_transform[1], collider_transform[2]]
+
+                        world_rot = collider_info.get('world_rotation')
+                        if world_rot is not None:
+                            rot = [world_rot[0], world_rot[1], world_rot[2], world_rot[3]]
+                        else:
+                            rot = [0.0, 0.0, 0.0, 1.0]
                         
-                        # Offset distance
-                        offset_distance = 0.5
-                        
-                        offset_pos = [
-                            haptic_pos[0] - forward_x * offset_distance,
-                            haptic_pos[1] - forward_y * offset_distance,
-                            haptic_pos[2] - forward_z * offset_distance
-                        ]
-
-                        self.update_instrument_transform(
-                            instrument_idx, 
-                            position=offset_pos,
-                            rotation=combined_rotation
-                        )
-                        
-                        
-                        # Find and animate jaw pieces
-                        piece_names = self.get_piece_names(instrument_idx)
-                        for piece_name in piece_names:
-                            if 'jaw' in piece_name.lower() or 'grasp' in piece_name.lower():
-
-                                actual_angle = self.jaw_angle if 'left' in piece_name.lower() else -self.jaw_angle
-
-                                # Apply rotation around axis
-                                jaw_rot = axis_angle_to_quat([1.0, 0.0, 0.0], actual_angle)
-
-                                # Convert quaternion to 4x4 transformation matrix
-                                jaw_transform = wp.transform(wp.vec3(0.0, 0.0, 0.0), jaw_rot)
-                                jaw_matrix = wp.transform_to_matrix(jaw_transform)
-
-                                self.update_piece_transform(
-                                    instrument_idx,
-                                    piece_name,
-                                    transform_matrix=jaw_matrix
+                        # Render debug sphere for jaw collider
+                        self.renderer.render_sphere(
+                            name=f"debug_jaw_collider_{i}",
+                            pos=pos,
+                            rot=rot,
+                            color=[0.0, 1.0, 0.0], 
+                            radius=collider_info['radius']
                                 )
-                        
-                    
-                    # Render each piece of the instrument
-                    for piece_idx, piece in enumerate(instrument['pieces']):
-                        if not piece['visible']:
-                            continue
-                        
-                        self.renderer.render_mesh_warp(
-                            name=f"instrument_{instrument_idx}_piece_{piece_idx}_{piece['name']}",
-                            points=piece['vertices'],
-                            indices=piece['indices'],
-                            pos=(0.0, 0.0, 0.0),
-                            rot=(0.0, 0.0, 0.0, 1.0),
-                            scale=(1.0, 1.0, 1.0),
-                            basic_color=(0.7, 0.7, 0.8),
-                            update_topology=False,
-                            smooth_shading=True,
-                            visible=True
-                        )
+
+                    if hasattr(self, 'instruments'):
+                        for instrument_idx, instrument in enumerate(self.instruments):
+                            if not instrument['visible']:
+                                continue
+                            
+                            # Update instrument position and rotation to follow haptic device
+                            if instrument_idx == 0:
+                                haptic_pos = [
+                                    self.haptic_pos_right[0] * 0.01, 
+                                    self.haptic_pos_right[1] * 0.01, 
+                                    self.haptic_pos_right[2] * 0.01
+                                ]
+                                
+                                # Flip rotation so it's pointing away from the device
+                                flip_rotation = axis_angle_to_quat([0.0, 1.0, 0.0], np.pi)  # 180 degrees around Y
+                                
+                                haptic_quat = np.array(self.haptic_rot_right)
+                                flip_quat = np.array(flip_rotation)
+                                
+                                combined_rotation = multiply_quaternions(haptic_quat, flip_quat)
+
+                                # Extract forward direction from rotation quaternion
+                                x, y, z, w = combined_rotation
+                                forward_x = 2.0 * (x*z + w*y)
+                                forward_y = 2.0 * (y*z - w*x)
+                                forward_z = 2.0 * (z*z + w*w) - 1.0
+                                
+                                # Offset distance
+                                offset_distance = 0.5
+                                
+                                offset_pos = [
+                                    haptic_pos[0] - forward_x * offset_distance,
+                                    haptic_pos[1] - forward_y * offset_distance,
+                                    haptic_pos[2] - forward_z * offset_distance
+                                ]
+
+                                self.update_instrument_transform(
+                                    instrument_idx, 
+                                    position=offset_pos,
+                                    rotation=combined_rotation
+                                )
+                                
+                                
+                                # Find and animate jaw pieces
+                                piece_names = self.get_piece_names(instrument_idx)
+                                for piece_name in piece_names:
+                                    if 'jaw' in piece_name.lower() or 'grasp' in piece_name.lower():
+
+                                        actual_angle = self.jaw_angle if 'left' in piece_name.lower() else -self.jaw_angle
+
+                                        # Apply rotation around axis
+                                        jaw_rot = axis_angle_to_quat([1.0, 0.0, 0.0], actual_angle)
+
+                                        # Convert quaternion to 4x4 transformation matrix
+                                        jaw_transform = wp.transform(wp.vec3(0.0, 0.0, 0.0), jaw_rot)
+                                        jaw_matrix = wp.transform_to_matrix(jaw_transform)
+
+                                        self.update_piece_transform(
+                                            instrument_idx,
+                                            piece_name,
+                                            transform_matrix=jaw_matrix
+                                        )
+                                
+                            
+                            # Render each piece of the instrument
+                            for piece_idx, piece in enumerate(instrument['pieces']):
+                                if not piece['visible']:
+                                    continue
+                                
+                                self.renderer.render_mesh_warp(
+                                    name=f"instrument_{instrument_idx}_piece_{piece_idx}_{piece['name']}",
+                                    points=piece['vertices'],
+                                    indices=piece['indices'],
+                                    pos=(0.0, 0.0, 0.0),
+                                    rot=(0.0, 0.0, 0.0, 1.0),
+                                    scale=(1.0, 1.0, 1.0),
+                                    basic_color=(0.7, 0.7, 0.8),
+                                    update_topology=False,
+                                    smooth_shading=True,
+                                    visible=True
+                                )
 
                 # Update all bleed particles
+                '''
                 wp.launch(
                     update_bleed_particles,
                     dim=self.max_bleed_particles,
@@ -1958,327 +1102,135 @@ class WarpSim:
                     ],
                     device=wp.get_device()
                 )
+                '''
 
                 # Generate bleeding mesh using marching cubes
-                fluid_mesh_data = self.generate_fluid_mesh()
-                if fluid_mesh_data is not None and fluid_mesh_data['triangle_count'] > 0:
-                    # Transform vertices from grid space to world space
-                    vertex_count = fluid_mesh_data['vertices'].shape[0]
-                    transformed_vertices = wp.zeros(vertex_count, dtype=wp.vec3f, device=wp.get_device())
-                    
-                    wp.launch(
-                        transform_mesh_vertices,
-                        dim=vertex_count,
-                        inputs=[
-                            fluid_mesh_data['vertices'],
-                            fluid_mesh_data['origin'],
-                            fluid_mesh_data['spacing'],
-                            transformed_vertices
-                        ],
-                        device=wp.get_device()
-                    )
-                    
-                    # Render the fluid mesh with a water-like color
-                    self.renderer.render_mesh_warp(
-                        name="fluid_mesh",
-                        points=transformed_vertices,
-                        indices=fluid_mesh_data['indices'],
-                        pos=(0.0, 0.0, 0.0),
-                        rot=(0.0, 0.0, 0.0, 1.0),
-                        scale=(1.0, 1.0, 1.0),
-                        basic_color=(0.1, 0.3, 0.8),  # Blue fluid color
-                        update_topology=True,
-                        smooth_shading=True,
-                        visible=True
-                    )
-                else:
-                    # Render empty mesh when no fluid
-                    empty_vertices = wp.zeros(1, dtype=wp.vec3f, device=wp.get_device())
-                    empty_indices = wp.zeros(3, dtype=wp.int32, device=wp.get_device())
-                    
-                    self.renderer.render_mesh_warp(
-                        name="fluid_mesh",
-                        points=empty_vertices,
-                        indices=empty_indices,
-                        pos=(0.0, 0.0, 0.0),
-                        rot=(0.0, 0.0, 0.0, 1.0),
-                        scale=(1.0, 1.0, 1.0),
-                        basic_color=(0.1, 0.3, 0.8),
-                        update_topology=True,
-                        smooth_shading=True,
-                        visible=False
-                    )
-                
-                # Render individual bleed particles (debug)
-                '''
-                bleed_pos = self.bleed_positions.numpy()
-                bleed_active = self.bleed_active.numpy()
-                for i in range(self.max_bleed_particles):
-                    if bleed_active[i]:
-                        self.renderer.render_sphere(
-                            name=f"bleed_{i}",
-                            pos=bleed_pos[i],
-                            rot=[0.0, 0.0, 0.0, 1.0],
-                            color=[0.8, 0.0, 0.0],
-                            radius=0.008
+                with wp.ScopedTimer("rendering fluids"):
+                    fluid_mesh_data = fluids.generate_fluid_mesh(self)
+                    if fluid_mesh_data is not None and fluid_mesh_data['triangle_count'] > 0:
+                        source_vertices = fluid_mesh_data['vertices']
+                        vertex_count = source_vertices.shape[0]
+                        device = wp.get_device()
+
+                        if self.fluid_mesh_vertices_world is None or self.fluid_mesh_vertices_world.shape[0] != vertex_count:
+                            self.fluid_mesh_vertices_world = wp.zeros(vertex_count, dtype=wp.vec3f, device=device)
+
+                        wp.launch(
+                            transform_mesh_vertices,
+                            dim=vertex_count,
+                            inputs=[
+                                source_vertices,
+                                fluid_mesh_data['origin'],
+                                fluid_mesh_data['spacing'],
+                                self.fluid_mesh_vertices_world
+                            ],
+                            device=device
+                        )
+
+                        indices = fluid_mesh_data['indices']
+                        index_count = indices.shape[0]
+                        topology_changed = (
+                            self.fluid_mesh_shape_id is None
+                            or self.fluid_mesh_last_vertex_count != vertex_count
+                            or self.fluid_mesh_last_index_count != index_count
+                        )
+
+                        shape_id = self.renderer.render_mesh_warp(
+                            name="fluid_mesh",
+                            points=self.fluid_mesh_vertices_world,
+                            indices=indices,
+                            pos=(0.0, 0.0, 0.0),
+                            rot=(0.0, 0.0, 0.0, 1.0),
+                            scale=(1.0, 1.0, 1.0),
+                            basic_color=(0.1, 0.3, 0.8),  # Blue fluid color
+                            update_topology=topology_changed,
+                            smooth_shading=True,
+                            visible=True
+                        )
+
+                        if shape_id is not None:
+                            self.fluid_mesh_shape_id = shape_id
+                        self.fluid_mesh_indices_current = indices
+                        self.fluid_mesh_last_vertex_count = vertex_count
+                        self.fluid_mesh_last_index_count = index_count
+                    elif (
+                        self.fluid_mesh_shape_id is not None
+                        and self.fluid_mesh_vertices_world is not None
+                        and self.fluid_mesh_indices_current is not None
+                    ):
+                        # Keep existing geometry but hide it
+                        self.renderer.render_mesh_warp(
+                            name="fluid_mesh",
+                            points=self.fluid_mesh_vertices_world,
+                            indices=self.fluid_mesh_indices_current,
+                            pos=(0.0, 0.0, 0.0),
+                            rot=(0.0, 0.0, 0.0, 1.0),
+                            scale=(1.0, 1.0, 1.0),
+                            basic_color=(0.1, 0.3, 0.8),
+                            update_topology=False,
+                            smooth_shading=True,
+                            visible=False
                         )
                     else:
-                        self.renderer.render_sphere(
-                            name=f"bleed_{i}",
-                            pos=[0.0, 0.0, 0.0],
-                            rot=[0.0, 0.0, 0.0, 1.0],
-                            color=[0.8, 0.0, 0.0],
-                            radius=0.008
-                        )
-                '''   
+                        # Lazily create a tiny placeholder mesh for initial registration
+                        if self._fluid_empty_vertices is None or self._fluid_empty_indices is None:
+                            device = wp.get_device()
+                            self._fluid_empty_vertices = wp.zeros(1, dtype=wp.vec3f, device=device)
+                            self._fluid_empty_indices = wp.zeros(3, dtype=wp.int32, device=device)
 
-                wp.copy(self.integrator.dev_pos_prev_buffer, self.integrator.dev_pos_buffer)
+                        shape_id = self.renderer.render_mesh_warp(
+                            name="fluid_mesh",
+                            points=self._fluid_empty_vertices,
+                            indices=self._fluid_empty_indices,
+                            pos=(0.0, 0.0, 0.0),
+                            rot=(0.0, 0.0, 0.0, 1.0),
+                            scale=(1.0, 1.0, 1.0),
+                            basic_color=(0.1, 0.3, 0.8),
+                            update_topology=self.fluid_mesh_shape_id is None,
+                            smooth_shading=True,
+                            visible=False
+                        )
+
+                        if self.fluid_mesh_shape_id is None and shape_id is not None:
+                            self.fluid_mesh_shape_id = shape_id
+                    
+                    # Render individual bleed particles (debug)
+                    '''
+                    bleed_pos = self.bleed_positions.numpy()
+                    bleed_active = self.bleed_active.numpy()
+                    for i in range(self.max_bleed_particles):
+                        if bleed_active[i]:
+                            self.renderer.render_sphere(
+                                name=f"bleed_{i}",
+                                pos=bleed_pos[i],
+                                rot=[0.0, 0.0, 0.0, 1.0],
+                                color=[0.8, 0.0, 0.0],
+                                radius=0.008
+                            )
+                        else:
+                            self.renderer.render_sphere(
+                                name=f"bleed_{i}",
+                                pos=[0.0, 0.0, 0.0],
+                                rot=[0.0, 0.0, 0.0, 1.0],
+                                color=[0.8, 0.0, 0.0],
+                                radius=0.008
+                            )
+                    '''   
+
+                wp.copy(self.integrator.dev_pos_prev_buffer, self.integrator.dev_pos_target_buffer)
                 self.renderer.end_frame()
             else:
                 self.renderer.begin_frame(self.sim_time)
                 self.renderer.render(self.state_0)
                 self.renderer.end_frame()
 
-    def generate_fluid_mesh(self):
-        """Generate mesh from fluid particles using marching cubes."""
-        # Reuse the bleeding mesh generation infrastructure but for fluid particles
-        field_data = self.compute_fluid_field()
-        if field_data is None:
-            return None
-        
-        field = field_data['field']
-        dims = field_data['dims']
-        
-        # Initialize/resize marching cubes if needed
-        if (self.bleeding_marching_cubes is None or 
-            self.bleeding_marching_cubes.nx != dims[0] - 1 or
-            self.bleeding_marching_cubes.ny != dims[1] - 1 or
-            self.bleeding_marching_cubes.nz != dims[2] - 1):
-            
-            total_cubes = (dims[0] - 1) * (dims[1] - 1) * (dims[2] - 1)
-            max_verts = min(total_cubes * 12, 100000)
-            max_tris = min(total_cubes * 5, 200000)
-            
-            if self.bleeding_marching_cubes is None:
-                self.bleeding_marching_cubes = wp.MarchingCubes(
-                    nx=dims[0],
-                    ny=dims[1], 
-                    nz=dims[2],
-                    max_verts=max_verts,
-                    max_tris=max_tris,
-                    device=wp.get_device()
-                )
-            else:
-                self.bleeding_marching_cubes.resize(
-                    nx=dims[0],
-                    ny=dims[1],
-                    nz=dims[2],
-                    max_verts=max_verts,
-                    max_tris=max_tris
-                )
-        
-        # Extract isosurface
-        self.bleeding_marching_cubes.surface(field, 0.0)  # Use 0 threshold for fluids
-        
-        # Get the generated mesh
-        vertices = self.bleeding_marching_cubes.verts
-        indices = self.bleeding_marching_cubes.indices
-        
-        triangle_count = len(indices.numpy()) // 3
-        
-        if triangle_count > 0:
-            return {
-                'vertices': vertices,
-                'indices': indices,
-                'triangle_count': triangle_count,
-                'origin': field_data['origin'],
-                'spacing': field_data['spacing']
-            }
-        else:
-            return None
-
-    def compute_fluid_field(self):
-        """Compute scalar field from fluid particles for marching cubes."""
-        # Count active fluid particles
-        active_count = int(np.sum(self.fluid_active.numpy()))
-        if active_count == 0:
-            return None
-        
-        # Reuse AABB computation infrastructure
-        wp.copy(self.bleeding_field_aabb_min, wp.array([1e6, 1e6, 1e6], dtype=wp.float32, device=wp.get_device()))
-        wp.copy(self.bleeding_field_aabb_max, wp.array([-1e6, -1e6, -1e6], dtype=wp.float32, device=wp.get_device()))
-        
-        # Compute AABB from active fluid particles
-        wp.launch(
-            compute_aabb_from_particles,
-            dim=self.fluid_particle_count,
-            inputs=[
-                self.fluid_positions,
-                self.fluid_active,
-                self.fluid_particle_count,
-                self.bleeding_field_aabb_min,
-                self.bleeding_field_aabb_max
-            ],
-            device=wp.get_device()
-        )
-        
-        # AABB values
-        aabb_min_array = self.bleeding_field_aabb_min.numpy()
-        aabb_max_array = self.bleeding_field_aabb_max.numpy()
-        
-        aabb_min = wp.vec3f(aabb_min_array[0], aabb_min_array[1], aabb_min_array[2])
-        aabb_max = wp.vec3f(aabb_max_array[0], aabb_max_array[1], aabb_max_array[2])
-        
-        # Add margin
-        margin_vec = wp.vec3f(self.bleeding_field_margin, self.bleeding_field_margin, self.bleeding_field_margin)
-        field_min = aabb_min - margin_vec
-        field_max = aabb_max + margin_vec
-        
-        # Compute field dimensions and spacing
-        field_size = field_max - field_min
-        max_extent = max(field_size[0], field_size[1], field_size[2])
-        
-        if max_extent <= 0:
-            return None
-            
-        self.bleeding_field_spacing = max_extent / float(self.bleeding_field_resolution)
-        
-        # Calculate actual grid dimensions
-        self.bleeding_field_dims = wp.vec3i(
-            int(math.ceil(field_size[0] / self.bleeding_field_spacing)) + 1,
-            int(math.ceil(field_size[1] / self.bleeding_field_spacing)) + 1,
-            int(math.ceil(field_size[2] / self.bleeding_field_spacing)) + 1
-        )
-        
-        self.bleeding_field_origin = field_min
-        
-        # Allocate field if needed
-        field_shape = (self.bleeding_field_dims[0], self.bleeding_field_dims[1], self.bleeding_field_dims[2])
-        if self.bleeding_scalar_field is None or self.bleeding_scalar_field.shape != field_shape:
-            self.bleeding_scalar_field = wp.zeros(field_shape, dtype=wp.float32, device=wp.get_device())
-        else:
-            wp.launch(
-                fill_float32_3d,
-                dim=self.bleeding_scalar_field.shape,
-                inputs=[self.bleeding_scalar_field, 0.0],
-                device=wp.get_device()
-            )
-        
-        # Compute SDF field using fluid particles
-        wp.launch(
-            compute_sdf_field,
-            dim=self.bleeding_field_dims,
-            inputs=[
-                self.bleeding_scalar_field,
-                self.bleeding_field_dims,
-                self.bleeding_field_origin,
-                self.bleeding_field_spacing,
-                self.fluid_positions,
-                self.fluid_active,
-                self.fluid_particle_count,
-                self.fluid_particle_radius
-            ],
-            device=wp.get_device()
-        )
-        
-        return {
-            'field': self.bleeding_scalar_field,
-            'dims': self.bleeding_field_dims,
-            'origin': self.bleeding_field_origin,
-            'spacing': self.bleeding_field_spacing
-        }
-
-    def generate_bleeding_mesh(self):
-        """Generate mesh from bleeding particles using marching cubes."""
-        field_data = self.compute_bleeding_field()
-        if field_data is None:
-            self.bleeding_mesh_triangle_count = 0
-            print("No field data")
-            return None
-        
-        field = field_data['field']
-        dims = field_data['dims']
-        
-        print(f"Generating mesh with dims: {dims}")
-        
-        # Initialize/resize
-        if (self.bleeding_marching_cubes is None or 
-            self.bleeding_marching_cubes.nx != dims[0] - 1 or
-            self.bleeding_marching_cubes.ny != dims[1] - 1 or
-            self.bleeding_marching_cubes.nz != dims[2] - 1):
-            
-            # Estimate maximum vertices and triangles
-            total_cubes = (dims[0] - 1) * (dims[1] - 1) * (dims[2] - 1)
-            max_verts = min(total_cubes * 12, 100000)  # Up to 12 vertices per cube, cap at 100k
-            max_tris = min(total_cubes * 5, 200000)   # Up to 5 triangles per cube, cap at 200k
-            
-            print(f"Creating marching cubes: cubes={total_cubes}, max_verts={max_verts}, max_tris={max_tris}")
-            
-            if self.bleeding_marching_cubes is None:
-                self.bleeding_marching_cubes = wp.MarchingCubes(
-                    nx=dims[0],
-                    ny=dims[1], 
-                    nz=dims[2],
-                    max_verts=max_verts,
-                    max_tris=max_tris,
-                    device=wp.get_device()
-                )
-                print("Created new marching cubes object")
-            else:
-                self.bleeding_marching_cubes.resize(
-                    nx=dims[0],
-                    ny=dims[1],
-                    nz=dims[2],
-                    max_verts=max_verts,
-                    max_tris=max_tris
-                )
-                print("Resized existing marching cubes object")
-        
-        print(f"Running marching cubes with threshold: {self.bleeding_isosurface_threshold}")
-
-        # Extract isosurface
-        self.bleeding_marching_cubes.surface(field, self.bleeding_isosurface_threshold)
-        
-        # Get the generated mesh
-        self.bleeding_mesh_vertices = self.bleeding_marching_cubes.verts
-        self.bleeding_mesh_indices = self.bleeding_marching_cubes.indices
-        
-        # Count actual triangles generated
-        indices_array = self.bleeding_mesh_indices.numpy()
-        self.bleeding_mesh_triangle_count = len(indices_array) // 3
-        
-        print(f"Marching cubes result: {self.bleeding_mesh_triangle_count} triangles, {len(self.bleeding_mesh_vertices.numpy())} vertices")
-        
-        if self.bleeding_mesh_triangle_count > 0:
-            '''
-            wp.launch(
-                reverse_triangle_winding,
-                dim=self.bleeding_mesh_triangle_count,
-                inputs=[
-                    self.bleeding_mesh_indices,
-                    self.bleeding_mesh_triangle_count
-                ],
-                device=wp.get_device()
-            )
-            '''
-
-            return {
-                'vertices': self.bleeding_mesh_vertices,
-                'indices': self.bleeding_mesh_indices,
-                'triangle_count': self.bleeding_mesh_triangle_count,
-                'origin': field_data['origin'],
-                'spacing': field_data['spacing']
-            }
-        else:
-            self.bleeding_mesh_triangle_count = 0
-            return None
 
 #endregion
     def update_haptic_position(self, position):
         """Update the haptic device position in the simulation."""
         haptic_pos = wp.vec3(position[0], position[1] + 100.0, position[2] - 400.0)  # Offset to avoid collision with ground
         self.haptic_pos_right = [haptic_pos[0], haptic_pos[1], haptic_pos[2]]
-        wp.copy(self.integrator.dev_pos_buffer, wp.array([haptic_pos], dtype=wp.vec3, device=wp.get_device()))
+        wp.copy(self.integrator.dev_pos_target_buffer, wp.array([haptic_pos], dtype=wp.vec3, device=wp.get_device()))
 
     def update_haptic_rotation(self, rotation):
         """Update the haptic device rotation in the simulation."""

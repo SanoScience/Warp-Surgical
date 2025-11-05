@@ -1,7 +1,11 @@
+import os
+import sys
+import numpy as np
 import warp as wp
 from newton import Contacts, Control, Model, State
-from newton.solvers.xpbd.solver_xpbd import XPBDSolver
-from newton.solvers.xpbd.kernels import (
+from newton.solvers import SolverXPBD
+
+from newton._src.solvers.xpbd.kernels import (
     apply_body_delta_velocities,
     apply_body_deltas,
     apply_joint_forces,
@@ -32,23 +36,23 @@ from simulation_kernels import (
 from collision_kernels import (
     collide_particles_vs_sphere,
     collide_triangles_vs_sphere,
+    collide_triangles_vs_spheres,
     vertex_triangle_collision_det,
-)
-
-from newton.solvers.vbd.tri_mesh_collision import (
-    TriMeshCollisionDetector,
-    TriMeshCollisionInfo,
 )
 
 NUM_THREADS_PER_COLLISION_PRIMITIVE = 4
 
-class PBDSolver(XPBDSolver):
+class PBDSolver(SolverXPBD):
     def __init__(self, model: Model, **kwargs):
         super().__init__(model, **kwargs)
         self.volCnstrs = True
-        self.dev_pos_buffer = None
         self.self_contact_radius: float = 0.002
         self.self_contact_margin: float = 0.002
+        self.haptic_collision_radius: float = 0.05
+
+        self.external_sphere_centers = None
+        self.external_sphere_radii = None
+        self.external_sphere_count = 0
         
         # self.trimesh_collision_detector = TriMeshCollisionDetector(
         #     self.model,
@@ -101,6 +105,31 @@ class PBDSolver(XPBDSolver):
         
         # Perform edge-edge collision detection
         #self.trimesh_collision_detector.edge_edge_collision_detection(self.self_contact_margin)
+
+    def set_external_sphere_colliders(self, centers, radii):
+        """Register external sphere colliders (e.g., jaw colliders) for collision handling."""
+        if centers is None or len(centers) == 0:
+            self.external_sphere_centers = None
+            self.external_sphere_radii = None
+            self.external_sphere_count = 0
+            return
+
+        centers_np = np.asarray(centers, dtype=np.float32)
+        if centers_np.size == 0:
+            self.external_sphere_centers = None
+            self.external_sphere_radii = None
+            self.external_sphere_count = 0
+            return
+
+        centers_np = centers_np.reshape(-1, 3)
+        radii_np = np.asarray(radii, dtype=np.float32).reshape(-1)
+
+        if centers_np.shape[0] != radii_np.shape[0]:
+            raise ValueError("Sphere centers and radii must have matching counts.")
+
+        self.external_sphere_centers = wp.array(centers_np, dtype=wp.vec3f, device=self.model.device)
+        self.external_sphere_radii = wp.array(radii_np, dtype=wp.float32, device=self.model.device)
+        self.external_sphere_count = centers_np.shape[0]
 
     def step(self, model: Model, state_in: State, state_out: State, control: Control, contacts: Contacts, dt: float):
         requires_grad = state_in.requires_grad
@@ -213,7 +242,7 @@ class PBDSolver(XPBDSolver):
                                     model.body_inv_mass,
                                     model.body_inv_inertia,
                                     model.shape_body,
-                                    model.shape_materials,
+                                    model.shape_material_mu,
                                     model.soft_contact_mu,
                                     model.particle_adhesion,
                                     contacts.soft_contact_count,
@@ -393,7 +422,7 @@ class PBDSolver(XPBDSolver):
                         #         particle_q,
                         #         particle_qd,
                         #         model.particle_inv_mass,
-                        #         self.dev_pos_buffer,  # sphere position
+                        #         self.dev_pos_current_buffer,  # sphere position
                         #         0.2,  # sphere radius
                         #         0.0,  # sphere restitution
                         #         dt
@@ -402,25 +431,32 @@ class PBDSolver(XPBDSolver):
                         #     device=model.device,
                         # )
 
-                        wp.launch(
-                            kernel=collide_triangles_vs_sphere,
-                            dim=model.tri_count,
-                            inputs=[
-                                particle_q,
-                                particle_qd,
-                                model.particle_inv_mass,
-                                model.tri_indices,
-                                self.dev_pos_buffer,  # sphere position
-                                0.05,  # sphere radius
-                                0.0,  # sphere restitution
-                                dt
-                            ],
-                            outputs=[
-                                particle_deltas_accumulator,
-                                particle_deltas_count,
-                            ],
-                            device=model.device,
-                        )
+                        if (
+                            self.external_sphere_count > 0
+                            and self.external_sphere_centers is not None
+                            and self.external_sphere_radii is not None
+                            and model.tri_count > 0
+                        ):
+                            wp.launch(
+                                kernel=collide_triangles_vs_spheres,
+                                dim=model.tri_count * self.external_sphere_count,
+                                inputs=[
+                                    particle_q,
+                                    particle_qd,
+                                    model.particle_inv_mass,
+                                    model.tri_indices,
+                                    self.external_sphere_centers,
+                                    self.external_sphere_radii,
+                                    self.external_sphere_count,
+                                    0.0,  # restitution
+                                    dt,
+                                ],
+                                outputs=[
+                                    particle_deltas_accumulator,
+                                    particle_deltas_count,
+                                ],
+                                device=model.device,
+                            )
 
                         wp.launch(
                             kernel=apply_deltas_and_zero_accumulators,
@@ -553,7 +589,7 @@ class PBDSolver(XPBDSolver):
                                 contacts.rigid_contact_thickness1,
                                 contacts.rigid_contact_shape0,
                                 contacts.rigid_contact_shape1,
-                                model.shape_materials,
+                                model.shape_material_mu,
                                 self.rigid_contact_relaxation,
                                 dt,
                                 model.rigid_contact_torsional_friction,

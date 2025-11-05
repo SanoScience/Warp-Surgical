@@ -209,7 +209,6 @@ def emit_bleed_particles(
     cut_flags: wp.array(dtype=wp.int32),              # [num_points]
     bleed_positions: wp.array(dtype=wp.vec3f),        # [max_bleed_particles]
     bleed_velocities: wp.array(dtype=wp.vec3f),       # [max_bleed_particles]
-    bleed_lifetimes: wp.array(dtype=wp.float32),      # [max_bleed_particles]
     bleed_active: wp.array(dtype=wp.int32),           # [max_bleed_particles]
     bleed_next_id: wp.array(dtype=wp.int32),          # [1]
     max_bleed_particles: int,
@@ -243,12 +242,11 @@ def emit_bleed_particles(
 
         if should_emit:
             idx = wp.atomic_add(bleed_next_id, 0, 1) % max_bleed_particles
-            bleed_positions[idx] = centreline_positions[tid]
 
             # Randomized velocity
             tid_modified = int(float(tid) * total_time * 10.0) # Add some time-based randomness
-            bleed_velocities[idx] = wp.vec3f(0.0, 0.2, 0.0) + 0.05 * wp.vec3f(float(tid_modified % 3 - 1), 1.0, float((tid_modified * 7) % 3 - 1))
-            bleed_lifetimes[idx] = 0.4  # seconds
+            bleed_velocities[idx] = 0.0 * wp.vec3f(0.0, 0.2, 0.0) + 0.0 * wp.vec3f(float(tid_modified % 3 - 1), 1.0, float((tid_modified * 7) % 3 - 1))
+            bleed_positions[idx] = centreline_positions[tid] + 0.001 * wp.vec3f(float(tid_modified % 3 - 1), 1.0, float((tid_modified * 7) % 3 - 1))
             bleed_active[idx] = 1
 
 
@@ -271,3 +269,58 @@ def update_bleed_particles(
         bleed_lifetimes[tid] -= dt
         if bleed_lifetimes[tid] <= 0.0:
             bleed_active[tid] = 0
+
+def check_centreline_leaks(states, num_points, device=None):
+    """
+    Launch the update_centreline_leaks kernel and return results as Python values.
+
+    Args:
+        states: wp.array(dtype=wp.int32), shape=[num_points]
+        num_points: int
+        device: Warp device (optional)
+
+    Returns:
+        {
+            "clipping_ready_to_cut": bool,
+            "clipping_done": bool,
+            "clipping_error": bool,
+            "valid_ids_to_cut": list of int
+        }
+    """
+    if device is None:
+        device = wp.get_device()
+
+    out_clipping_ready_to_cut = wp.zeros(1, dtype=wp.int32, device=device)
+    out_clipping_done = wp.zeros(1, dtype=wp.int32, device=device)
+    out_clipping_error = wp.zeros(1, dtype=wp.int32, device=device)
+    out_valid_ids_to_cut = wp.zeros(num_points, dtype=wp.int32, device=device)
+    out_valid_ids_count = wp.zeros(1, dtype=wp.int32, device=device)
+
+    wp.launch(
+        update_centreline_leaks,
+        dim=1,
+        inputs=[
+            states,
+            num_points,
+            out_clipping_ready_to_cut,
+            out_clipping_done,
+            out_clipping_error,
+            out_valid_ids_to_cut,
+            out_valid_ids_count
+        ],
+        device=device
+    )
+
+    # Pull results to CPU
+    ready = bool(out_clipping_ready_to_cut.numpy()[0])
+    done = bool(out_clipping_done.numpy()[0])
+    error = bool(out_clipping_error.numpy()[0])
+    count = int(out_valid_ids_count.numpy()[0])
+    valid_ids = out_valid_ids_to_cut.numpy()[:count].tolist()
+
+    return {
+        "clipping_ready_to_cut": ready,
+        "clipping_done": done,
+        "clipping_error": error,
+        "valid_ids_to_cut": valid_ids
+    }

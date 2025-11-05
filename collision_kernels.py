@@ -1,5 +1,5 @@
 import warp as wp
-from newton.geometry.kernels import (
+from newton._src.geometry.kernels import (
     triangle_closest_point,
     vertex_adjacent_to_triangle,
     VERTEX_COLLISION_BUFFER_OVERFLOW_INDEX,
@@ -124,6 +124,80 @@ def collide_triangles_vs_sphere(
         # p = u*p1 + v*p2 + w*p3, but we need to extract individual weights
         
         # For now, distribute evenly weighted by inverse mass
+        total_correction = correction_dir * penetration
+        d1 = total_correction * (w1 / w)
+        d2 = total_correction * (w2 / w)
+        d3 = total_correction * (w3 / w)
+
+        wp.atomic_add(delta_accumulator, t1, d1)
+        wp.atomic_add(delta_accumulator, t2, d2)
+        wp.atomic_add(delta_accumulator, t3, d3)
+
+        wp.atomic_add(delta_counter, t1, 1)
+        wp.atomic_add(delta_counter, t2, 1)
+        wp.atomic_add(delta_counter, t3, 1)
+
+@wp.kernel
+def collide_triangles_vs_spheres(
+    positions: wp.array(dtype=wp.vec3f),
+    velocities: wp.array(dtype=wp.vec3f),
+    inv_masses: wp.array(dtype=wp.float32),
+    tri_indices: wp.array(dtype=wp.int32, ndim=2),
+    sphere_centers: wp.array(dtype=wp.vec3f),
+    sphere_radii: wp.array(dtype=wp.float32),
+    num_spheres: int,
+    restitution: wp.float32,
+    dt: wp.float32,
+    delta_accumulator: wp.array(dtype=wp.vec3f),
+    delta_counter: wp.array(dtype=wp.int32)
+):
+    tid = wp.tid()
+    tri_count = tri_indices.shape[0]
+    if tri_count == 0:
+        return
+
+    sphere_idx = tid // tri_count
+    if sphere_idx >= num_spheres:
+        return
+
+    tri_idx = tid % tri_count
+
+    radius = sphere_radii[sphere_idx]
+    if radius <= 0.0:
+        return
+
+    t1 = tri_indices[tri_idx, 0]
+    t2 = tri_indices[tri_idx, 1]
+    t3 = tri_indices[tri_idx, 2]
+
+    p1 = positions[t1]
+    p2 = positions[t2]
+    p3 = positions[t3]
+
+    w1 = inv_masses[t1]
+    w2 = inv_masses[t2]
+    w3 = inv_masses[t3]
+    w = w1 + w2 + w3
+
+    if w <= 0.0:
+        return
+
+    sp = sphere_centers[sphere_idx]
+
+    closest_p, bary, feature_type = triangle_closest_point(p1, p2, p3, sp)
+
+    to_sphere = closest_p - sp
+    dist = wp.length(to_sphere)
+
+    if dist < radius:
+        penetration = radius - dist
+
+        if dist > 1e-8:
+            correction_dir = to_sphere / dist
+        else:
+            tri_normal = triangle_normal(p1, p2, p3)
+            correction_dir = tri_normal
+
         total_correction = correction_dir * penetration
         d1 = total_correction * (w1 / w)
         d2 = total_correction * (w2 / w)

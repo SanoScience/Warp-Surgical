@@ -63,7 +63,7 @@ def grasp_start(sim):
         dim=sim.model.particle_count,
         inputs=[
             sim.state_0.particle_q,
-            sim.integrator.dev_pos_buffer,
+            sim.integrator.dev_pos_current_buffer,
             sim.radius_grasping,
             sim.grasped_particles_buffer,
             sim.grasped_particles_counter,
@@ -104,7 +104,7 @@ def grasp_process(sim):
             sim.model.particle_inv_mass,
             sim.grasped_particles_buffer,
             grasped_count,
-            sim.integrator.dev_pos_buffer,
+            sim.integrator.dev_pos_current_buffer,
             sim.integrator.dev_pos_prev_buffer
         ],
         device=wp.get_device()
