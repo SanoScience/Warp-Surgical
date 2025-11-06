@@ -60,13 +60,11 @@ class STARReachEnvCfg(ReachEnvCfg):
                 model.soft_contact_kd = 1.0e3  # Increased damping for stability
                 model.soft_contact_mu = 0.5
                 model.soft_contact_restitution = 0.0  # Reduce bounce
-            else:
-                print("[WARNING] Model is None, cannot set soft contact parameters")
         
         NewtonManager.add_on_start_callback(set_soft_contact_params)
 
         # switch robot to star
-        self.scene.robot = STAR_CFG.replace(prim_path="{ENV_REGEX_NS}/Robot", init_state=STAR_CFG.InitialStateCfg(pos=(10.0, 10.0, 0.0)))
+        self.scene.robot = STAR_CFG.replace(prim_path="{ENV_REGEX_NS}/Robot")
         # override events
         self.events.reset_robot_joints.params["position_range"] = (0.75, 1.25)
         # override rewards
@@ -91,10 +89,10 @@ class STARReachEnvCfg(ReachEnvCfg):
             prim_path="{ENV_REGEX_NS}/Liver",
             spawn=sim_utils.UsdFileCfg(
                 usd_path='/home/mnaskret/sano/assets/liver/liverDeformable.usd',
-                scale=(1.0, 1.0, 1.0)
-                # scale=(0.1, 0.1, 0.1)
+                # scale=(1.0, 1.0, 1.0)
+                scale=(0.1, 0.1, 0.1)
             ),
-            init_state=DeformableObjectCfg.InitialStateCfg(pos=(0.0, 0.0, 0.0), rot=zRot),
+            init_state=DeformableObjectCfg.InitialStateCfg(pos=(0.5, 0.0, 0.15), rot=zRot),
             debug_vis=True,
         )
 

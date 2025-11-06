@@ -28,40 +28,6 @@ from .deformable_object_data import DeformableObjectData
 if TYPE_CHECKING:
     from .deformable_object_cfg import DeformableObjectCfg
 
-
-@wp.kernel
-def _inverse_transform_kernel(
-    transformed_positions: wp.array(dtype=wp.vec3),  # type: ignore
-    translation: wp.vec3,  # type: ignore
-    rotation: wp.quat,  # type: ignore
-    scale: float,
-    untransformed_positions: wp.array(dtype=wp.vec3),  # type: ignore
-):
-    """Warp kernel to apply inverse transformation to particle positions.
-    
-    Reverses the transformation: p = wp.quat_rotate(rot, v * scale) + pos
-    To get: v = wp.quat_rotate(wp.quat_inverse(rot), p - pos) / scale
-    """
-    tid = wp.tid()
-    
-    # Get transformed position
-    p = transformed_positions[tid]
-    
-    # Step 1: Subtract translation
-    p_translated = p - translation
-    
-    # Step 2: Apply inverse rotation
-    rot_inv = wp.quat_inverse(rotation)
-    v_scaled = wp.quat_rotate(rot_inv, p_translated)
-    
-    # Step 3: Divide by scale (element-wise division for vec3)
-    inv_scale = 1.0 / scale
-    v = v_scaled * inv_scale  # type: ignore
-    
-    # Store result
-    untransformed_positions[tid] = v
-
-
 class DeformableObject(AssetBase):
     """A deformable object asset class.
 
@@ -577,29 +543,9 @@ class DeformableObject(AssetBase):
                 # Extract Newton particle positions (physics vertices - transformed)
                 newton_particle_positions = particle_positions[start_idx:end_idx]
                 
-                # Apply inverse transformation to get back to USD space
-                if has_transforms:
-                    # Get transform parameters for this soft mesh
-                    pos = model.soft_mesh_X[newton_idx]  # type: ignore  # Translation
-                    rot = model.soft_mesh_q[newton_idx]  # type: ignore  # Rotation (quaternion)
-                    scale = model.soft_mesh_scale[newton_idx]  # type: ignore  # Scale
-
-                    # Convert to warp arrays for computation
-                    positions_wp = wp.from_numpy(newton_particle_positions, dtype=wp.vec3)
-                    
-                    # Allocate output array
-                    untransformed_positions_wp = wp.zeros_like(positions_wp)
-                    
-                    # Apply inverse transformation using warp kernel
-                    wp.launch(
-                        kernel=_inverse_transform_kernel,
-                        dim=len(newton_particle_positions),
-                        inputs=[positions_wp, pos, rot, scale, untransformed_positions_wp],
-                        device=self.device
-                    )
-                    
-                    # Convert back to numpy
-                    newton_particle_positions = wp.to_torch(untransformed_positions_wp).cpu().numpy()
+                # NOTE: For deformable meshes, all transforms are pre-applied to vertices,
+                # so Newton uses identity transform. No inverse transformation needed!
+                # The Newton particle positions are already in the correct USD world space.
                 
                 # Convert Newton physics vertices to visual points
                 if self._point_to_vertex_mappings[mesh_idx] is not None:
@@ -619,7 +565,6 @@ class DeformableObject(AssetBase):
                 
                 # Convert to USD format (list of Gf.Vec3f)
                 usd_points = [Gf.Vec3f(float(p[0]), float(p[1]), float(p[2])) for p in visual_points]  # type: ignore
-                print('usd_points: ', usd_points[0])
                 
                 # Update the mesh geometry in USD
                 try:

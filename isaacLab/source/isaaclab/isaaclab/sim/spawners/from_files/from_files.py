@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING
 import isaacsim.core.utils.prims as prim_utils
 import omni.kit.commands
 import omni.log
-from pxr import Gf, Sdf, Usd
+from pxr import Gf, Sdf, Usd, UsdGeom
 
 # from Isaac Sim 4.2 onwards, pxr.Semantics is deprecated
 try:
@@ -330,6 +330,82 @@ def _spawn_from_usd_file(
     # modify deformable body properties
     if cfg.deformable_props is not None:
         schemas.modify_deformable_body_properties(prim_path, cfg.deformable_props)
+    
+    # For deformable bodies, bake ALL transforms (scale, rotation, translation) into mesh vertices
+    # This must happen AFTER deformable properties are applied and works for ANY deformable mesh
+    # Check if this prim has deformable meshes (look for extMesh:vertices or PhysxSchema:PhysxDeformableBodyAPI)
+    stage = get_current_stage()
+    prefix = prim_path if prim_path.endswith("/") else prim_path + "/"
+    
+    # Check if any mesh under this path has deformable properties or extMesh attributes
+    has_deformable_mesh = False
+    for p in Usd.PrimRange(stage.GetPseudoRoot()):
+        p_path = p.GetPath().pathString
+        if p_path == prim_path or p_path.startswith(prefix):
+            if p.IsA(UsdGeom.Mesh):
+                # Check for deformable indicators
+                if p.HasAPI("PhysxSchema", "PhysxDeformableBodyAPI") or p.GetAttribute("extMesh:vertices"):
+                    has_deformable_mesh = True
+                    break
+    
+    if has_deformable_mesh:
+        # Get transform parameters
+        scale_factor = cfg.scale if cfg.scale is not None else (1.0, 1.0, 1.0)
+        trans = translation if translation is not None else (0.0, 0.0, 0.0)
+        orient = orientation if orientation is not None else (1.0, 0.0, 0.0, 0.0)  # w, x, y, z
+        
+        # Convert quaternion to rotation matrix for vertex transformation
+        # Quaternion format: (w, x, y, z)
+        w, x, y, z = orient
+        rot_matrix = Gf.Matrix3d(
+            1 - 2*y*y - 2*z*z, 2*x*y - 2*w*z, 2*x*z + 2*w*y,
+            2*x*y + 2*w*z, 1 - 2*x*x - 2*z*z, 2*y*z - 2*w*x,
+            2*x*z - 2*w*y, 2*y*z + 2*w*x, 1 - 2*x*x - 2*y*y
+        )
+        
+        # Find all mesh prims under this path
+        for p in Usd.PrimRange(stage.GetPseudoRoot()):
+            p_path = p.GetPath().pathString
+            if p_path == prim_path or p_path.startswith(prefix):
+                # Check if it's a mesh with deformable properties
+                if p.IsA(UsdGeom.Mesh):
+                    mesh = UsdGeom.Mesh(p)
+                    
+                    # Transform the visual points attribute
+                    points_attr = mesh.GetPointsAttr()
+                    if points_attr and points_attr.Get() is not None:
+                        points = points_attr.Get()
+                        transformed_points = []
+                        for pt in points:
+                            # Apply: p_world = trans + rot * (scale * p_local)
+                            scaled = Gf.Vec3d(pt[0] * scale_factor[0], pt[1] * scale_factor[1], pt[2] * scale_factor[2])
+                            rotated = rot_matrix * scaled
+                            translated = rotated + Gf.Vec3d(trans[0], trans[1], trans[2])
+                            transformed_points.append(Gf.Vec3f(translated[0], translated[1], translated[2]))
+                        points_attr.Set(transformed_points)
+                    
+                    # Transform the physics vertices attribute (if it exists)
+                    vertices_attr = p.GetAttribute("extMesh:vertices")
+                    if vertices_attr and vertices_attr.Get() is not None:
+                        vertices = vertices_attr.Get()
+                        transformed_vertices = []
+                        for v in vertices:
+                            # Apply: p_world = trans + rot * (scale * p_local)
+                            scaled = Gf.Vec3d(v[0] * scale_factor[0], v[1] * scale_factor[1], v[2] * scale_factor[2])
+                            rotated = rot_matrix * scaled
+                            translated = rotated + Gf.Vec3d(trans[0], trans[1], trans[2])
+                            transformed_vertices.append(Gf.Vec3f(translated[0], translated[1], translated[2]))
+                        vertices_attr.Set(transformed_vertices)
+        
+        # Remove ALL XformOps from parent prim so Newton uses identity transform
+        prim = stage.GetPrimAtPath(prim_path)
+        if prim.IsValid():
+            xformable = UsdGeom.Xformable(prim)
+            ops = xformable.GetOrderedXformOps()
+            if len(ops) > 0:
+                for op in ops:
+                    prim.RemoveProperty(op.GetAttr().GetName())
+                xformable.SetXformOpOrder([])
 
     # apply visual material
     if cfg.visual_material is not None:

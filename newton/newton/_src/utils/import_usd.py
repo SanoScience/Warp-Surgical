@@ -1250,45 +1250,13 @@ def parse_usd(
                 if vertices_raw is not None:
                     vertices = [wp.vec3(v[0], v[1], v[2]) for v in vertices_raw]
             
-            # Get transform - accumulate from parent hierarchy
-            # Walk up the hierarchy to accumulate all parent transforms
-            accumulated_xform = wp.transform_identity()
-            current_prim = prim
-            xform_stack = []
-            
-            # Collect transforms from prim up to root
-            while current_prim:
-                xform_stack.append(parse_xform(current_prim))
-                current_prim = current_prim.GetParent()
-                # Stop at the stage root
-                if current_prim and current_prim.GetPath() == Sdf.Path.absoluteRootPath:
-                    break
-            
-            # Apply transforms in reverse order (root to leaf)
-            for xform in reversed(xform_stack):
-                accumulated_xform = accumulated_xform * xform
-            
-            # Apply incoming world transform (from parse_usd xform parameter + axis alignment)
-            world_xform = incoming_world_xform * accumulated_xform
-            pos = world_xform.p
-            rot = world_xform.q
-            
-            # Get velocity (default to zero if not specified)
+            # NOTE: For deformable meshes, ALL transforms (scale, rotation, translation) are 
+            # pre-applied to vertices during USD spawn to avoid transformation ordering issues.
+            # Newton should always use identity transform for deformable meshes.
+            pos = wp.vec3(0.0, 0.0, 0.0)
+            rot = wp.quat_identity()
+            scale = 1.0
             vel = wp.vec3(0.0, 0.0, 0.0)
-            if has_attribute(prim, "physics:velocity"):
-                vel_data = parse_vec(prim, "physics:velocity", None)
-                if vel_data is not None:
-                    vel = wp.vec3(vel_data[0], vel_data[1], vel_data[2])
-            
-
-            scale_vec = parse_accumulated_scale(prim)
-            # Convert scale vector to scalar (use average if non-uniform)
-            if np.allclose(scale_vec[0], scale_vec[1]) and np.allclose(scale_vec[1], scale_vec[2]):
-                scale = float(scale_vec[0])
-            else:
-                scale = float(np.mean(scale_vec))
-                if verbose:
-                    print(f"Warning: Non-uniform scale {scale_vec} detected for soft mesh at {path_name}, using average: {scale}")
 
             # Get material properties
             # Default values
@@ -1337,7 +1305,6 @@ def parse_usd(
             
             # Add soft mesh to builder
             try:
-                print('pos', pos)
                 soft_mesh_id = builder.add_soft_mesh(
                     pos=pos,
                     rot=rot,

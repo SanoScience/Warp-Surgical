@@ -2539,8 +2539,9 @@ class ModelBuilder:
         Returns:
             int: The index of the newly added shape.
         """
+        plane_eq = (*self.up_vector, 0.0)
         return self.add_shape_plane(
-            plane=(*self.up_vector, 0.0),
+            plane=plane_eq,
             width=0.0,
             length=0.0,
             cfg=cfg,
@@ -3923,6 +3924,7 @@ class ModelBuilder:
         tri_kd: float | None = None,
         tri_drag: float | None = None,
         tri_lift: float | None = None,
+        particle_radius: float | None = None,
         key: str | None = None,
     ) -> int:
         """Helper to create a tetrahedral model from an input tetrahedral mesh
@@ -3937,6 +3939,7 @@ class ModelBuilder:
             k_mu: The first elastic Lame parameter
             k_lambda: The second elastic Lame parameter
             k_damp: The damping stiffness
+            particle_radius: The radius for particle collision (if None, computed from mesh edge length)
             key: The identifier for this soft mesh (defaults to "soft_mesh_N")
         
         Returns:
@@ -3951,6 +3954,19 @@ class ModelBuilder:
         num_tets = int(len(indices) / 4)
 
         start_vertex = len(self.particle_q)
+        
+        # Compute particle radius from mesh geometry if not provided
+        if particle_radius is None:
+            # Sample a few edges to estimate average edge length
+            edge_lengths = []
+            for t in range(min(10, num_tets)):  # Sample first 10 tets
+                v0 = vertices[indices[t * 4 + 0]]
+                v1 = vertices[indices[t * 4 + 1]]
+                edge_len = np.linalg.norm([v1[0]-v0[0], v1[1]-v0[1], v1[2]-v0[2]])
+                edge_lengths.append(edge_len)
+            avg_edge_length = np.mean(edge_lengths) if edge_lengths else 0.1
+            # Use half the average edge length as particle radius (reasonable heuristic)
+            particle_radius = avg_edge_length * 0.5
 
         # dict of open faces
         faces = {}
@@ -3967,8 +3983,7 @@ class ModelBuilder:
         # add particles
         for v in vertices:
             p = wp.quat_rotate(rot, wp.vec3(v[0], v[1], v[2]) * scale) + pos
-
-            self.add_particle(p, vel, 0.0)
+            self.add_particle(p, vel, 0.0, radius=particle_radius)
 
         # add tetrahedra
         for t in range(num_tets):
@@ -4195,6 +4210,7 @@ class ModelBuilder:
             m.shape_body = wp.array(self.shape_body, dtype=wp.int32)
             m.shape_flags = wp.array(self.shape_flags, dtype=wp.int32)
             m.body_shapes = self.body_shapes
+            
 
             # build list of ids for geometry sources (meshes, sdfs)
             geo_sources = []
