@@ -88,7 +88,7 @@ class STARReachEnvCfg(ReachEnvCfg):
         self.scene.liver = DeformableObjectCfg(
             prim_path="{ENV_REGEX_NS}/Liver",
             spawn=sim_utils.UsdFileCfg(
-                usd_path='/home/mnaskret/sano/assets/liver/liverDeformable.usd',
+                usd_path='../../../../../../meshes/liver/liver.usd',
                 # scale=(1.0, 1.0, 1.0)
                 scale=(0.1, 0.1, 0.1)
             ),
