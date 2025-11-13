@@ -1,3 +1,4 @@
+import KRNSolver
 from centrelines import CentrelinePointInfo, ClampConstraint, attach_clip_to_nearest_centreline, check_centreline_leaks, compute_centreline_positions, cut_centrelines_near_haptic, emit_bleed_particles, update_bleed_particles, update_centreline_leaks
 from connectivity import generate_connectivity, recompute_connectivity, setup_connectivity
 from grasping import grasp_end, grasp_process, grasp_start
@@ -5,6 +6,7 @@ from heating import heating_active_process, heating_conduction_process, heating_
 from integrator_pbf import PBFIntegrator
 from stretching import stretching_breaking_process
 from surface_reconstruction import extract_surface_triangles_bucketed
+from simulation_systems import BoundsCollisionSystem, DistanceConstraintSystem
 import warp as wp
 import newton
 from pxr import Usd, UsdGeom
@@ -642,8 +644,16 @@ class WarpSim:
 
     def _setup_simulation(self):
         """Initialize simulation states and integrator."""
-        self.integrator = PBDSolver(self.model, iterations=self.sim_constraint_iterations)
-        
+        self.integrator = KRNSolver.KRNSolver(self.model, iterations=self.sim_constraint_iterations)
+
+        # Register simulation systems
+        self.integrator.register_system(DistanceConstraintSystem(priority=50))
+        self.integrator.register_system(BoundsCollisionSystem(
+            bounds_min=wp.vec3(-2.0, 0.0, -8.0),
+            bounds_max=wp.vec3(2.0, 10.0, -3.0),
+            priority=100
+        ))
+
         self.integrator.dev_pos_current_buffer = wp.array([0.0, 0.0, 0.0], dtype=wp.vec3, device=wp.get_device())
         self.integrator.dev_pos_target_buffer = wp.array([0.0, 0.0, 0.0], dtype=wp.vec3, device=wp.get_device())
         self.integrator.dev_pos_prev_buffer = wp.array([0.0, 0.0, 0.0], dtype=wp.vec3, device=wp.get_device())
@@ -721,7 +731,7 @@ class WarpSim:
             
             fluids.simulate_fluid(self)
 
-            self.integrator.step(self.model, self.state_0, self.state_1, None, self.contacts, self.substep_dt)
+            self.integrator.step(self.state_0, self.state_1, None, self.contacts, self.substep_dt)
 
 
             # Recompute connectivity
