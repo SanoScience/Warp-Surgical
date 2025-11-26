@@ -6,7 +6,7 @@ from heating import heating_active_process, heating_conduction_process, heating_
 from integrator_pbf import PBFIntegrator
 from stretching import stretching_breaking_process
 from surface_reconstruction import extract_surface_triangles_bucketed
-from simulation_systems import BoundsCollisionSystem, DistanceConstraintSystem
+from simulation_systems import BoundsCollisionSystem, CustomCollisionSystem, DistanceConstraintSystem, ExternalSphereCollisionSystem, TrianglePointConstraintSystem, VolumeConstraintSystem
 import warp as wp
 import newton
 from pxr import Usd, UsdGeom
@@ -648,6 +648,10 @@ class WarpSim:
 
         # Register simulation systems
         self.integrator.register_system(DistanceConstraintSystem(priority=50))
+        self.integrator.register_system(VolumeConstraintSystem(priority=60))
+        self.integrator.register_system(TrianglePointConstraintSystem(priority=70))
+        self.integrator.register_system(ExternalSphereCollisionSystem(priority=80))
+        self.integrator.register_system(CustomCollisionSystem(priority=90))
         self.integrator.register_system(BoundsCollisionSystem(
             bounds_min=wp.vec3(-2.0, 0.0, -8.0),
             bounds_max=wp.vec3(2.0, 10.0, -3.0),
