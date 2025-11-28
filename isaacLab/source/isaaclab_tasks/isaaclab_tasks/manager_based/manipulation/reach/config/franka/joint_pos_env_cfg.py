@@ -17,6 +17,7 @@ from isaaclab_tasks.manager_based.manipulation.reach.reach_env_cfg import ReachE
 # Pre-defined configs
 ##
 from isaaclab_assets import FRANKA_PANDA_CFG  # isort: skip
+from isaaclab_tasks.manager_based.manipulation.reach.config.franka.haptic_cfg import HapticControlCfg
 
 
 ##
@@ -42,6 +43,9 @@ class FrankaReachEnvCfg(ReachEnvCfg):
             debug_mode=True,
         )
     )
+
+    # Haptic device control configuration
+    haptic: HapticControlCfg = HapticControlCfg()
 
     def __post_init__(self):
         # post init of parent

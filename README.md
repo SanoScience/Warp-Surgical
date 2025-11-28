@@ -204,3 +204,66 @@ newton_cfg=NewtonCfg(
 - Increase `num_substeps` for better temporal resolution
 - Check that geometry has proper collision mesh
 
+## Haptic Teleoperation (Omni Geomagic + Franka)
+
+This project includes a haptic teleoperation pipeline that maps an Omni Geomagic device to the Franka end-effector using Newton IK.
+
+### Overview
+
+- **Environment**: `Isaac-Reach-Franka-v0`
+- **Agent script**: `isaacLab/scripts/environments/omni_agent.py`
+- **Haptic config**: `isaaclab_tasks/manager_based/manipulation/reach/config/franka/haptic_cfg.py`
+
+The haptic device controls:
+- **End-effector position and orientation** via incremental pose updates and Newton IK.
+- **Gripper open/close** via the pen button (press = close, release = open).
+
+### Configuration
+
+All haptic settings are centralized in `HapticControlCfg`:
+
+- **Sensitivity**
+  - `position_sensitivity`: scales pen motion to robot motion.
+  - `rotation_sensitivity`: scales pen rotation to gripper rotation.
+  - `max_position_delta`: safety clamp on per-step translation.
+  - `max_rotation_delta`: safety clamp on per-step rotation.
+
+- **Axis Mapping**
+  - `haptic_axis_map`: maps Omni axes \([X, Y, Z]\) to robot axes \([X, Y, Z]\).
+  - `haptic_axis_signs`: per-axis sign flips to align movement directions.
+  - `haptic_rot_axis_map` / `haptic_rot_axis_signs`: same idea for quaternion \([x, y, z, w]\) components.
+
+- **Calibration**
+  - `enable_calibration`: if `True`, waits a few seconds at startup with the pen docked.
+  - `calibration_wait_time`: seconds to wait in the docked pose.
+  - `target_ee_pos_docked`: desired Franka end-effector pose when the pen is docked (forward, low, centered).
+  - `gripper_pitch_angle_deg`: initial downward pitch (e.g., 90°) so the tool points towards the workspace.
+
+- **Gripper Control**
+  - `gripper_pos_closed`: joint target when the pen button is pressed.
+  - `gripper_pos_open`: joint target when the pen button is released.
+  - Gripper joints are auto-detected by name (e.g., `finger`, `gripper`, `jaw`, `grip`).
+
+### Runtime Behavior
+
+1. **Startup**
+   - Environment is created with `FrankaReachEnvCfg`, which embeds `HapticControlCfg` as `cfg.haptic`.
+   - `omni_agent.py` reads `env_cfg.haptic` and applies all sensitivity, mapping, and calibration parameters.
+   - When calibration is enabled, the Omni is docked; its pose is mapped to `target_ee_pos_docked` and the corresponding quaternion.
+
+2. **Control Loop**
+   - Omni position and rotation are:
+     - Remapped to the robot frame using `haptic_axis_map` / `haptic_axis_signs` and `haptic_rot_axis_map` / `haptic_rot_axis_signs`.
+     - Converted to deltas and filtered by sensitivity and max-delta clamps.
+   - Target Franka end-effector pose is updated incrementally and passed to Newton IK.
+   - IK solves for arm joint positions; these are mapped into the Isaac Lab joint position action space.
+   - Pen button state is read each step:
+     - Pressed → gripper moves towards `gripper_pos_closed`.
+     - Released → gripper moves towards `gripper_pos_open`.
+
+3. **Tuning**
+   - For different users/devices, only `haptic_cfg.py` needs to be adjusted.
+   - No changes are required in `omni_agent.py` or the environment config, unless you want per-task overrides.
+
+This design keeps all haptic-related parameters in a single config object while letting `omni_agent.py` remain a generic teleoperation script that reads from the environment configuration.
+

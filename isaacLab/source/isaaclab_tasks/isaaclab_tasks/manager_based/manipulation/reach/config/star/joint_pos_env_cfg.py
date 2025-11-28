@@ -71,7 +71,7 @@ class STARReachEnvCfg(ReachEnvCfg):
         self.rewards.end_effector_position_tracking.params["asset_cfg"].body_names = ["endo360_needle"]
         self.rewards.end_effector_position_tracking_fine_grained.params["asset_cfg"].body_names = ["endo360_needle"]
         self.rewards.end_effector_orientation_tracking.params["asset_cfg"].body_names = ["endo360_needle"]
-        # override actions
+        # # override actions
         self.actions.arm_action = mdp.JointPositionActionCfg(
             asset_name="robot", joint_names=[".*"], scale=0.5, use_default_offset=True
         )
@@ -88,7 +88,7 @@ class STARReachEnvCfg(ReachEnvCfg):
         self.scene.liver = DeformableObjectCfg(
             prim_path="{ENV_REGEX_NS}/Liver",
             spawn=sim_utils.UsdFileCfg(
-                usd_path='../../../../../../meshes/liver/liver.usd',
+                usd_path='../meshes/liver/liver.usd',
                 # scale=(1.0, 1.0, 1.0)
                 scale=(0.1, 0.1, 0.1)
             ),
