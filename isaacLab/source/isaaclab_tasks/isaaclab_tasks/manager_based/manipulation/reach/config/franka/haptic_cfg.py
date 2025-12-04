@@ -69,3 +69,4 @@ class HapticControlCfg:
             np.cos(gripper_pitch_angle / 2)         # w
         ])
 
+
