@@ -17,3 +17,4 @@ from .humanoid import *
 from .unitree import *
 from .universal_robots import *
 from .star import *
+from .so_arm100 import *
