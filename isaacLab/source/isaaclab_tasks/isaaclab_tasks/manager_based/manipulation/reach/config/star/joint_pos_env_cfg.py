@@ -43,10 +43,37 @@ class STARReachEnvCfg(ReachEnvCfg):
                 soft_body_relaxation=0.0001,
                 # soft_contact_relaxation=0.0001,
             ),
-            num_substeps=32,
+            # solver_cfg=FeatherstoneSolverCfg(
+            #     update_mass_matrix_interval=4,  # Update mass matrix every 4 substeps
+            #     angular_damping=0.1,  # Add damping to prevent instability
+            #     friction_smoothing=4.0, # Increase friction smoothing
+            # ),
+            # solver_cfg=MJWarpSolverCfg(
+            #     njmax=20,
+            #     nconmax=20,
+            #     ls_iterations=10,
+            #     cone="pyramidal",
+            #     impratio=1,
+            #     ls_parallel=True,
+            #     integrator="implicit",
+            #     save_to_mjcf="FrankaReachEnv.xml",
+            # ),
+            num_substeps=64,
             debug_mode=True,
         )
     )
+    # # Working Featherstone Solver
+    # sim: SimulationCfg = SimulationCfg(
+    #     newton_cfg=NewtonCfg(
+    #         solver_cfg=FeatherstoneSolverCfg(
+    #             update_mass_matrix_interval=4,  # Update mass matrix every 4 substeps
+    #             angular_damping=0.1,  # Add damping to prevent instability
+    #             friction_smoothing=4.0, # Increase friction smoothing
+    #         ),
+    #         num_substeps=64,
+    #         debug_mode=True,
+    #     )
+    # )
 
     def __post_init__(self):
         # post init of parent

@@ -7,7 +7,7 @@ import math
 
 from isaaclab.sim import SimulationCfg
 from isaaclab.sim._impl.newton_manager_cfg import NewtonCfg
-from isaaclab.sim._impl.solvers_cfg import MJWarpSolverCfg
+from isaaclab.sim._impl.solvers_cfg import MJWarpSolverCfg, FeatherstoneSolverCfg, XPBOSolverCfg
 from isaaclab.utils import configclass
 
 import isaaclab_tasks.manager_based.manipulation.reach.mdp as mdp
@@ -29,17 +29,28 @@ from isaaclab_tasks.manager_based.manipulation.reach.config.franka.haptic_cfg im
 class FrankaReachEnvCfg(ReachEnvCfg):
     sim: SimulationCfg = SimulationCfg(
         newton_cfg=NewtonCfg(
-            solver_cfg=MJWarpSolverCfg(
-                njmax=20,
-                ncon_per_env=20,
-                ls_iterations=10,
-                cone="pyramidal",
-                impratio=1,
-                ls_parallel=True,
-                integrator="implicit",
-                save_to_mjcf="FrankaReachEnv.xml",
+            # solver_cfg=MJWarpSolverCfg(
+            #     njmax=20,
+            #     nconmax=20,
+            #     ls_iterations=10,
+            #     cone="pyramidal",
+            #     impratio=1,
+            #     ls_parallel=True,
+            #     integrator="implicit",
+            #     save_to_mjcf="FrankaReachEnv.xml",
+            # ),
+            # solver_cfg=FeatherstoneSolverCfg(
+            #     update_mass_matrix_interval=1,  # Update mass matrix every 4 substeps
+            #     angular_damping=0.05,  # Add damping to prevent instability
+            # ),
+            solver_cfg=XPBOSolverCfg(
+                iterations=32,
+                joint_linear_compliance=1e5,
+                joint_angular_compliance=1e5,
+                # soft_body_relaxation=0.0001,
+                # soft_contact_relaxation=0.0001,
             ),
-            num_substeps=1,
+            num_substeps=32,  # Increase substeps for better stability
             debug_mode=True,
         )
     )
