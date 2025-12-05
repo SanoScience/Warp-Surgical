@@ -35,7 +35,7 @@ from isaaclab_assets import STAR_CFG  # isort: skip
 @configclass
 class STARReachEnvCfg(ReachEnvCfg):
     sim: SimulationCfg = SimulationCfg(
-        dt=1/60.0,
+        # dt=1/60.0,
         newton_cfg=NewtonCfg(
             # use_cuda_graph = False,
             solver_cfg=XPBOSolverCfg(
@@ -111,17 +111,17 @@ class STARReachEnvCfg(ReachEnvCfg):
         self.viewer.eye = (2.0, 2.0, 1.0)
 
         # Deformable Liver
-        zRot = quat_from_angle_axis(torch.tensor(-90), torch.tensor([0.0, 0.0, 1.0])).tolist()
-        self.scene.liver = DeformableObjectCfg(
-            prim_path="{ENV_REGEX_NS}/Liver",
-            spawn=sim_utils.UsdFileCfg(
-                usd_path='../meshes/liver/liver.usd',
-                # scale=(1.0, 1.0, 1.0)
-                scale=(0.1, 0.1, 0.1)
-            ),
-            init_state=DeformableObjectCfg.InitialStateCfg(pos=(0.5, 0.0, 0.15), rot=zRot),
-            debug_vis=True,
-        )
+        # zRot = quat_from_angle_axis(torch.tensor(-90), torch.tensor([0.0, 0.0, 1.0])).tolist()
+        # self.scene.liver = DeformableObjectCfg(
+        #     prim_path="{ENV_REGEX_NS}/Liver",
+        #     spawn=sim_utils.UsdFileCfg(
+        #         usd_path='../meshes/liver/liver.usd',
+        #         # scale=(1.0, 1.0, 1.0)
+        #         scale=(0.1, 0.1, 0.1)
+        #     ),
+        #     init_state=DeformableObjectCfg.InitialStateCfg(pos=(0.5, 0.0, 0.15), rot=zRot),
+        #     debug_vis=True,
+        # )
 
         # override command generator body
         # Use liver vertex position as target instead of random poses

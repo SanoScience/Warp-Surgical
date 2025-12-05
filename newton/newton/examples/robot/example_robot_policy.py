@@ -69,7 +69,7 @@ ROBOT_CONFIGS = {
     "go2": RobotConfig(
         asset_dir="unitree_go2",
         policy_path={"mjw": "rl_policies/mjw_go2.pt", "physx": "rl_policies/physx_go2.pt"},
-        asset_path="usd/go2.usd",
+        asset_path="usd/go2.usda",
         yaml_path="rl_policies/go2.yaml",
     ),
     "g1_29dof": RobotConfig(
@@ -229,10 +229,11 @@ class Example:
 
         # Build the model
         builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+        newton.solvers.SolverMuJoCo.register_custom_attributes(builder)
         builder.default_joint_cfg = newton.ModelBuilder.JointDofConfig(
             armature=0.1,
-            limit_ke=1.0e3,
-            limit_kd=1.0e1,
+            limit_ke=1.0e2,
+            limit_kd=1.0e0,
         )
         builder.default_shape_cfg.ke = 5.0e4
         builder.default_shape_cfg.kd = 5.0e2
@@ -250,14 +251,12 @@ class Example:
         builder.approximate_meshes("convex_hull")
 
         builder.add_ground_plane()
-        builder.gravity = wp.vec3(0.0, 0.0, -9.81)
+        # builder's gravity isn't a vec3. use model.set_gravity()
+        # builder.gravity = wp.vec3(0.0, 0.0, -9.81)
 
         builder.joint_q[:3] = [0.0, 0.0, 0.76]
         builder.joint_q[3:7] = [0.0, 0.0, 0.7071, 0.7071]
         builder.joint_q[7:] = config["mjw_joint_pos"]
-
-        for i in range(len(builder.joint_dof_mode)):
-            builder.joint_dof_mode[i] = newton.JointMode.TARGET_POSITION
 
         for i in range(len(config["mjw_joint_stiffness"])):
             builder.joint_target_ke[i + 6] = config["mjw_joint_stiffness"][i]
@@ -265,11 +264,14 @@ class Example:
             builder.joint_armature[i + 6] = config["mjw_joint_armature"][i]
 
         self.model = builder.finalize()
+        self.model.set_gravity((0.0, 0.0, -9.81))
+
         self.solver = newton.solvers.SolverMuJoCo(
             self.model,
             use_mujoco_cpu=self.use_mujoco,
             solver="newton",
-            ncon_per_env=30,
+            nconmax=30,
+            njmax=100,
         )
 
         # Initialize state objects
@@ -315,17 +317,17 @@ class Example:
             print("[INFO] Using CUDA graph")
             self.use_cuda_graph = True
             torch_tensor = torch.zeros(self.config["num_dofs"] + 6, device=self.torch_device, dtype=torch.float32)
-            self.control.joint_target = wp.from_torch(torch_tensor, dtype=wp.float32, requires_grad=False)
+            self.control.joint_target_pos = wp.from_torch(torch_tensor, dtype=wp.float32, requires_grad=False)
             with wp.ScopedCapture() as capture:
                 self.simulate()
             self.graph = capture.graph
 
     def simulate(self):
         """Simulate performs one frame's worth of updates."""
-        state_0_dict = self.state_0.__dict__
-        state_1_dict = self.state_1.__dict__
-        state_temp_dict = self.state_temp.__dict__
         self.contacts = self.model.collide(self.state_0)
+
+        need_state_copy = self.use_cuda_graph and self.sim_substeps % 2 == 1
+
         for i in range(self.sim_substeps):
             self.state_0.clear_forces()
 
@@ -335,18 +337,12 @@ class Example:
             self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
 
             # Swap states - handle CUDA graph case specially
-            if i < self.sim_substeps - 1 or not self.use_cuda_graph:
+            if need_state_copy and i == self.sim_substeps - 1:
+                # Swap states by copying the state arrays for graph capture
+                self.state_0.assign(self.state_1)
+            else:
                 # We can just swap the state references
                 self.state_0, self.state_1 = self.state_1, self.state_0
-            elif self.use_cuda_graph:
-                # Swap states by copying the state arrays for graph capture
-                for key, value in state_0_dict.items():
-                    if isinstance(value, wp.array):
-                        if key not in state_temp_dict:
-                            state_temp_dict[key] = wp.empty_like(value)
-                        state_temp_dict[key].assign(value)
-                        state_0_dict[key].assign(state_1_dict[key])
-                        state_1_dict[key].assign(state_temp_dict[key])
 
     def reset(self):
         print("[INFO] Resetting example")
@@ -389,7 +385,7 @@ class Example:
             a = self.joint_pos_initial + self.config["action_scale"] * self.rearranged_act
             a_with_zeros = torch.cat([torch.zeros(6, device=self.torch_device, dtype=torch.float32), a.squeeze(0)])
             a_wp = wp.from_torch(a_with_zeros, dtype=wp.float32, requires_grad=False)
-            wp.copy(self.control.joint_target, a_wp)
+            wp.copy(self.control.joint_target_pos, a_wp)
 
         for _ in range(self.decimation):
             if self.graph:
@@ -405,8 +401,13 @@ class Example:
         self.viewer.log_contacts(self.contacts, self.state_0)
         self.viewer.end_frame()
 
-    def test(self):
-        pass
+    def test_final(self):
+        newton.examples.test_body_state(
+            self.model,
+            self.state_0,
+            "all bodies are above the ground",
+            lambda q, qd: q[2] > 0.0,
+        )
 
 
 if __name__ == "__main__":
@@ -465,4 +466,4 @@ if __name__ == "__main__":
     load_policy_and_setup_tensors(example, policy_path, config["num_dofs"], slice(7, None))
 
     # Run using standard example loop
-    newton.examples.run(example)
+    newton.examples.run(example, args)

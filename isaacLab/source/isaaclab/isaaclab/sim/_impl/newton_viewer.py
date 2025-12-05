@@ -150,7 +150,8 @@ class NewtonViewerGL(ViewerGL):
                     imgui.text(f"Environments: {self.model.num_envs}")
                     axis_names = ["X", "Y", "Z"]
                     imgui.text(f"Up Axis: {axis_names[self.model.up_axis]}")
-                    gravity = self.model.gravity
+                    # Convert Warp array to numpy for display
+                    gravity = self.model.gravity.numpy()[0]  # Extract the vec3 from array
                     gravity_text = f"Gravity: ({gravity[0]:.2f}, {gravity[1]:.2f}, {gravity[2]:.2f})"
                     imgui.text(gravity_text)
 

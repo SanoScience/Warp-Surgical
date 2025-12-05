@@ -23,12 +23,12 @@
 #
 ###########################################################################
 
-import numpy as np
 import warp as wp
-from pxr import Usd, UsdGeom
+from pxr import Usd
 
 import newton
 import newton.examples
+import newton.usd
 
 
 class Example:
@@ -46,10 +46,11 @@ class Example:
         self.viewer = viewer
 
         usd_stage = Usd.Stage.Open(newton.examples.get_asset("curvedSurface.usd"))
-        usd_geom = UsdGeom.Mesh(usd_stage.GetPrimAtPath("/root/cloth"))
+        usd_prim = usd_stage.GetPrimAtPath("/root/cloth")
 
-        mesh_points = np.array(usd_geom.GetPointsAttr().Get())
-        mesh_indices = np.array(usd_geom.GetFaceVertexIndicesAttr().Get())
+        cloth_mesh = newton.usd.get_mesh(usd_prim)
+        mesh_points = cloth_mesh.vertices
+        mesh_indices = cloth_mesh.indices
 
         self.input_scale_factor = 1.0
         vertices = [wp.vec3(v) * self.input_scale_factor for v in mesh_points]
@@ -129,6 +130,28 @@ class Example:
         self.viewer.log_state(self.state_0)
         self.viewer.end_frame()
 
+    def test_final(self):
+        newton.examples.test_particle_state(
+            self.state_0,
+            "particles have come close to a rest",
+            lambda q, qd: max(abs(qd)) < 0.1,
+        )
+
+        p_lower = wp.vec3(-3.0, -3.0, 0.0)
+        p_upper = wp.vec3(3.0, 3.0, 2.0)
+        newton.examples.test_particle_state(
+            self.state_0,
+            "particles are within a reasonable volume",
+            lambda q, qd: newton.utils.vec_inside_limits(q, p_lower, p_upper),
+        )
+
+        newton.examples.test_particle_state(
+            self.state_0,
+            "lower particles touch the ground",
+            lambda q, qd: q[2] < 0.15,
+            indices=[4, 5, 12, 13],
+        )
+
 
 if __name__ == "__main__":
     # Parse arguments and initialize viewer
@@ -137,4 +160,4 @@ if __name__ == "__main__":
     # Create viewer and run
     example = Example(viewer)
 
-    newton.examples.run(example)
+    newton.examples.run(example, args)

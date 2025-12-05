@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING, Literal
 import omni.log
 import warp as wp
 from isaacsim.core.simulation_manager import SimulationManager
-from newton import JointMode, JointType, Model
+from newton import JointType, Model
 from newton.selection import ArticulationView as NewtonArticulationView
 from newton.solvers import SolverMuJoCo
 from pxr import UsdPhysics
@@ -33,6 +33,12 @@ from .articulation_data import ArticulationData
 
 if TYPE_CHECKING:
     from .articulation_cfg import ArticulationCfg
+
+
+# Joint control mode constants (Newton's JointMode enum was removed)
+_JOINT_MODE_NONE = 0
+_JOINT_MODE_TARGET_POSITION = 1
+_JOINT_MODE_TARGET_VELOCITY = 2
 
 
 class Articulation(AssetBase):
@@ -228,8 +234,22 @@ class Articulation(AssetBase):
         self._root_newton_view.set_attribute("joint_f", NewtonManager.get_control(), self._joint_effort_target_sim)
         # position and velocity targets only for implicit actuators
         if self._has_implicit_actuators:
-            # Sets the position or velocity target for the implicit actuators depending on the actuator type.
-            self._root_newton_view.set_attribute("joint_target", NewtonManager.get_control(), self._joint_target_sim)
+            # Newton now has separate joint_target_pos and joint_target_vel attributes
+            # Split targets based on control mode
+            pos_mask = self._data.joint_control_mode == _JOINT_MODE_TARGET_POSITION
+            vel_mask = self._data.joint_control_mode == _JOINT_MODE_TARGET_VELOCITY
+
+            # Create separate buffers for position and velocity targets
+            joint_target_pos = torch.zeros_like(self._joint_target_sim)
+            joint_target_vel = torch.zeros_like(self._joint_target_sim)
+
+            # Assign targets based on control mode
+            joint_target_pos[pos_mask] = self._joint_target_sim[pos_mask]
+            joint_target_vel[vel_mask] = self._joint_target_sim[vel_mask]
+
+            # Write to simulation
+            self._root_newton_view.set_attribute("joint_target_pos", NewtonManager.get_control(), joint_target_pos)
+            self._root_newton_view.set_attribute("joint_target_vel", NewtonManager.get_control(), joint_target_vel)
 
     def update(self, dt: float):
         self._data.update(dt)
@@ -661,21 +681,25 @@ class Articulation(AssetBase):
             env_ids = env_ids[:, None]
         # set into internal buffers
         if control_mode == "position":
-            self._data.joint_control_mode[env_ids, joint_ids] = JointMode.TARGET_POSITION
+            self._data.joint_control_mode[env_ids, joint_ids] = _JOINT_MODE_TARGET_POSITION
         elif control_mode == "velocity":
-            self._data.joint_control_mode[env_ids, joint_ids] = JointMode.TARGET_VELOCITY
+            self._data.joint_control_mode[env_ids, joint_ids] = _JOINT_MODE_TARGET_VELOCITY
         elif (control_mode is None) or (control_mode == "none"):
             # Set the control mode to None when using explicit actuators
-            self._data.joint_control_mode[env_ids, joint_ids] = JointMode.NONE
+            self._data.joint_control_mode[env_ids, joint_ids] = _JOINT_MODE_NONE
         else:
             raise ValueError(f"Invalid control mode: {control_mode}")
 
-        # set into simulation
-        self._mask.fill_(False)
-        self._mask[physx_env_ids] = True
-        self._root_newton_view.set_attribute(
-            "joint_dof_mode", NewtonManager.get_model(), self._data.joint_control_mode, mask=self._mask
-        )
+        # NOTE: Newton no longer supports joint_dof_mode attribute.
+        # Control mode is now determined by stiffness/damping values and direct target setting.
+        # We keep tracking mode internally for IsaacLab's actuator abstractions.
+        #
+        # # set into simulation
+        # self._mask.fill_(False)
+        # self._mask[physx_env_ids] = True
+        # self._root_newton_view.set_attribute(
+        #     "joint_dof_mode", NewtonManager.get_model(), self._data.joint_control_mode, mask=self._mask
+        # )
 
     def write_joint_stiffness_to_sim(
         self,

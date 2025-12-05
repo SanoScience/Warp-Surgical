@@ -1,3 +1,18 @@
+# SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 import ctypes
 import io
 import os
@@ -774,7 +789,7 @@ class RendererGL:
         self.background_color = (68.0 / 255.0, 161.0 / 255.0, 255.0 / 255.0)
 
         self.sky_upper = self.background_color
-        self.sky_lower = (139.0 / 255.0, 151 / 255.0, 186.0 / 255.0)
+        self.sky_lower = (40.0 / 255.0, 44.0 / 255.0, 55.0 / 255.0)
 
         try:
             import pyglet  # noqa: PLC0415
@@ -905,7 +920,13 @@ class RendererGL:
             pyglet.clock.tick()
 
             self.app.platform_event_loop.step(0.001)  # 1ms app polling latency
-            self.window.dispatch_events()
+            try:
+                self.window.dispatch_events()
+            except (ctypes.ArgumentError, TypeError):
+                # Handle known issue with pyglet xlib backend on some Linux configurations
+                # where window handle can have wrong type in XCheckWindowEvent
+                # This is a non-fatal error that can be safely ignored
+                pass
 
     def render(self, camera, objects, lines=None):
         gl = RendererGL.gl

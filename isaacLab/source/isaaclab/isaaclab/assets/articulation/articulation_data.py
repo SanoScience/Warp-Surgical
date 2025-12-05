@@ -51,9 +51,9 @@ class ArticulationData:
 
         # obtain global simulation view
         gravity = NewtonManager.get_model().gravity
-        # Convert to direction vector
-        gravity_dir = torch.tensor((gravity[0], gravity[1], gravity[2]), device=self.device)
-        gravity_dir = math_utils.normalize(gravity_dir.unsqueeze(0)).squeeze(0)
+        # Convert from Warp array to PyTorch tensor and normalize to get direction vector
+        gravity_vec = wp.to_torch(gravity).squeeze(0)  # Shape: [3]
+        gravity_dir = math_utils.normalize(gravity_vec.unsqueeze(0)).squeeze(0)
 
         # Initialize constants
         self.GRAVITY_VEC_W = gravity_dir.repeat(self._root_newton_view.count, 1)

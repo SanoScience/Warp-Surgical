@@ -24,16 +24,8 @@ from isaaclab.assets.articulation import ArticulationCfg
 STAR_CFG = ArticulationCfg(
     spawn=sim_utils.UsdFileCfg(
         usd_path='source/isaaclab_assets/isaaclab_assets/robots/star.usd',
-        # activate_contact_sensors=False,
-        # rigid_props=sim_utils.RigidBodyPropertiesCfg(
-        #     disable_gravity=False,
-        #     max_depenetration_velocity=5.0,
-        # ),
-        # articulation_props=sim_utils.ArticulationRootPropertiesCfg(
-        #     enabled_self_collisions=True, solver_position_iteration_count=8, solver_velocity_iteration_count=0
-        # ),
         articulation_props=sim_utils.ArticulationRootPropertiesCfg(
-            enabled_self_collisions=True,
+            enabled_self_collisions=False,  # CHANGE: Try disabling self-collisions first
         ),
     ),
     init_state=ArticulationCfg.InitialStateCfg(
@@ -50,18 +42,24 @@ STAR_CFG = ArticulationCfg(
     ),
     actuators={
         "star": ImplicitActuatorCfg(
+            control_mode="position",
             joint_names_expr=["star_joint_[1-7]"],
-            effort_limit=87.0,
-            velocity_limit=2.175,
+            effort_limit_sim=87.0,
+            velocity_limit_sim=2.175,
             stiffness=80.0,
-            damping=4.0,
+            damping=8.0,
+            friction=1e-5,
+            armature=1e-3,
         ),
         "endo360": ImplicitActuatorCfg(
+            control_mode="position",
             joint_names_expr=["endo360_joint_1"],
-            effort_limit=200.0,
-            velocity_limit=0.2,
-            stiffness=2e3,
-            damping=1e2,
+            effort_limit_sim=200.0,
+            velocity_limit_sim=0.2,
+            stiffness=80,
+            damping=8,
+            friction=1e-5,
+            armature=1e-3,
         ),
     },
     soft_joint_pos_limit_factor=1.0,

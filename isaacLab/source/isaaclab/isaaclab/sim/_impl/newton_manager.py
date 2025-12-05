@@ -133,8 +133,12 @@ class NewtonManager:
         for callback in NewtonManager._on_init_callbacks:
             callback()
         print(f"[INFO] Finalizing model on device: {NewtonManager._device}")
-        NewtonManager._builder.gravity = np.array(NewtonManager._gravity_vector)
+        # Set up_axis first so up_vector is available
         NewtonManager._builder.up_axis = Axis.from_string(NewtonManager._up_axis)
+        # Newton expects gravity as a scalar magnitude (component along up axis)
+        gravity_vector = np.array(NewtonManager._gravity_vector)
+        up_vector = np.array(NewtonManager._builder.up_vector)
+        NewtonManager._builder.gravity = float(np.dot(gravity_vector, up_vector))
         with Timer(name="newton_finalize_builder", msg="Finalize builder took:", enable=True, format="ms"):
             NewtonManager._model = NewtonManager._builder.finalize(device=NewtonManager._device)
         NewtonManager._state_0 = NewtonManager._model.state()

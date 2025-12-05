@@ -19,9 +19,9 @@ from pxr import Usd, UsdGeom
 
 import newton
 import newton.examples
+import newton.usd
 import newton.utils
 from newton import Mesh, ParticleFlags
-from newton._src.solvers.style3d import CollisionHandler
 
 
 class Example:
@@ -50,19 +50,23 @@ class Example:
             garment_usd_name = "Women_Sweatshirt"
 
             usd_stage = Usd.Stage.Open(str(asset_path / "garments" / (garment_usd_name + ".usd")))
-            usd_geom_garment = UsdGeom.Mesh(usd_stage.GetPrimAtPath(str("/Root/" + garment_usd_name + "/Root_Garment")))
+            usd_prim_garment = usd_stage.GetPrimAtPath(str("/Root/" + garment_usd_name + "/Root_Garment"))
 
-            garment_prim = UsdGeom.PrimvarsAPI(usd_geom_garment.GetPrim()).GetPrimvar("st")
-            garment_mesh_indices = np.array(usd_geom_garment.GetFaceVertexIndicesAttr().Get())
-            garment_mesh_points = np.array(usd_geom_garment.GetPointsAttr().Get())
+            garment_mesh = newton.usd.get_mesh(usd_prim_garment, load_uvs=True)
+            garment_mesh_indices = garment_mesh.indices
+            garment_mesh_points = garment_mesh.vertices
+            garment_mesh_uv = garment_mesh.uvs * 1e-3
+
+            # Load UV indices separately (not part of Mesh class)
+            garment_prim = UsdGeom.PrimvarsAPI(usd_prim_garment).GetPrimvar("st")
             garment_mesh_uv_indices = np.array(garment_prim.GetIndices())
-            garment_mesh_uv = np.array(garment_prim.Get()) * 1e-3
 
             # Avatar
             usd_stage = Usd.Stage.Open(str(asset_path / "avatars" / "Female.usd"))
-            usd_geom_avatar = UsdGeom.Mesh(usd_stage.GetPrimAtPath("/Root/Female/Root_SkinnedMesh_Avatar_0_Sub_2"))
-            avatar_mesh_indices = np.array(usd_geom_avatar.GetFaceVertexIndicesAttr().Get())
-            avatar_mesh_points = np.array(usd_geom_avatar.GetPointsAttr().Get())
+            usd_prim_avatar = usd_stage.GetPrimAtPath("/Root/Female/Root_SkinnedMesh_Avatar_0_Sub_2")
+            avatar_mesh = newton.usd.get_mesh(usd_prim_avatar)
+            avatar_mesh_indices = avatar_mesh.indices
+            avatar_mesh_points = avatar_mesh.vertices
 
             builder.add_aniso_cloth_mesh(
                 pos=wp.vec3(0, 0, 0),
@@ -124,12 +128,11 @@ class Example:
         self.model.soft_contact_ke = 1.0e1
         self.model.soft_contact_kd = 1.0e-6
         self.model.soft_contact_mu = 0.2
-        self.model.gravity = wp.vec3(0.0, 0.0, -9.81)
+        self.model.set_gravity((0.0, 0.0, -9.81))
 
         self.solver = newton.solvers.SolverStyle3D(
             model=self.model,
             iterations=self.iterations,
-            collision_handler=CollisionHandler(self.model),
         )
         self.solver.precompute(
             builder,
@@ -170,8 +173,14 @@ class Example:
 
         self.sim_time += self.frame_dt
 
-    def test(self):
-        pass
+    def test_final(self):
+        p_lower = wp.vec3(-0.5, -0.2, 0.9)
+        p_upper = wp.vec3(0.5, 0.2, 1.6)
+        newton.examples.test_particle_state(
+            self.state_0,
+            "particles are within a reasonable volume",
+            lambda q, qd: newton.utils.vec_inside_limits(q, p_lower, p_upper),
+        )
 
     def render(self):
         self.viewer.begin_frame(self.sim_time)
@@ -187,4 +196,4 @@ if __name__ == "__main__":
     # Create example and run
     example = Example(viewer)
 
-    newton.examples.run(example)
+    newton.examples.run(example, args)

@@ -31,7 +31,7 @@ class SolverNotifyFlags(IntEnum):
     """Indicates joint property updates: joint_q, joint_X_p, joint_X_c."""
 
     JOINT_DOF_PROPERTIES = 1 << 1
-    """Indicates joint DOF property updates: joint_target, joint_target_ke, joint_target_kd, joint_dof_mode, joint_limit_upper, joint_limit_lower, joint_limit_ke, joint_limit_kd, joint_qd, joint_f, joint_armature."""
+    """Indicates joint DOF property updates: joint_target_ke, joint_target_kd, joint_effort_limit, joint_armature, joint_friction, joint_limit_ke, joint_limit_kd, joint_limit_lower, joint_limit_upper."""
 
     BODY_PROPERTIES = 1 << 2
     """Indicates body property updates: body_q, body_qd."""
@@ -40,9 +40,19 @@ class SolverNotifyFlags(IntEnum):
     """Indicates body inertial property updates: body_com, body_inertia, body_inv_inertia, body_mass, body_inv_mass."""
 
     SHAPE_PROPERTIES = 1 << 4
-    """Indicates shape property updates: shape_transform, shape geometry and material properties"""
+    """Indicates shape property updates: shape_transform, shape_scale, shape_collision_radius, shape_material_mu, shape_material_ke, shape_material_kd, rigid_contact_torsional_friction, rigid_contact_rolling_friction."""
 
-    ALL = JOINT_PROPERTIES | JOINT_DOF_PROPERTIES | BODY_PROPERTIES | BODY_INERTIAL_PROPERTIES | SHAPE_PROPERTIES
+    MODEL_PROPERTIES = 1 << 5
+    """Indicates model property updates: gravity and other global parameters."""
+
+    ALL = (
+        JOINT_PROPERTIES
+        | JOINT_DOF_PROPERTIES
+        | BODY_PROPERTIES
+        | BODY_INERTIAL_PROPERTIES
+        | SHAPE_PROPERTIES
+        | MODEL_PROPERTIES
+    )
     """Indicates all property updates."""
 
 
