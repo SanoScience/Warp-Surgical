@@ -347,7 +347,7 @@ def _spawn_from_usd_file(
                 if p.HasAPI("PhysxSchema", "PhysxDeformableBodyAPI") or p.GetAttribute("extMesh:vertices"):
                     has_deformable_mesh = True
                     break
-    
+
     if has_deformable_mesh:
         # Get transform parameters
         scale_factor = cfg.scale if cfg.scale is not None else (1.0, 1.0, 1.0)

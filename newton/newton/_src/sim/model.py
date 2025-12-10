@@ -265,6 +265,17 @@ class Model:
         self.tet_materials = None
         """Tetrahedral elastic parameters in form :math:`k_{mu}, k_{lambda}, k_{damp}`, shape [tet_count, 3]."""
 
+        self.soft_mesh_key = []
+        """Soft mesh (deformable body) keys, shape [soft_mesh_count], str."""
+        self.soft_mesh_particle_range = []
+        """Particle index ranges for each soft mesh, shape [soft_mesh_count, 2], tuple of (start_idx, end_idx) inclusive."""
+        self.soft_mesh_X = []
+        """Soft mesh positions in world space, shape [soft_mesh_count], Vec3."""
+        self.soft_mesh_q = []
+        """Soft mesh rotations in world space, shape [soft_mesh_count], Quat."""
+        self.soft_mesh_scale = []
+        """Soft mesh scales, shape [soft_mesh_count], float."""
+
         self.muscle_start = None
         """Start index of the first muscle point per muscle, shape [muscle_count], int."""
         self.muscle_params = None

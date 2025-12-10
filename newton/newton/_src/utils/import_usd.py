@@ -114,6 +114,8 @@ def parse_usd(
               - Mapping from prim path (str) of a rigid body prim (e.g. that implements the PhysicsRigidBodyAPI) to the respective body index in :class:`ModelBuilder`
             * - "path_shape_scale"
               - Mapping from prim path (str) of the UsdGeom to its respective 3D world scale
+            * - "path_soft_mesh_map"
+              - Mapping from prim path (str) of a deformable body prim to the respective soft mesh index in :class:`ModelBuilder`
             * - "mass_unit"
               - The stage's Kilograms Per Unit (KGPU) definition (1.0 by default)
             * - "linear_unit"
@@ -243,6 +245,8 @@ def parse_usd(
     # mapping from prim path to shape ID in Warp sim
     path_shape_map = {}
     path_shape_scale = {}
+    # mapping from prim path to soft mesh ID in Warp sim
+    path_soft_mesh_map = {}
 
     physics_scene_prim = None
     physics_dt = None
@@ -426,6 +430,64 @@ def parse_usd(
 
         for child in prim.GetChildren():
             _load_visual_shapes_impl(parent_body_id, child, xform)
+
+    def fix_inverted_tetrahedrons(vertices, indices):
+        """
+        Detect and fix inverted tetrahedrons by checking their signed volume.
+
+        A tetrahedron is inverted if its signed volume is negative. The signed volume
+        is computed as: V = (1/6) * dot(v1-v0, cross(v2-v0, v3-v0))
+
+        Args:
+            vertices: List of wp.vec3 vertices
+            indices: List of tetrahedral indices (4 indices per tetrahedron)
+
+        Returns:
+            Fixed indices list with inverted tetrahedrons corrected
+            Number of inverted tetrahedrons fixed
+        """
+        if indices is None or len(indices) == 0:
+            return indices, 0
+
+        if len(indices) % 4 != 0:
+            # Not a tetrahedral mesh
+            return indices, 0
+
+        num_tets = len(indices) // 4
+        fixed_indices = list(indices)
+        num_inverted = 0
+
+        for i in range(num_tets):
+            idx = i * 4
+            i0, i1, i2, i3 = indices[idx], indices[idx + 1], indices[idx + 2], indices[idx + 3]
+
+            # Get vertices
+            v0 = vertices[i0]
+            v1 = vertices[i1]
+            v2 = vertices[i2]
+            v3 = vertices[i3]
+
+            # Compute edge vectors
+            e1 = wp.vec3(v1[0] - v0[0], v1[1] - v0[1], v1[2] - v0[2])
+            e2 = wp.vec3(v2[0] - v0[0], v2[1] - v0[1], v2[2] - v0[2])
+            e3 = wp.vec3(v3[0] - v0[0], v3[1] - v0[1], v3[2] - v0[2])
+
+            # Compute signed volume: V = (1/6) * dot(e1, cross(e2, e3))
+            # We can skip the 1/6 factor since we only care about the sign
+            cross_e2_e3 = wp.vec3(
+                e2[1] * e3[2] - e2[2] * e3[1],
+                e2[2] * e3[0] - e2[0] * e3[2],
+                e2[0] * e3[1] - e2[1] * e3[0]
+            )
+            signed_volume = e1[0] * cross_e2_e3[0] + e1[1] * cross_e2_e3[1] + e1[2] * cross_e2_e3[2]
+
+            # If negative, tetrahedron is inverted - fix by swapping two vertices
+            if signed_volume < 0:
+                # Swap indices 0 and 1 to flip orientation
+                fixed_indices[idx], fixed_indices[idx + 1] = fixed_indices[idx + 1], fixed_indices[idx]
+                num_inverted += 1
+
+        return fixed_indices, num_inverted
 
     def add_body(prim, xform, key, armature):
         # Extract custom attributes for this body
@@ -1003,6 +1065,93 @@ def parse_usd(
             # TODO: if desc.density is 0, then we should look for mass somewhere
             density=desc.density if desc.density > 0.0 else default_shape_density,
         )
+
+    # Parse deformable bodies (soft meshes) from USD
+    def parse_deformable_bodies():
+        """Parse deformable bodies with tetrahedral meshes from USD stage."""
+        nonlocal path_soft_mesh_map
+
+        root_prim = stage.GetPrimAtPath(root_path)
+        if not root_prim:
+            return
+
+        for prim in Usd.PrimRange(root_prim):
+            if prim.IsInPrototype():
+                continue
+
+            path_name = str(prim.GetPath())
+            if any(re.match(p, path_name) for p in ignore_paths):
+                continue
+
+            # Check for tetrahedral mesh data (extMesh:tetrahedrons and extMesh:vertices)
+            if not usd.has_attribute(prim, "extMesh:tetrahedrons"):
+                continue
+
+            if verbose:
+                print(f"Found deformable body at {path_name}")
+
+            # Parse vertices and indices
+            vertices_raw = usd.get_attribute(prim, "extMesh:vertices", None)
+            indices_raw = usd.get_attribute(prim, "extMesh:tetrahedrons", None)
+
+            if vertices_raw is None or indices_raw is None:
+                continue
+
+            vertices = [wp.vec3(v[0], v[1], v[2]) for v in vertices_raw]
+
+            # Convert indices to flat list if needed
+            if len(indices_raw) > 0 and hasattr(indices_raw[0], '__len__'):
+                indices = []
+                for idx in indices_raw:
+                    indices.extend([int(idx[0]), int(idx[1]), int(idx[2]), int(idx[3])])
+            else:
+                indices = list(indices_raw)
+
+            # IMPORTANT: For deformable meshes loaded via IsaacLab's spawn_from_usd,
+            # all transforms (scale, rotation, translation) are already baked into the vertices
+            # by the spawner (see from_files.py:334-408). The prim has identity transforms.
+            # Therefore, we must use identity transforms here to avoid double-transformation.
+            pos = wp.vec3(0.0, 0.0, 0.0)
+            rot = wp.quat_identity()
+            scale = 1.0
+            vel = wp.vec3(0.0, 0.0, 0.0)
+
+            # Get material properties
+            density = usd.get_float(prim, "physics:density", default_shape_density) * mass_unit
+            k_mu = usd.get_float(prim, "physics:mu", 1000.0)
+            k_lambda = usd.get_float(prim, "physics:lambda", 1000.0)
+            k_damp = usd.get_float(prim, "physics:damping", 0.1)
+
+            # Fix inverted tetrahedra
+            indices, num_inverted = fix_inverted_tetrahedrons(vertices, indices)
+            if num_inverted > 0 and verbose:
+                print(f"Fixed {num_inverted} inverted tetrahedron(s) in {path_name}")
+
+            # Add soft mesh to builder
+            try:
+                soft_mesh_id = builder.add_soft_mesh(
+                    pos=pos,
+                    rot=rot,
+                    scale=scale,
+                    vel=vel,
+                    vertices=vertices,
+                    indices=indices,
+                    density=density,
+                    k_mu=k_mu,
+                    k_lambda=k_lambda,
+                    k_damp=k_damp,
+                    key=path_name,
+                )
+                path_soft_mesh_map[path_name] = soft_mesh_id
+                if verbose:
+                    num_tets = len(indices) // 4
+                    print(f"Added deformable mesh at {path_name}: {len(vertices)} vertices, {num_tets} tets")
+            except Exception as e:
+                if verbose:
+                    print(f"Error adding deformable mesh at {path_name}: {e}")
+
+    # Call the deformable body parser
+    parse_deformable_bodies()
 
     if UsdPhysics.ObjectType.RigidBody in ret_dict:
         prim_paths, rigid_body_descs = ret_dict[UsdPhysics.ObjectType.RigidBody]
@@ -1661,6 +1810,7 @@ def parse_usd(
         "path_shape_map": path_shape_map,
         "path_body_map": path_body_map,
         "path_shape_scale": path_shape_scale,
+        "path_soft_mesh_map": path_soft_mesh_map,
         "mass_unit": mass_unit,
         "linear_unit": linear_unit,
         "scene_attributes": scene_attributes,

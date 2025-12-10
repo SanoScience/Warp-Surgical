@@ -526,6 +526,13 @@ class ModelBuilder:
         self.tet_activations = []
         self.tet_materials = []
 
+        # soft mesh tracking
+        self.soft_mesh_key = []  # soft mesh identifiers
+        self.soft_mesh_particle_range = []  # (start_idx, end_idx) inclusive for each soft mesh
+        self.soft_mesh_X = []  # soft mesh positions (world space)
+        self.soft_mesh_q = []  # soft mesh rotations (world space)
+        self.soft_mesh_scale = []  # soft mesh scales
+
         # muscles
         self.muscle_start = []
         self.muscle_params = []
@@ -980,6 +987,13 @@ class ModelBuilder:
         The number of articulations in the model.
         """
         return len(self.articulation_start)
+
+    @property
+    def soft_mesh_count(self):
+        """
+        Returns the number of soft meshes (deformable bodies) in the builder.
+        """
+        return len(self.soft_mesh_key)
 
     # endregion
 
@@ -1578,6 +1592,20 @@ class ModelBuilder:
             self.tri_indices.extend((np.array(builder.tri_indices, dtype=np.int32) + start_particle_idx).tolist())
         if builder.tet_count:
             self.tet_indices.extend((np.array(builder.tet_indices, dtype=np.int32) + start_particle_idx).tolist())
+
+        # Merge soft mesh tracking data
+        if builder.soft_mesh_count > 0:
+            for key in builder.soft_mesh_key:
+                self.soft_mesh_key.append(key)
+            for start_idx, end_idx in builder.soft_mesh_particle_range:
+                # Adjust particle indices by the offset
+                self.soft_mesh_particle_range.append((start_idx + start_particle_idx, end_idx + start_particle_idx))
+            for X in builder.soft_mesh_X:
+                self.soft_mesh_X.append(X)
+            for q in builder.soft_mesh_q:
+                self.soft_mesh_q.append(q)
+            for scale in builder.soft_mesh_scale:
+                self.soft_mesh_scale.append(scale)
 
         builder_coloring_translated = [group + start_particle_idx for group in builder.particle_color_groups]
         self.particle_color_groups = combine_independent_particle_coloring(
@@ -4964,7 +4992,9 @@ class ModelBuilder:
         tri_kd: float | None = None,
         tri_drag: float | None = None,
         tri_lift: float | None = None,
-    ) -> None:
+        particle_radius: float | None = None,
+        key: str | None = None,
+    ) -> int:
         """Helper to create a tetrahedral model from an input tetrahedral mesh
 
         Args:
@@ -4977,6 +5007,11 @@ class ModelBuilder:
             k_mu: The first elastic Lame parameter
             k_lambda: The second elastic Lame parameter
             k_damp: The damping stiffness
+            particle_radius: The radius for particle collision (if None, computed from mesh edge length)
+            key: The identifier for this soft mesh (defaults to "soft_mesh_N")
+
+        Returns:
+            int: The soft mesh index
         """
         tri_ke = tri_ke if tri_ke is not None else self.default_tri_ke
         tri_ka = tri_ka if tri_ka is not None else self.default_tri_ka
@@ -4987,6 +5022,19 @@ class ModelBuilder:
         num_tets = int(len(indices) / 4)
 
         start_vertex = len(self.particle_q)
+
+        # Compute particle radius from mesh geometry if not provided
+        if particle_radius is None:
+            # Sample a few edges to estimate average edge length
+            edge_lengths = []
+            for t in range(min(10, num_tets)):  # Sample first 10 tets
+                v0 = vertices[indices[t * 4 + 0]]
+                v1 = vertices[indices[t * 4 + 1]]
+                edge_len = np.linalg.norm([v1[0]-v0[0], v1[1]-v0[1], v1[2]-v0[2]])
+                edge_lengths.append(edge_len)
+            avg_edge_length = np.mean(edge_lengths) if edge_lengths else 0.1
+            # Use half the average edge length as particle radius (reasonable heuristic)
+            particle_radius = avg_edge_length * 0.5
 
         # dict of open faces
         faces = {}
@@ -5003,8 +5051,7 @@ class ModelBuilder:
         # add particles
         for v in vertices:
             p = wp.quat_rotate(rot, wp.vec3(v[0], v[1], v[2]) * scale) + pos
-
-            self.add_particle(p, vel, 0.0)
+            self.add_particle(p, vel, 0.0, radius=particle_radius)
 
         # add tetrahedra
         for t in range(num_tets):
@@ -5034,6 +5081,21 @@ class ModelBuilder:
                 self.add_triangle(v[0], v[1], v[2], tri_ke, tri_ka, tri_kd, tri_drag, tri_lift)
             except np.linalg.LinAlgError:
                 continue
+
+        # track soft mesh key and particle range
+        soft_mesh_id = self.soft_mesh_count
+        end_vertex = len(self.particle_q) - 1
+
+        if key is None:
+            key = f"soft_mesh_{soft_mesh_id}"
+
+        self.soft_mesh_key.append(key)
+        self.soft_mesh_particle_range.append((start_vertex, end_vertex))
+        self.soft_mesh_X.append(pos)
+        self.soft_mesh_q.append(rot)
+        self.soft_mesh_scale.append(scale)
+
+        return soft_mesh_id
 
     # incrementally updates rigid body mass with additional mass and inertia expressed at a local to the body
     def _update_body_mass(self, i, m, I, p, q):
@@ -5506,6 +5568,13 @@ class ModelBuilder:
             m.body_com = wp.array(self.body_com, dtype=wp.vec3, requires_grad=requires_grad)
             m.body_key = self.body_key
             m.body_world = wp.array(self.body_world, dtype=wp.int32)
+
+            # soft mesh tracking
+            m.soft_mesh_key = self.soft_mesh_key
+            m.soft_mesh_particle_range = self.soft_mesh_particle_range
+            m.soft_mesh_X = self.soft_mesh_X
+            m.soft_mesh_q = self.soft_mesh_q
+            m.soft_mesh_scale = self.soft_mesh_scale
 
             # joints
             m.joint_type = wp.array(self.joint_type, dtype=wp.int32)
