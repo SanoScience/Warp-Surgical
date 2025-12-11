@@ -147,7 +147,7 @@ class NewtonViewerGL(ViewerGL):
                 imgui.set_next_item_open(True, imgui.Cond_.appearing)
                 if imgui.collapsing_header("Model Information", flags=header_flags):
                     imgui.separator()
-                    imgui.text(f"Environments: {self.model.num_envs}")
+                    imgui.text(f"Environments: {self.model.num_worlds}")
                     axis_names = ["X", "Y", "Z"]
                     imgui.text(f"Up Axis: {axis_names[self.model.up_axis]}")
                     # Convert Warp array to numpy for display

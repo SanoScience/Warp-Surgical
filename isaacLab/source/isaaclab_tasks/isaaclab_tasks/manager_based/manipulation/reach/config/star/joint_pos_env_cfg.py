@@ -35,42 +35,44 @@ from isaaclab_assets import STAR_CFG  # isort: skip
 @configclass
 class STARReachEnvCfg(ReachEnvCfg):
     sim: SimulationCfg = SimulationCfg(
-        # dt=1/60.0,
+        dt=1/60.0,
         newton_cfg=NewtonCfg(
             # use_cuda_graph = False,
             solver_cfg=XPBOSolverCfg(
-                iterations=32,
+                iterations=16,
                 soft_body_relaxation=0.0001,
-                # soft_contact_relaxation=0.0001,
             ),
-            # solver_cfg=FeatherstoneSolverCfg(
-            #     update_mass_matrix_interval=4,  # Update mass matrix every 4 substeps
-            #     angular_damping=0.1,  # Add damping to prevent instability
-            #     friction_smoothing=4.0, # Increase friction smoothing
-            # ),
-            # solver_cfg=MJWarpSolverCfg(
-            #     njmax=20,
-            #     nconmax=20,
-            #     ls_iterations=10,
-            #     cone="pyramidal",
-            #     impratio=1,
-            #     ls_parallel=True,
-            #     integrator="implicit",
-            #     save_to_mjcf="FrankaReachEnv.xml",
-            # ),
-            num_substeps=64,
+            num_substeps=32,
             debug_mode=True,
         )
     )
+    # # Working Mujoco Solver
+    # sim: SimulationCfg = SimulationCfg(
+    #     dt=1/60.0,
+    #     newton_cfg=NewtonCfg(
+    #         solver_cfg=MJWarpSolverCfg(
+    #             njmax=20,
+    #             nconmax=20,
+    #             ls_iterations=10,
+    #             cone="pyramidal",
+    #             impratio=1,
+    #             ls_parallel=True,
+    #             integrator="implicit",
+    #             save_to_mjcf="StarReachEnv.xml",
+    #         ),
+    #         num_substeps=10,
+    #         debug_mode=True,
+    #     )
+    # )
     # # Working Featherstone Solver
     # sim: SimulationCfg = SimulationCfg(
     #     newton_cfg=NewtonCfg(
     #         solver_cfg=FeatherstoneSolverCfg(
-    #             update_mass_matrix_interval=4,  # Update mass matrix every 4 substeps
+    #             update_mass_matrix_interval=10,  # Update mass matrix every 4 substeps
     #             angular_damping=0.1,  # Add damping to prevent instability
     #             friction_smoothing=4.0, # Increase friction smoothing
     #         ),
-    #         num_substeps=64,
+    #         num_substeps=10,
     #         debug_mode=True,
     #     )
     # )
@@ -111,17 +113,17 @@ class STARReachEnvCfg(ReachEnvCfg):
         self.viewer.eye = (2.0, 2.0, 1.0)
 
         # Deformable Liver
-        # zRot = quat_from_angle_axis(torch.tensor(-90), torch.tensor([0.0, 0.0, 1.0])).tolist()
-        # self.scene.liver = DeformableObjectCfg(
-        #     prim_path="{ENV_REGEX_NS}/Liver",
-        #     spawn=sim_utils.UsdFileCfg(
-        #         usd_path='../meshes/liver/liver.usd',
-        #         # scale=(1.0, 1.0, 1.0)
-        #         scale=(0.1, 0.1, 0.1)
-        #     ),
-        #     init_state=DeformableObjectCfg.InitialStateCfg(pos=(0.5, 0.0, 0.15), rot=zRot),
-        #     debug_vis=True,
-        # )
+        zRot = quat_from_angle_axis(torch.tensor(-90), torch.tensor([0.0, 0.0, 1.0])).tolist()
+        self.scene.liver = DeformableObjectCfg(
+            prim_path="{ENV_REGEX_NS}/Liver",
+            spawn=sim_utils.UsdFileCfg(
+                usd_path='../meshes/liver/liver.usd',
+                # scale=(1.0, 1.0, 1.0)
+                scale=(0.1, 0.1, 0.1)
+            ),
+            init_state=DeformableObjectCfg.InitialStateCfg(pos=(0.5, 0.0, 0.15), rot=zRot),
+            debug_vis=True,
+        )
 
         # override command generator body
         # Use liver vertex position as target instead of random poses

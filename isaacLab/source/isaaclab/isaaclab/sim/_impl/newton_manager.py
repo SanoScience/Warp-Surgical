@@ -10,7 +10,7 @@ import re
 import usdrt
 import warp as wp
 from isaacsim.core.utils.stage import get_current_stage
-from newton import Axis, Contacts, Control, Model, ModelBuilder, State, eval_fk
+from newton import Axis, Contacts, Control, Model, ModelBuilder, State, eval_fk, eval_ik
 from newton.sensors import ContactSensor as NewtonContactSensor
 from newton.sensors import populate_contacts
 from newton.solvers import SolverBase, SolverFeatherstone, SolverMuJoCo, SolverXPBD
@@ -280,6 +280,18 @@ class NewtonManager:
             wp.capture_launch(NewtonManager._graph)
         else:
             NewtonManager.simulate()
+
+        # CRITICAL: Update joint positions from body transforms for XPBD solver
+        # XPBD works in maximal coordinates (body_q, body_qd) and needs eval_ik() to compute
+        # joint_q and joint_qd. MuJoCo and Featherstone work in joint space and update joint
+        # states directly, so they don't need eval_ik().
+        if isinstance(NewtonManager._solver, SolverXPBD):
+            eval_ik(
+                NewtonManager._model,
+                NewtonManager._state_0,
+                NewtonManager._state_0.joint_q,
+                NewtonManager._state_0.joint_qd,
+            )
 
         # if NewtonManager._cfg.debug_mode:
         #     convergence_data = NewtonManager.get_solver_convergence_steps()

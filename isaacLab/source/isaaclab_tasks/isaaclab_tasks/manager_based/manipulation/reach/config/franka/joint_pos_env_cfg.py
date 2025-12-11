@@ -27,33 +27,52 @@ from isaaclab_tasks.manager_based.manipulation.reach.config.franka.haptic_cfg im
 
 @configclass
 class FrankaReachEnvCfg(ReachEnvCfg):
+    # sim: SimulationCfg = SimulationCfg(
+    #     newton_cfg=NewtonCfg(
+    #         solver_cfg=XPBOSolverCfg(
+    #             iterations=16,
+    #             joint_linear_compliance=0.0,  # Zero compliance for rigid joints (matching Newton example)
+    #             joint_angular_compliance=0.0,  # Zero compliance for rigid joints (matching Newton example)
+    #             joint_linear_relaxation=0.7,
+    #             joint_angular_relaxation=0.4,
+    #             angular_damping=0.1,
+    #         ),
+    #         num_substeps=32,  # Increase substeps for better stability
+    #         debug_mode=True,
+    #         # use_cuda_graph=False,  # Disable CUDA graph to allow debug output
+    #     )
+    # )
     sim: SimulationCfg = SimulationCfg(
         newton_cfg=NewtonCfg(
-            # solver_cfg=MJWarpSolverCfg(
-            #     njmax=20,
-            #     nconmax=20,
-            #     ls_iterations=10,
-            #     cone="pyramidal",
-            #     impratio=1,
-            #     ls_parallel=True,
-            #     integrator="implicit",
-            #     save_to_mjcf="FrankaReachEnv.xml",
-            # ),
-            # solver_cfg=FeatherstoneSolverCfg(
-            #     update_mass_matrix_interval=1,  # Update mass matrix every 4 substeps
-            #     angular_damping=0.05,  # Add damping to prevent instability
-            # ),
-            solver_cfg=XPBOSolverCfg(
-                iterations=32,
-                joint_linear_compliance=1e5,
-                joint_angular_compliance=1e5,
-                # soft_body_relaxation=0.0001,
-                # soft_contact_relaxation=0.0001,
+            solver_cfg=FeatherstoneSolverCfg(
+                update_mass_matrix_interval=10,  # Update mass matrix every 10 substeps
+                # angular_damping=0.1,  # Add damping to prevent instability (matching Star)
+                # friction_smoothing=4.0,  # Increase friction smoothing (matching Star)
             ),
-            num_substeps=32,  # Increase substeps for better stability
+            num_substeps=10,  # Increase substeps for better stability
             debug_mode=True,
+            # use_cuda_graph=False,  # Disable CUDA graph to allow debug output
         )
     )
+
+    # # Working MuJoCo settings
+    # sim: SimulationCfg = SimulationCfg(
+    #     newton_cfg=NewtonCfg(
+    #         solver_cfg=MJWarpSolverCfg(
+    #             njmax=20,
+    #             nconmax=20,
+    #             ls_iterations=10,
+    #             cone="pyramidal",
+    #             impratio=1,
+    #             ls_parallel=True,
+    #             integrator="implicit",
+    #             save_to_mjcf="FrankaReachEnv.xml",
+    #         ),
+    #         num_substeps=10,  # Increase substeps for better stability
+    #         debug_mode=True,
+    #         # use_cuda_graph=False,
+    #     )
+    # )
 
     # Haptic device control configuration
     haptic: HapticControlCfg = HapticControlCfg()
