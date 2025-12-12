@@ -1736,6 +1736,7 @@ dev = [
     { name = "mujoco-warp" },
     { name = "pycollada" },
     { name = "pyglet" },
+    { name = "pyopenhaptics" },
     { name = "pyyaml" },
     { name = "scipy", version = "1.15.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "scipy", version = "1.16.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
@@ -1774,6 +1775,7 @@ examples = [
     { name = "mujoco-warp" },
     { name = "pycollada" },
     { name = "pyglet" },
+    { name = "pyopenhaptics" },
     { name = "pyyaml" },
     { name = "scipy", version = "1.15.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "scipy", version = "1.16.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
@@ -1804,6 +1806,7 @@ notebook = [
     { name = "mujoco-warp" },
     { name = "pycollada" },
     { name = "pyglet" },
+    { name = "pyopenhaptics" },
     { name = "pyyaml" },
     { name = "rerun-sdk", extra = ["notebook"] },
     { name = "scipy", version = "1.15.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
@@ -1829,6 +1832,7 @@ torch-cu12 = [
     { name = "mujoco-warp" },
     { name = "pycollada" },
     { name = "pyglet" },
+    { name = "pyopenhaptics" },
     { name = "pyyaml" },
     { name = "scipy", version = "1.15.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "scipy", version = "1.16.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
@@ -1900,6 +1904,10 @@ requires-dist = [
     { name = "pyglet", marker = "extra == 'examples'", specifier = ">=2.1.6" },
     { name = "pyglet", marker = "extra == 'notebook'", specifier = ">=2.1.6" },
     { name = "pyglet", marker = "extra == 'torch-cu12'", specifier = ">=2.1.6" },
+    { name = "pyopenhaptics", marker = "extra == 'dev'", specifier = ">=1.0.1" },
+    { name = "pyopenhaptics", marker = "extra == 'examples'", specifier = ">=1.0.1" },
+    { name = "pyopenhaptics", marker = "extra == 'notebook'", specifier = ">=1.0.1" },
+    { name = "pyopenhaptics", marker = "extra == 'torch-cu12'", specifier = ">=1.0.1" },
     { name = "pyyaml", marker = "extra == 'dev'", specifier = ">=6.0.2" },
     { name = "pyyaml", marker = "extra == 'examples'", specifier = ">=6.0.2" },
     { name = "pyyaml", marker = "extra == 'notebook'", specifier = ">=6.0.2" },
@@ -2646,6 +2654,15 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/6f/16/912b7225d56284859cd9a672827f18be43f8012f8b7b932bc4bd959a298e/pyopengl-3.1.10.tar.gz", hash = "sha256:c4a02d6866b54eb119c8e9b3fb04fa835a95ab802dd96607ab4cdb0012df8335", size = 1915580, upload-time = "2025-08-18T02:33:01.76Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/de/e4/1ba6f44e491c4eece978685230dde56b14d51a0365bc1b774ddaa94d14cd/pyopengl-3.1.10-py3-none-any.whl", hash = "sha256:794a943daced39300879e4e47bd94525280685f42dbb5a998d336cfff151d74f", size = 3194996, upload-time = "2025-08-18T02:32:59.902Z" },
+]
+
+[[package]]
+name = "pyopenhaptics"
+version = "1.0.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/9f/f6/4ca6cf37a55abd0b09c6d8a15fa3b60810ea8f5f6d25fe0ac7d8438f062b/pyopenhaptics-1.0.1.tar.gz", hash = "sha256:18e310dc94dfb561ba2dc32e77102776d250b7521cb12784fa8445a968c79f41", size = 8340, upload-time = "2024-11-28T08:35:03.958Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/74/84/d8f74684e83ca4f7c375b9b6a1464ea8d2b7439a63e91b023f627695d68a/pyopenhaptics-1.0.1-py3-none-any.whl", hash = "sha256:13975e926723dd54b5def5038e29f0b23ca9b4b6d5f7b22962d70c55178c14ef", size = 7182, upload-time = "2024-11-28T08:35:00.763Z" },
 ]
 
 [[package]]

@@ -168,10 +168,7 @@ def main():
             print(f"[INFO]: No gripper joints found. Button will not control gripper.")
     else:
         print(f"[INFO]: Gripper action term found")
-    
-    # Setup IK solver (single environment for now)
-    total_residuals = 3 + 3 + num_action_joints  # position + rotation + joint limits
-    
+
     # Get initial end-effector pose
     robot.update(dt=0.0)  # Ensure robot data is current
     ee_pos_w = robot.data.body_pos_w[0, robot.find_bodies(ee_body_name)[0][0]]
@@ -182,40 +179,31 @@ def main():
         link_index=ee_body_idx,
         link_offset=wp.vec3(0.0, 0.0, 0.0),
         target_positions=wp.array([wp.vec3(ee_pos_w[0].item(), ee_pos_w[1].item(), ee_pos_w[2].item())], dtype=wp.vec3),
-        n_problems=1,
-        total_residuals=total_residuals,
-        residual_offset=0,
-        weight=1.0,
+        weight=3.0,  # Higher priority for position tracking
     )
-    
+
     rot_obj = ik.IKRotationObjective(
         link_index=ee_body_idx,
         link_offset_rotation=wp.quat_identity(),
-        target_rotations=wp.array([wp.vec4(ee_quat_w[1].item(), ee_quat_w[2].item(), 
+        target_rotations=wp.array([wp.vec4(ee_quat_w[1].item(), ee_quat_w[2].item(),
                                            ee_quat_w[3].item(), ee_quat_w[0].item())], dtype=wp.vec4),
-        n_problems=1,
-        total_residuals=total_residuals,
-        residual_offset=3,
-        weight=1.0,
+        weight=2.0,  # Moderate priority for orientation tracking
     )
-    
+
     joint_limits_obj = ik.IKJointLimitObjective(
         joint_limit_lower=model.joint_limit_lower,
         joint_limit_upper=model.joint_limit_upper,
-        n_problems=1,
-        total_residuals=total_residuals,
-        residual_offset=6,
-        weight=10.0,
+        weight=2.0,  # Reduced to allow movement while preventing joint limit violations
     )
     
     # Get current joint positions for IK initialization
     current_joint_q = robot.data.joint_pos[0].cpu().numpy()
     joint_q_2d = wp.array(current_joint_q.reshape(1, -1), dtype=wp.float32)
-    
+
     # Create IK solver
     ik_solver = ik.IKSolver(
         model=model,
-        joint_q=joint_q_2d,
+        n_problems=1,
         objectives=[pos_obj, rot_obj, joint_limits_obj],
         lambda_initial=0.1,
         jacobian_mode=ik.IKJacobianMode.ANALYTIC,
@@ -449,8 +437,8 @@ def main():
                                                    target_ee_quat[3].item(), 
                                                    target_ee_quat[0].item()))
             
-            # Solve IK to get joint positions (increased iterations for better precision)
-            ik_solver.solve(iterations=50)
+            # Solve IK to get joint positions (balanced iterations for precision and performance)
+            ik_solver.step(joint_q_2d, joint_q_2d, iterations=50)
             
             # Get solved joint positions from IK (joint_q_2d is updated in-place by IK solver)
             # joint_q_2d contains all joints in Newton model order, which matches robot.data.joint_pos order

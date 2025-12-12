@@ -59,6 +59,7 @@ examples = [
     "GitPython>=3.1.44",    # for downloading assets via newton.utils.download_asset()
     "imgui_bundle>=1.92.0", # for viewer GUI
     "pyyaml>=6.0.2",
+    "pyopenhaptics>=1.0.1",
 ]
 
 # Extra dependency needed to run examples that inference an RL policy
