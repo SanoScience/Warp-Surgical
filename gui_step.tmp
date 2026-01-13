@@ -1,0 +1,121 @@
+    def substep(self, dt):
+        """Run one simulation substep."""
+        # Step 1: Predict positions
+        gravity = wp.vec3(0.0, self.params['gravity'], 0.0)
+        wp.launch(
+            pbf_predict_positions,
+            dim=self.num_particles,
+            inputs=[
+                self.positions, self.velocities, self.predicted_positions,
+                gravity, dt, self.params['max_velocity']
+            ],
+            device=self.device
+        )
+        
+        # Step 2: Build spatial hash
+        self.hash_grid.build(self.predicted_positions, self.params['smoothing_radius'])
+        
+        # Step 3: Constraint projection iterations
+        for iteration in range(self.params['constraint_iterations']):
+            # Compute density
+            wp.launch(
+                pbf_compute_density,
+                dim=self.num_particles,
+                inputs=[
+                    self.predicted_positions, self.densities, self.hash_grid.id, self.params['smoothing_radius']
+                ],
+                device=self.device
+            )
+            
+            # Compute lambda
+            wp.launch(
+                pbf_compute_lambda,
+                dim=self.num_particles,
+                inputs=[
+                    self.predicted_positions, self.densities, self.lambdas, self.hash_grid.id,
+                    self.params['smoothing_radius'], self.params['rest_density'], self.params['constraint_epsilon']
+                ],
+                device=self.device
+            )
+            
+            # Compute position corrections
+            wp.launch(
+                pbf_compute_delta_positions,
+                dim=self.num_particles,
+                inputs=[
+                    self.predicted_positions, self.lambdas, self.delta_positions, self.hash_grid.id,
+                    self.params['smoothing_radius'], self.params['rest_density']
+                ],
+                device=self.device
+            )
+            
+            # Apply corrections
+            wp.launch(
+                pbf_apply_delta_positions,
+                dim=self.num_particles,
+                inputs=[self.predicted_positions, self.delta_positions],
+                device=self.device
+            )
+        
+        # Step 4: Apply boundary conditions
+        domain_min = wp.vec3(*self.params['domain_min'])
+        domain_max = wp.vec3(*self.params['domain_max'])
+        wp.launch(
+            pbf_apply_boundaries,
+            dim=self.num_particles,
+            inputs=[self.predicted_positions, self.velocities, domain_min, domain_max, 0.3],
+            device=self.device
+        )
+        
+        # Step 5: Update velocities and positions
+        wp.launch(
+            pbf_update_velocities_positions,
+            dim=self.num_particles,
+            inputs=[
+                self.positions, self.velocities, self.predicted_positions,
+                self.params['damping'], dt, self.params['max_velocity']
+            ],
+            device=self.device
+        )
+
+class GUIRenderer:
+    """Renderer with simple GUI controls."""
+    def __init__(self, simulation):
+        self.sim = simulation
+        self.camera_distance = 3.0
+        self.camera_theta = 45.0
+        self.camera_phi = 20.0
+        self.mouse_last_x = 0
+        self.mouse_last_y = 0
+        self.mouse_dragging = False
+        
+        self.window_width = 1200
+        self.window_height = 800
+        self.gui_width = 300
+        
+        # GUI elements
+        self.gui_elements = []
+        self.setup_gui()
+        
+        # FPS tracking
+        self.frame_count = 0
+        self.last_fps_time = time.time()
+        self.fps = 0
+        
+    def setup_gui(self):
+        """Setup GUI elements."""
+        y_pos = 50
+        spacing = 35
+        
+        # Timestep slider
+        self.dt_slider = SimpleSlider(20, y_pos, 250, 20, 1.0/240.0, 1.0/60.0, self.sim.params['dt'], "Timestep")
+        self.gui_elements.append(self.dt_slider)
+        y_pos += spacing
+        
+        # Iterations slider
+        self.iter_slider = SimpleSlider(20, y_pos, 250, 20, 1, 12, self.sim.params['constraint_iterations'], "Iterations")
+        self.gui_elements.append(self.iter_slider)
+        y_pos += spacing
+        
+        # Substeps slider
+        self.substeps_slider = SimpleSlider(20, y_pos, 250, 20, 1, 10, self.sim.params['substeps'], "Substeps")

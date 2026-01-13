@@ -99,14 +99,14 @@ dependencies = [
 requires-dist = [
     { name = "gitpython", specifier = ">=3.1.45" },
     { name = "matplotlib", specifier = ">=3.9.4" },
-    { name = "newton", editable = "../newton" },
+    { name = "newton" },
     { name = "pycollada", specifier = ">=0.9.2" },
     { name = "pyglet", specifier = "==2.1.3" },
     { name = "pyopenhaptics", specifier = ">=1.0.1" },
     { name = "trimesh", specifier = ">=4.7.1" },
     { name = "typing-extensions", specifier = ">=4.14.1" },
     { name = "usd-core", specifier = ">=25.5.1" },
-    { name = "warp-lang", editable = "../warp" },
+    { name = "warp-lang", specifier = "==1.10.0" },
 ]
 
 [[package]]
@@ -315,85 +315,14 @@ wheels = [
 
 [[package]]
 name = "newton"
-source = { editable = "../newton" }
+version = "0.1.3"
+source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "warp-lang" },
 ]
-
-[package.metadata]
-requires-dist = [
-    { name = "alphashape", marker = "extra == 'dev'", specifier = ">=1.3.1" },
-    { name = "alphashape", marker = "extra == 'examples'", specifier = ">=1.3.1" },
-    { name = "alphashape", marker = "extra == 'importers'", specifier = ">=1.3.1" },
-    { name = "alphashape", marker = "extra == 'torch-cu12'", specifier = ">=1.3.1" },
-    { name = "cbor2", marker = "extra == 'dev'", specifier = ">=5.7.0" },
-    { name = "cbor2", marker = "extra == 'examples'", specifier = ">=5.7.0" },
-    { name = "cbor2", marker = "extra == 'sim'", specifier = ">=5.7.0" },
-    { name = "cbor2", marker = "extra == 'torch-cu12'", specifier = ">=5.7.0" },
-    { name = "coacd", marker = "extra == 'dev'", specifier = ">=1.0.7" },
-    { name = "coacd", marker = "extra == 'examples'", specifier = ">=1.0.7" },
-    { name = "coacd", marker = "extra == 'importers'", specifier = ">=1.0.7" },
-    { name = "coacd", marker = "extra == 'torch-cu12'", specifier = ">=1.0.7" },
-    { name = "coverage", extras = ["toml"], marker = "extra == 'dev'", specifier = ">=7.8.0" },
-    { name = "fast-simplification", marker = "extra == 'dev'", specifier = ">=0.1.11" },
-    { name = "fast-simplification", marker = "extra == 'examples'", specifier = ">=0.1.11" },
-    { name = "fast-simplification", marker = "extra == 'importers'", specifier = ">=0.1.11" },
-    { name = "fast-simplification", marker = "extra == 'torch-cu12'", specifier = ">=0.1.11" },
-    { name = "gitpython", marker = "extra == 'dev'", specifier = ">=3.1.44" },
-    { name = "gitpython", marker = "extra == 'examples'", specifier = ">=3.1.44" },
-    { name = "gitpython", marker = "extra == 'torch-cu12'", specifier = ">=3.1.44" },
-    { name = "imgui-bundle", marker = "extra == 'dev'", specifier = ">=1.92.0" },
-    { name = "imgui-bundle", marker = "extra == 'examples'", specifier = ">=1.92.0" },
-    { name = "imgui-bundle", marker = "extra == 'torch-cu12'", specifier = ">=1.92.0" },
-    { name = "mujoco", marker = "extra == 'dev'", specifier = ">=3.3.6.dev802089588", index = "https://py.mujoco.org/" },
-    { name = "mujoco", marker = "extra == 'examples'", specifier = ">=3.3.6.dev802089588", index = "https://py.mujoco.org/" },
-    { name = "mujoco", marker = "extra == 'sim'", specifier = ">=3.3.6.dev802089588", index = "https://py.mujoco.org/" },
-    { name = "mujoco", marker = "extra == 'torch-cu12'", specifier = ">=3.3.6.dev802089588", index = "https://py.mujoco.org/" },
-    { name = "mujoco-warp", marker = "extra == 'dev'", git = "https://github.com/google-deepmind/mujoco_warp" },
-    { name = "mujoco-warp", marker = "extra == 'examples'", git = "https://github.com/google-deepmind/mujoco_warp" },
-    { name = "mujoco-warp", marker = "extra == 'sim'", git = "https://github.com/google-deepmind/mujoco_warp" },
-    { name = "mujoco-warp", marker = "extra == 'torch-cu12'", git = "https://github.com/google-deepmind/mujoco_warp" },
-    { name = "myst-parser", marker = "extra == 'docs'", specifier = ">=3.0.1" },
-    { name = "pycollada", marker = "extra == 'dev'", specifier = ">=0.9" },
-    { name = "pycollada", marker = "extra == 'examples'", specifier = ">=0.9" },
-    { name = "pycollada", marker = "extra == 'importers'", specifier = ">=0.9" },
-    { name = "pycollada", marker = "extra == 'torch-cu12'", specifier = ">=0.9" },
-    { name = "pydata-sphinx-theme", marker = "extra == 'docs'", specifier = ">=0.16.1" },
-    { name = "pyglet", marker = "extra == 'dev'", specifier = ">=2.1.6" },
-    { name = "pyglet", marker = "extra == 'examples'", specifier = ">=2.1.6" },
-    { name = "pyglet", marker = "extra == 'torch-cu12'", specifier = ">=2.1.6" },
-    { name = "pyyaml", marker = "extra == 'dev'", specifier = ">=6.0.2" },
-    { name = "pyyaml", marker = "extra == 'examples'", specifier = ">=6.0.2" },
-    { name = "pyyaml", marker = "extra == 'torch-cu12'", specifier = ">=6.0.2" },
-    { name = "scipy", marker = "extra == 'dev'" },
-    { name = "scipy", marker = "extra == 'examples'" },
-    { name = "scipy", marker = "extra == 'importers'" },
-    { name = "scipy", marker = "extra == 'torch-cu12'" },
-    { name = "sphinx", marker = "extra == 'docs'", specifier = ">=7.4.7" },
-    { name = "sphinx-copybutton", marker = "extra == 'docs'", specifier = ">=0.5.0" },
-    { name = "sphinx-design", marker = "extra == 'docs'", specifier = "<=0.6.1" },
-    { name = "sphinx-tabs", marker = "extra == 'docs'", specifier = ">=3.3.0" },
-    { name = "sphinxcontrib-mermaid", marker = "extra == 'docs'", specifier = ">=1.0.0" },
-    { name = "torch", marker = "extra == 'torch-cu12'", specifier = ">=2.7.0", index = "https://download.pytorch.org/whl/cu129", conflict = { package = "newton", extra = "torch-cu12" } },
-    { name = "tqdm", marker = "extra == 'dev'", specifier = ">=4.67.1" },
-    { name = "trimesh", marker = "extra == 'dev'", specifier = ">=4.6.8" },
-    { name = "trimesh", marker = "extra == 'examples'", specifier = ">=4.6.8" },
-    { name = "trimesh", marker = "extra == 'importers'", specifier = ">=4.6.8" },
-    { name = "trimesh", marker = "extra == 'torch-cu12'", specifier = ">=4.6.8" },
-    { name = "usd-core", marker = "platform_machine != 'aarch64' and extra == 'dev'", specifier = ">=25.5" },
-    { name = "usd-core", marker = "platform_machine != 'aarch64' and extra == 'examples'", specifier = ">=25.5" },
-    { name = "usd-core", marker = "platform_machine != 'aarch64' and extra == 'importers'", specifier = ">=25.5" },
-    { name = "usd-core", marker = "platform_machine != 'aarch64' and extra == 'torch-cu12'", specifier = ">=25.5" },
-    { name = "usd-exchange", marker = "platform_machine == 'aarch64' and extra == 'dev'", specifier = ">=2.1.0a3" },
-    { name = "usd-exchange", marker = "platform_machine == 'aarch64' and extra == 'examples'", specifier = ">=2.1.0a3" },
-    { name = "usd-exchange", marker = "platform_machine == 'aarch64' and extra == 'importers'", specifier = ">=2.1.0a3" },
-    { name = "usd-exchange", marker = "platform_machine == 'aarch64' and extra == 'torch-cu12'", specifier = ">=2.1.0a3" },
-    { name = "warp-lang", specifier = ">=1.7.0.dev20250823", index = "https://pypi.nvidia.com/" },
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/a2/ba/cb5d160d2f2094532492d7b1509ccedbf23f198830dc8eb7f4d52740e367/newton-0.1.3-py3-none-any.whl", hash = "sha256:dbbf27f93211c64c9b0a4a93f40be7669489f20c43bf38a40e9c568b782d8a0e", size = 1507922, upload-time = "2025-09-26T16:10:23.323Z" },
 ]
-provides-extras = ["dev", "docs", "examples", "importers", "sim", "torch-cu12"]
-
-[package.metadata.requires-dev]
-dev = [{ name = "asv", specifier = ">=0.6.4" }]
 
 [[package]]
 name = "numpy"
@@ -652,32 +581,14 @@ wheels = [
 
 [[package]]
 name = "warp-lang"
-source = { editable = "../warp" }
+version = "1.10.0"
+source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "numpy" },
 ]
-
-[package.metadata]
-requires-dist = [
-    { name = "blosc", marker = "extra == 'examples'", specifier = ">=1.11.1" },
-    { name = "coverage", extras = ["toml"], marker = "extra == 'dev'" },
-    { name = "matplotlib", marker = "extra == 'examples'", specifier = ">=3.7.5" },
-    { name = "myst-parser", marker = "extra == 'docs'" },
-    { name = "numpy" },
-    { name = "nvidia-sphinx-theme", marker = "python_full_version >= '3.9' and extra == 'docs'" },
-    { name = "nvtx", marker = "extra == 'dev'" },
-    { name = "pillow", marker = "extra == 'examples'", specifier = ">=10.4.0" },
-    { name = "pre-commit", marker = "extra == 'docs'" },
-    { name = "psutil", marker = "extra == 'examples'", specifier = ">=7.1.0" },
-    { name = "pyglet", marker = "extra == 'examples'", specifier = ">=2.1.9" },
-    { name = "sphinx-copybutton", marker = "extra == 'docs'" },
-    { name = "torch", marker = "python_full_version >= '3.9' and extra == 'torch-cu12'", specifier = ">=2.7.0", index = "https://download.pytorch.org/whl/cu129", conflict = { package = "warp-lang", extra = "torch-cu12" } },
-    { name = "usd-core", marker = "python_full_version < '3.14' and platform_machine != 'aarch64' and extra == 'benchmark'", specifier = ">=25.5" },
-    { name = "usd-core", marker = "python_full_version < '3.14' and platform_machine != 'aarch64' and extra == 'examples'", specifier = ">=25.5" },
-    { name = "usd-exchange", marker = "python_full_version >= '3.10' and platform_machine == 'aarch64' and extra == 'benchmark'", specifier = ">=2.1.0a3" },
-    { name = "usd-exchange", marker = "python_full_version >= '3.10' and platform_machine == 'aarch64' and extra == 'examples'", specifier = ">=2.1.0a3" },
-    { name = "warp-lang", extras = ["docs"], marker = "extra == 'dev'" },
-    { name = "warp-lang", extras = ["examples"], marker = "extra == 'dev'" },
-    { name = "warp-lang", extras = ["examples"], marker = "extra == 'torch-cu12'" },
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/4b/f8/ffa0adb2947b94e0cfb1d988416d197e22260f68b39da37f0997f8bffe5c/warp_lang-1.10.0-py3-none-macosx_11_0_arm64.whl", hash = "sha256:428a6388ba8c9b3ded973226ddb5be59b16e3b3f28ac939a5036ad2d7cdc79ed", size = 23896706, upload-time = "2025-11-02T14:10:33.895Z" },
+    { url = "https://files.pythonhosted.org/packages/5f/75/d99bca2f89baa0fdcaa42d2dd8ceb2cb9806467f18a27515df1f73eef2e8/warp_lang-1.10.0-py3-none-manylinux_2_28_x86_64.whl", hash = "sha256:1bdff31e170b00c89fb9d8b647e906fefdcdcf8741925126d1c0be42783174fa", size = 132579481, upload-time = "2025-11-02T14:10:47.08Z" },
+    { url = "https://files.pythonhosted.org/packages/3b/5f/33269afe32a3ac512ba17ca424f8eda5b8c70ba135233d73f2f211c3ac1c/warp_lang-1.10.0-py3-none-manylinux_2_34_aarch64.whl", hash = "sha256:4aa8eb63cae5ee0d6dbdbdfc305d124140ec975475c97d4458f412396fb39eab", size = 135321237, upload-time = "2025-11-02T14:10:59.391Z" },
+    { url = "https://files.pythonhosted.org/packages/99/4e/669f0380714a07a66dda4d33213cdfc870554635187e8bea3cc020e124e3/warp_lang-1.10.0-py3-none-win_amd64.whl", hash = "sha256:81f73055e76a6a3f2284cf2b5fe542a341156861101df9f291bd5b59925ff6e5", size = 114903134, upload-time = "2025-11-02T14:11:11.031Z" },
 ]
-provides-extras = ["docs", "benchmark", "examples", "torch-cu12", "dev"]

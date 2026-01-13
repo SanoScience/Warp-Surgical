@@ -1170,7 +1170,7 @@ def CreateSurgSimRenderer(renderer):
             self.skip_rendering = False
 
             self.model = model
-            self.num_envs = model.num_worlds
+            self.num_envs = 1
             self.body_names = []
 
             self.body_env = []  # mapping from body index to its environment index

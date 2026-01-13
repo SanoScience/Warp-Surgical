@@ -1,0 +1,844 @@
+1:#!/usr/bin/env python3
+2:
+3:"""
+4:PBF Simulation with Simple GUI Controls
+5:
+6:This version uses basic OpenGL-based GUI elements that work reliably with GLUT,
+7:providing interactive parameter control without complex ImGui dependencies.
+8:
+9:Controls:
+10:- Mouse: Rotate camera (right side of window)
+11:- Left side: Interactive parameter panel
+12:- Click sliders to adjust parameters
+13:- Buttons for presets and controls
+14:"""
+15:
+16:import math
+17:import numpy as np
+18:import warp as wp
+19:
+20:try:
+21:    from OpenGL.GL import *
+22:    from OpenGL.GLUT import *
+23:    from OpenGL.GLU import *
+24:    OPENGL_AVAILABLE = True
+25:except ImportError:
+26:    print("PyOpenGL not available. Install with: pip install PyOpenGL PyOpenGL_accelerate")
+27:    OPENGL_AVAILABLE = False
+28:
+29:import time
+30:
+31:# Stable simulation parameters
+32:SIM_PARAMS = {
+33:    'particle_radius': 0.02,
+34:    'smoothing_radius': 0.04,
+35:    'rest_density': 1000.0,
+36:    'constraint_iterations': 6,
+37:    'damping': 0.95,
+38:    'gravity': -5.0,
+39:    'dt': 0.001,
+40:    'substeps': 3,  # Number of substeps per frame (PBD-style)
+41:    'max_velocity': 8.0,
+42:    'constraint_epsilon': 200.0,
+43:    'grid_dim': 64,
+44:    'domain_min': np.array([-2.0, -1.0, -2.0]),
+45:    'domain_max': np.array([2.0, 3.0, 2.0])
+46:}
+47:
+48:# Import PBF kernels from the stable version
+49:from example_pbf_stable import (
+50:    pbf_predict_positions_stable as pbf_predict_positions,
+51:    pbf_compute_density_stable as pbf_compute_density,
+52:    pbf_compute_lambda_stable as pbf_compute_lambda,
+53:    pbf_compute_delta_positions_stable as pbf_compute_delta_positions,
+54:    pbf_apply_delta_positions,
+55:    pbf_apply_boundaries_stable as pbf_apply_boundaries,
+56:    pbf_update_velocities_positions_stable as pbf_update_velocities_positions
+57:)
+58:
+59:# from example_pbf_opengl import (
+60:#     pbf_predict_positions as pbf_predict_positions,
+61:#     pbf_compute_density as pbf_compute_density,
+62:#     pbf_compute_lambda as pbf_compute_lambda,
+63:#     pbf_compute_delta_positions as pbf_compute_delta_positions,
+64:#     pbf_apply_delta_positions,
+65:#     pbf_apply_boundaries as pbf_apply_boundaries,
+66:#     pbf_update_velocities_positions as pbf_update_velocities_positions
+67:# )
+68:
+69:class SimpleGUIElement:
+70:    """Base class for simple GUI elements."""
+71:    def __init__(self, x, y, width, height):
+72:        self.x = x
+73:        self.y = y
+74:        self.width = width
+75:        self.height = height
+76:        self.hovered = False
+77:        self.clicked = False
+78:    
+79:    def contains_point(self, px, py):
+80:        return (self.x <= px <= self.x + self.width and 
+81:                self.y <= py <= self.y + self.height)
+82:    
+83:    def render(self):
+84:        pass
+85:    
+86:    def handle_click(self, x, y):
+87:        return False
+88:
+89:class SimpleSlider(SimpleGUIElement):
+90:    """Simple slider control."""
+91:    def __init__(self, x, y, width, height, min_val, max_val, current_val, label):
+92:        super().__init__(x, y, width, height)
+93:        self.min_val = min_val
+94:        self.max_val = max_val
+95:        self.current_val = current_val
+96:        self.label = label
+97:        self.dragging = False
+98:        
+99:    def get_normalized_value(self):
+100:        return (self.current_val - self.min_val) / (self.max_val - self.min_val)
+101:    
+102:    def set_normalized_value(self, norm_val):
+103:        norm_val = max(0, min(1, norm_val))
+104:        self.current_val = self.min_val + norm_val * (self.max_val - self.min_val)
+105:        
+106:    def render(self):
+107:        # Draw background
+108:        glColor3f(0.2, 0.2, 0.25)
+109:        glBegin(GL_QUADS)
+110:        glVertex2f(self.x, self.y)
+111:        glVertex2f(self.x + self.width, self.y)
+112:        glVertex2f(self.x + self.width, self.y + self.height)
+113:        glVertex2f(self.x, self.y + self.height)
+114:        glEnd()
+115:        
+116:        # Draw filled portion
+117:        fill_width = self.width * self.get_normalized_value()
+118:        if self.hovered or self.dragging:
+119:            glColor3f(0.4, 0.6, 0.8)
+120:        else:
+121:            glColor3f(0.3, 0.5, 0.7)
+122:        glBegin(GL_QUADS)
+123:        glVertex2f(self.x, self.y)
+124:        glVertex2f(self.x + fill_width, self.y)
+125:        glVertex2f(self.x + fill_width, self.y + self.height)
+126:        glVertex2f(self.x, self.y + self.height)
+127:        glEnd()
+128:        
+129:        # Draw border
+130:        glColor3f(0.5, 0.5, 0.5)
+131:        glBegin(GL_LINE_LOOP)
+132:        glVertex2f(self.x, self.y)
+133:        glVertex2f(self.x + self.width, self.y)
+134:        glVertex2f(self.x + self.width, self.y + self.height)
+135:        glVertex2f(self.x, self.y + self.height)
+136:        glEnd()
+137:        
+138:    def handle_click(self, x, y):
+139:        if self.contains_point(x, y):
+140:            # Calculate normalized position within slider
+141:            norm_x = (x - self.x) / self.width
+142:            self.set_normalized_value(norm_x)
+143:            return True
+144:        return False
+145:    
+146:    def handle_drag(self, x, y):
+147:        if self.dragging and self.contains_point(x, y):
+148:            norm_x = (x - self.x) / self.width
+149:            self.set_normalized_value(norm_x)
+150:
+151:class SimpleButton(SimpleGUIElement):
+152:    """Simple button control."""
+153:    def __init__(self, x, y, width, height, label, callback=None):
+154:        super().__init__(x, y, width, height)
+155:        self.label = label
+156:        self.callback = callback
+157:        self.pressed = False
+158:        
+159:    def render(self):
+160:        # Choose colors based on state
+161:        if self.pressed:
+162:            glColor3f(0.2, 0.4, 0.6)
+163:        elif self.hovered:
+164:            glColor3f(0.3, 0.5, 0.7)
+165:        else:
+166:            glColor3f(0.25, 0.45, 0.65)
+167:            
+168:        # Draw button background
+169:        glBegin(GL_QUADS)
+170:        glVertex2f(self.x, self.y)
+171:        glVertex2f(self.x + self.width, self.y)
+172:        glVertex2f(self.x + self.width, self.y + self.height)
+173:        glVertex2f(self.x, self.y + self.height)
+174:        glEnd()
+175:        
+176:        # Draw border
+177:        glColor3f(0.6, 0.6, 0.6)
+178:        glBegin(GL_LINE_LOOP)
+179:        glVertex2f(self.x, self.y)
+180:        glVertex2f(self.x + self.width, self.y)
+181:        glVertex2f(self.x + self.width, self.y + self.height)
+182:        glVertex2f(self.x, self.y + self.height)
+183:        glEnd()
+184:        
+185:    def handle_click(self, x, y):
+186:        if self.contains_point(x, y):
+187:            self.pressed = True
+188:            if self.callback:
+189:                self.callback()
+190:            return True
+191:        return False
+192:
+193:class PBFSimulation:
+194:    def __init__(self, num_particles=1024):
+195:        self.num_particles = num_particles
+196:        self.params = SIM_PARAMS.copy()
+197:        self.paused = False
+198:        
+199:        # Initialize Warp
+200:        wp.init()
+201:        self.device = wp.get_device()
+202:        
+203:        # Create particle arrays
+204:        self.positions = wp.zeros(num_particles, dtype=wp.vec3, device=self.device)
+205:        self.velocities = wp.zeros(num_particles, dtype=wp.vec3, device=self.device)
+206:        self.predicted_positions = wp.zeros(num_particles, dtype=wp.vec3, device=self.device)
+207:        self.densities = wp.zeros(num_particles, dtype=wp.float32, device=self.device)
+208:        self.lambdas = wp.zeros(num_particles, dtype=wp.float32, device=self.device)
+209:        self.delta_positions = wp.zeros(num_particles, dtype=wp.vec3, device=self.device)
+210:        
+211:        # Create spatial hash grid
+212:        self.hash_grid = wp.HashGrid(
+213:            dim_x=self.params['grid_dim'],
+214:            dim_y=self.params['grid_dim'],
+215:            dim_z=self.params['grid_dim'],
+216:            device=self.device
+217:        )
+218:        
+219:        # Initialize particle positions
+220:        self.reset_particles()
+221:        
+222:        print(f"PBF Simulation with GUI initialized - {num_particles} particles")
+223:        
+224:    def reset_particles(self):
+225:        """Initialize particles in a stable configuration."""
+226:        positions = []
+227:        
+228:        # Create a stable dam
+229:        spacing = self.params['particle_radius'] * 2.05
+230:        layers_x = int(0.6 / spacing)
+231:        layers_y = int(0.8 / spacing) 
+232:        layers_z = int(0.6 / spacing)
+233:        
+234:        count = 0
+235:        for i in range(layers_x):
+236:            for j in range(layers_y):
+237:                for k in range(layers_z):
+238:                    if count >= self.num_particles:
+239:                        break
+240:                        
+241:                    x = -0.5 + i * spacing
+242:                    y = -0.6 + j * spacing
+243:                    z = -0.3 + k * spacing
+244:                    
+245:                    # Small random perturbation
+246:                    x += (np.random.random() - 0.5) * spacing * 0.05
+247:                    y += (np.random.random() - 0.5) * spacing * 0.05
+248:                    z += (np.random.random() - 0.5) * spacing * 0.05
+249:                    
+250:                    positions.append([x, y, z])
+251:                    count += 1
+252:                    
+253:                if count >= self.num_particles:
+254:                    break
+255:            if count >= self.num_particles:
+256:                break
+257:        
+258:        # Fill remaining particles
+259:        while count < self.num_particles:
+260:            layer = (count - (layers_x * layers_y * layers_z)) // (layers_x * layers_z)
+261:            remainder = (count - (layers_x * layers_y * layers_z)) % (layers_x * layers_z)
+262:            i = remainder % layers_x
+263:            k = remainder // layers_x
+264:            
+265:            x = -0.5 + i * spacing
+266:            y = -0.6 + (layers_y + layer) * spacing
+267:            z = -0.3 + k * spacing
+268:            
+269:            positions.append([x, y, z])
+270:            count += 1
+271:        
+272:        # Copy to GPU
+273:        positions_array = np.array(positions, dtype=np.float32)
+274:        wp.copy(self.positions, wp.array(positions_array, dtype=wp.vec3, device=self.device))
+275:        wp.copy(self.velocities, wp.zeros(self.num_particles, dtype=wp.vec3, device=self.device))
+276:        
+277:    def step(self):
+278:        """Run one simulation step with substepping (PBD-style)."""
+279:        if self.paused:
+280:            return
+281:            
+282:        # PBD-style substepping: divide timestep into smaller substeps
+283:        substeps = self.params['substeps']
+284:        sub_dt = self.params['dt'] / substeps
+285:        
+286:        for substep in range(substeps):
+287:            self.substep(sub_dt)
+288:    
+289:    def substep(self, dt):
+290:        """Run one simulation substep."""
+291:        # Step 1: Predict positions
+292:        gravity = wp.vec3(0.0, self.params['gravity'], 0.0)
+293:        wp.launch(
+294:            pbf_predict_positions,
+295:            dim=self.num_particles,
+296:            inputs=[
+297:                self.positions, self.velocities, self.predicted_positions,
+298:                gravity, dt, self.params['max_velocity']
+299:            ],
+300:            device=self.device
+301:        )
+302:        
+303:        # Step 2: Build spatial hash
+304:        self.hash_grid.build(self.predicted_positions, self.params['smoothing_radius'])
+305:        
+306:        # Step 3: Constraint projection iterations
+307:        for iteration in range(self.params['constraint_iterations']):
+308:            # Compute density
+309:            wp.launch(
+310:                pbf_compute_density,
+311:                dim=self.num_particles,
+312:                inputs=[
+313:                    self.predicted_positions, self.densities, self.hash_grid.id, self.params['smoothing_radius']
+314:                ],
+315:                device=self.device
+316:            )
+317:            
+318:            # Compute lambda
+319:            wp.launch(
+320:                pbf_compute_lambda,
+321:                dim=self.num_particles,
+322:                inputs=[
+323:                    self.predicted_positions, self.densities, self.lambdas, self.hash_grid.id,
+324:                    self.params['smoothing_radius'], self.params['rest_density'], self.params['constraint_epsilon']
+325:                ],
+326:                device=self.device
+327:            )
+328:            
+329:            # Compute position corrections
+330:            wp.launch(
+331:                pbf_compute_delta_positions,
+332:                dim=self.num_particles,
+333:                inputs=[
+334:                    self.predicted_positions, self.lambdas, self.delta_positions, self.hash_grid.id,
+335:                    self.params['smoothing_radius'], self.params['rest_density']
+336:                ],
+337:                device=self.device
+338:            )
+339:            
+340:            # Apply corrections
+341:            wp.launch(
+342:                pbf_apply_delta_positions,
+343:                dim=self.num_particles,
+344:                inputs=[self.predicted_positions, self.delta_positions],
+345:                device=self.device
+346:            )
+347:        
+348:        # Step 4: Apply boundary conditions
+349:        domain_min = wp.vec3(*self.params['domain_min'])
+350:        domain_max = wp.vec3(*self.params['domain_max'])
+351:        wp.launch(
+352:            pbf_apply_boundaries,
+353:            dim=self.num_particles,
+354:            inputs=[self.predicted_positions, self.velocities, domain_min, domain_max, 0.3],
+355:            device=self.device
+356:        )
+357:        
+358:        # Step 5: Update velocities and positions
+359:        wp.launch(
+360:            pbf_update_velocities_positions,
+361:            dim=self.num_particles,
+362:            inputs=[
+363:                self.positions, self.velocities, self.predicted_positions,
+364:                self.params['damping'], dt, self.params['max_velocity']
+365:            ],
+366:            device=self.device
+367:        )
+368:
+369:class GUIRenderer:
+370:    """Renderer with simple GUI controls."""
+371:    def __init__(self, simulation):
+372:        self.sim = simulation
+373:        self.camera_distance = 3.0
+374:        self.camera_theta = 45.0
+375:        self.camera_phi = 20.0
+376:        self.mouse_last_x = 0
+377:        self.mouse_last_y = 0
+378:        self.mouse_dragging = False
+379:        
+380:        self.window_width = 1200
+381:        self.window_height = 800
+382:        self.gui_width = 300
+383:        
+384:        # GUI elements
+385:        self.gui_elements = []
+386:        self.setup_gui()
+387:        
+388:        # FPS tracking
+389:        self.frame_count = 0
+390:        self.last_fps_time = time.time()
+391:        self.fps = 0
+392:        
+393:    def setup_gui(self):
+394:        """Setup GUI elements."""
+395:        y_pos = 50
+396:        spacing = 35
+397:        
+398:        # Timestep slider
+399:        self.dt_slider = SimpleSlider(20, y_pos, 250, 20, 1.0/240.0, 1.0/60.0, self.sim.params['dt'], "Timestep")
+400:        self.gui_elements.append(self.dt_slider)
+401:        y_pos += spacing
+402:        
+403:        # Iterations slider
+404:        self.iter_slider = SimpleSlider(20, y_pos, 250, 20, 1, 12, self.sim.params['constraint_iterations'], "Iterations")
+405:        self.gui_elements.append(self.iter_slider)
+406:        y_pos += spacing
+407:        
+408:        # Substeps slider
+409:        self.substeps_slider = SimpleSlider(20, y_pos, 250, 20, 1, 10, self.sim.params['substeps'], "Substeps")
+410:        self.gui_elements.append(self.substeps_slider)
+411:        y_pos += spacing
+412:        
+413:        # Damping slider
+414:        self.damping_slider = SimpleSlider(20, y_pos, 250, 20, 0.5, 0.99, self.sim.params['damping'], "Damping")
+415:        self.gui_elements.append(self.damping_slider)
+416:        y_pos += spacing
+417:        
+418:        # Gravity slider
+419:        self.gravity_slider = SimpleSlider(20, y_pos, 250, 20, -20.0, -1.0, self.sim.params['gravity'], "Gravity")
+420:        self.gui_elements.append(self.gravity_slider)
+421:        y_pos += spacing
+422:        
+423:        # Particle radius slider
+424:        self.particle_radius_slider = SimpleSlider(20, y_pos, 250, 20, 0.005, 0.05, self.sim.params['particle_radius'], "Particle Radius")
+425:        self.gui_elements.append(self.particle_radius_slider)
+426:        y_pos += spacing
+427:        
+428:        # Smoothing radius slider
+429:        self.smoothing_radius_slider = SimpleSlider(20, y_pos, 250, 20, 0.01, 0.1, self.sim.params['smoothing_radius'], "Smoothing Radius")
+430:        self.gui_elements.append(self.smoothing_radius_slider)
+431:        y_pos += spacing
+432:        
+433:        # Rest density slider
+434:        self.rest_density_slider = SimpleSlider(20, y_pos, 250, 20, 500.0, 2000.0, self.sim.params['rest_density'], "Rest Density")
+435:        self.gui_elements.append(self.rest_density_slider)
+436:        y_pos += spacing
+437:        
+438:        
+439:        # Max velocity slider
+440:        self.max_velocity_slider = SimpleSlider(20, y_pos, 250, 20, 2.0, 20.0, self.sim.params['max_velocity'], "Max Velocity")
+441:        self.gui_elements.append(self.max_velocity_slider)
+442:        y_pos += spacing
+443:        
+444:        # Constraint epsilon slider
+445:        self.constraint_epsilon_slider = SimpleSlider(20, y_pos, 250, 20, 10.0, 1000.0, self.sim.params['constraint_epsilon'], "Constraint Epsilon")
+446:        self.gui_elements.append(self.constraint_epsilon_slider)
+447:        y_pos += spacing * 2
+448:        
+449:        # Control buttons
+450:        self.pause_btn = SimpleButton(20, y_pos, 80, 25, "Pause", self.toggle_pause)
+451:        self.gui_elements.append(self.pause_btn)
+452:        
+453:        self.reset_btn = SimpleButton(110, y_pos, 80, 25, "Reset", self.reset_simulation)
+454:        self.gui_elements.append(self.reset_btn)
+455:        y_pos += spacing
+456:        
+457:        # Preset buttons
+458:        self.conservative_btn = SimpleButton(20, y_pos, 80, 25, "Safe", self.set_conservative)
+459:        self.gui_elements.append(self.conservative_btn)
+460:        
+461:        self.fast_btn = SimpleButton(110, y_pos, 80, 25, "Fast", self.set_fast)
+462:        self.gui_elements.append(self.fast_btn)
+463:        
+464:        self.quality_btn = SimpleButton(200, y_pos, 70, 25, "Quality", self.set_quality)
+465:        self.gui_elements.append(self.quality_btn)
+466:        
+467:    def toggle_pause(self):
+468:        self.sim.paused = not self.sim.paused
+469:        self.pause_btn.label = "Resume" if self.sim.paused else "Pause"
+470:        
+471:    def reset_simulation(self):
+472:        self.sim.reset_particles()
+473:        
+474:    def set_conservative(self):
+475:        self.sim.params.update({'dt': 1.0/150.0, 'constraint_iterations': 8, 'substeps': 2, 'damping': 0.95, 'gravity': -5.0})
+476:        self.update_sliders()
+477:        
+478:    def set_fast(self):
+479:        self.sim.params.update({'dt': 1.0/90.0, 'constraint_iterations': 4, 'substeps': 1, 'damping': 0.98, 'gravity': -9.81})
+480:        self.update_sliders()
+481:        
+482:    def set_quality(self):
+483:        self.sim.params.update({'dt': 1.0/180.0, 'constraint_iterations': 10, 'substeps': 4, 'damping': 0.96, 'gravity': -7.0})
+484:        self.update_sliders()
+485:        
+486:    def update_sliders(self):
+487:        """Update slider values from simulation parameters."""
+488:        self.dt_slider.current_val = self.sim.params['dt']
+489:        self.iter_slider.current_val = self.sim.params['constraint_iterations']
+490:        self.substeps_slider.current_val = self.sim.params['substeps']
+491:        self.damping_slider.current_val = self.sim.params['damping']
+492:        self.gravity_slider.current_val = self.sim.params['gravity']
+493:        self.particle_radius_slider.current_val = self.sim.params['particle_radius']
+494:        self.smoothing_radius_slider.current_val = self.sim.params['smoothing_radius']
+495:        self.rest_density_slider.current_val = self.sim.params['rest_density']
+496:        self.max_velocity_slider.current_val = self.sim.params['max_velocity']
+497:        self.constraint_epsilon_slider.current_val = self.sim.params['constraint_epsilon']
+498:        
+499:    def update_simulation_from_sliders(self):
+500:        """Update simulation parameters from slider values."""
+501:        self.sim.params['dt'] = self.dt_slider.current_val
+502:        self.sim.params['constraint_iterations'] = int(self.iter_slider.current_val)
+503:        self.sim.params['substeps'] = int(self.substeps_slider.current_val)
+504:        self.sim.params['damping'] = self.damping_slider.current_val
+505:        self.sim.params['gravity'] = self.gravity_slider.current_val
+506:        self.sim.params['particle_radius'] = self.particle_radius_slider.current_val
+507:        self.sim.params['smoothing_radius'] = self.smoothing_radius_slider.current_val
+508:        self.sim.params['rest_density'] = self.rest_density_slider.current_val
+509:        self.sim.params['max_velocity'] = self.max_velocity_slider.current_val
+510:        self.sim.params['constraint_epsilon'] = self.constraint_epsilon_slider.current_val
+511:        
+512:    def render_text(self, x, y, text):
+513:        """Render text using GLUT."""
+514:        glColor3f(1.0, 1.0, 1.0)
+515:        glRasterPos2f(x, y)
+516:        for char in text:
+517:            glutBitmapCharacter(GLUT_BITMAP_HELVETICA_12, ord(char))
+518:            
+519:    def setup_3d_camera(self):
+520:        """Setup 3D camera for particle rendering."""
+521:        # Set viewport for 3D rendering (right side)
+522:        glViewport(self.gui_width, 0, self.window_width - self.gui_width, self.window_height)
+523:        
+524:        glMatrixMode(GL_PROJECTION)
+525:        glLoadIdentity()
+526:        aspect = (self.window_width - self.gui_width) / self.window_height
+527:        gluPerspective(60.0, aspect, 0.1, 100.0)
+528:        
+529:        glMatrixMode(GL_MODELVIEW)
+530:        glLoadIdentity()
+531:        
+532:        # Camera position
+533:        cam_x = self.camera_distance * math.sin(math.radians(self.camera_theta)) * math.cos(math.radians(self.camera_phi))
+534:        cam_y = self.camera_distance * math.sin(math.radians(self.camera_phi))
+535:        cam_z = self.camera_distance * math.cos(math.radians(self.camera_theta)) * math.cos(math.radians(self.camera_phi))
+536:        
+537:        gluLookAt(cam_x, cam_y, cam_z, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0)
+538:        
+539:    def setup_2d_gui(self):
+540:        """Setup 2D rendering for GUI."""
+541:        # Set viewport for GUI (left side)
+542:        glViewport(0, 0, self.gui_width, self.window_height)
+543:        
+544:        glMatrixMode(GL_PROJECTION)
+545:        glLoadIdentity()
+546:        glOrtho(0, self.gui_width, self.window_height, 0, -1, 1)
+547:        
+548:        glMatrixMode(GL_MODELVIEW)
+549:        glLoadIdentity()
+550:        
+551:    def render_particles(self):
+552:        """Render particles in 3D."""
+553:        positions_gpu = self.sim.positions.numpy()
+554:        
+555:        glPointSize(4.0)
+556:        glBegin(GL_POINTS)
+557:        for i in range(self.sim.num_particles):
+558:            pos = positions_gpu[i]
+559:            
+560:            # Color based on height
+561:            height_factor = max(0.0, min(1.0, (pos[1] + 0.8) / 2.8))
+562:            glColor4f(0.1 + height_factor * 0.4, 0.3 + height_factor * 0.5, 0.8 + height_factor * 0.2, 0.9)
+563:            glVertex3f(pos[0], pos[1], pos[2])
+564:            
+565:        glEnd()
+566:        
+567:    def render_boundaries(self):
+568:        """Render simulation boundaries."""
+569:        glColor4f(0.3, 0.3, 0.3, 0.4)
+570:        glBegin(GL_LINES)
+571:        
+572:        min_pt = self.sim.params['domain_min']
+573:        max_pt = self.sim.params['domain_max']
+574:        
+575:        # Draw wireframe box edges
+576:        vertices = [
+577:            # Bottom face
+578:            [min_pt[0], min_pt[1], min_pt[2]], [max_pt[0], min_pt[1], min_pt[2]],
+579:            [max_pt[0], min_pt[1], min_pt[2]], [max_pt[0], min_pt[1], max_pt[2]],
+580:            [max_pt[0], min_pt[1], max_pt[2]], [min_pt[0], min_pt[1], max_pt[2]],
+581:            [min_pt[0], min_pt[1], max_pt[2]], [min_pt[0], min_pt[1], min_pt[2]],
+582:            
+583:            # Vertical edges
+584:            [min_pt[0], min_pt[1], min_pt[2]], [min_pt[0], max_pt[1], min_pt[2]],
+585:            [max_pt[0], min_pt[1], min_pt[2]], [max_pt[0], max_pt[1], min_pt[2]],
+586:            [max_pt[0], min_pt[1], max_pt[2]], [max_pt[0], max_pt[1], max_pt[2]],
+587:            [min_pt[0], min_pt[1], max_pt[2]], [min_pt[0], max_pt[1], max_pt[2]]
+588:        ]
+589:        
+590:        for i in range(0, len(vertices), 2):
+591:            glVertex3f(*vertices[i])
+592:            glVertex3f(*vertices[i+1])
+593:        
+594:        glEnd()
+595:        
+596:    def render_gui(self):
+597:        """Render GUI elements."""
+598:        # Draw GUI background
+599:        glColor3f(0.15, 0.15, 0.2)
+600:        glBegin(GL_QUADS)
+601:        glVertex2f(0, 0)
+602:        glVertex2f(self.gui_width, 0)
+603:        glVertex2f(self.gui_width, self.window_height)
+604:        glVertex2f(0, self.window_height)
+605:        glEnd()
+606:        
+607:        # Draw separator line
+608:        glColor3f(0.4, 0.4, 0.4)
+609:        glBegin(GL_LINES)
+610:        glVertex2f(self.gui_width, 0)
+611:        glVertex2f(self.gui_width, self.window_height)
+612:        glEnd()
+613:        
+614:        # Render GUI elements
+615:        for element in self.gui_elements:
+616:            element.render()
+617:        
+618:        # Render text labels and info
+619:        y_pos = 30
+620:        self.render_text(20, y_pos, "PBF Simulation Controls")
+621:        
+622:        y_pos = 70
+623:        self.render_text(20, y_pos, f"dt: {self.sim.params['dt']:.4f}")
+624:        y_pos += 35
+625:        self.render_text(20, y_pos, f"iter: {int(self.sim.params['constraint_iterations'])}")
+626:        y_pos += 35
+627:        self.render_text(20, y_pos, f"substeps: {int(self.sim.params['substeps'])}")
+628:        y_pos += 35
+629:        self.render_text(20, y_pos, f"damp: {self.sim.params['damping']:.3f}")
+630:        y_pos += 35
+631:        self.render_text(20, y_pos, f"grav: {self.sim.params['gravity']:.1f}")
+632:        y_pos += 35
+633:        self.render_text(20, y_pos, f"radius: {self.sim.params['particle_radius']:.3f}")
+634:        y_pos += 35
+635:        self.render_text(20, y_pos, f"smooth: {self.sim.params['smoothing_radius']:.3f}")
+636:        y_pos += 35
+637:        self.render_text(20, y_pos, f"density: {self.sim.params['rest_density']:.0f}")
+638:        y_pos += 35
+639:        self.render_text(20, y_pos, f"max_vel: {self.sim.params['max_velocity']:.1f}")
+640:        y_pos += 35
+641:        self.render_text(20, y_pos, f"epsilon: {self.sim.params['constraint_epsilon']:.1f}")
+642:        
+643:        # Status info
+644:        y_pos += 80
+645:        self.render_text(20, y_pos, f"Particles: {self.sim.num_particles}")
+646:        y_pos += 20
+647:        self.render_text(20, y_pos, f"Status: {'PAUSED' if self.sim.paused else 'RUNNING'}")
+648:        y_pos += 20
+649:        self.render_text(20, y_pos, f"FPS: {self.fps:.1f}")
+650:        
+651:        # Debug info
+652:        try:
+653:            positions = self.sim.positions.numpy()
+654:            velocities = self.sim.velocities.numpy()
+655:            vel_magnitudes = np.linalg.norm(velocities, axis=1)
+656:            avg_vel = np.mean(vel_magnitudes)
+657:            max_vel = np.max(vel_magnitudes)
+658:            
+659:            y_pos += 30
+660:            self.render_text(20, y_pos, f"Avg Vel: {avg_vel:.2f}")
+661:            y_pos += 20
+662:            self.render_text(20, y_pos, f"Max Vel: {max_vel:.2f}")
+663:        except:
+664:            pass
+665:        
+666:        # Instructions
+667:        y_pos = self.window_height - 120
+668:        self.render_text(20, y_pos, "Instructions:")
+669:        y_pos += 20
+670:        self.render_text(20, y_pos, "• Click sliders to adjust")
+671:        y_pos += 20
+672:        self.render_text(20, y_pos, "• Use preset buttons")
+673:        y_pos += 20
+674:        self.render_text(20, y_pos, "• Drag in 3D area to rotate")
+675:        y_pos += 20
+676:        self.render_text(20, y_pos, "• ESC to exit")
+677:        
+678:    def render(self):
+679:        """Main render function."""
+680:        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
+681:        
+682:        # Update simulation parameters from sliders
+683:        self.update_simulation_from_sliders()
+684:        
+685:        # Render 3D scene
+686:        self.setup_3d_camera()
+687:        glEnable(GL_DEPTH_TEST)
+688:        self.render_boundaries()
+689:        self.render_particles()
+690:        
+691:        # Render 2D GUI
+692:        self.setup_2d_gui()
+693:        glDisable(GL_DEPTH_TEST)
+694:        self.render_gui()
+695:        
+696:        # Calculate FPS
+697:        self.frame_count += 1
+698:        current_time = time.time()
+699:        if current_time - self.last_fps_time > 1.0:
+700:            self.fps = self.frame_count / (current_time - self.last_fps_time)
+701:            self.frame_count = 0
+702:            self.last_fps_time = current_time
+703:        
+704:        glutSwapBuffers()
+705:        
+706:    def handle_mouse(self, button, state, x, y):
+707:        """Handle mouse input."""
+708:        if x < self.gui_width:  # GUI area
+709:            if state == GLUT_DOWN:
+710:                for element in self.gui_elements:
+711:                    if element.handle_click(x, y):
+712:                        break
+713:        else:  # 3D area - camera control
+714:            if button == GLUT_LEFT_BUTTON:
+715:                if state == GLUT_DOWN:
+716:                    self.mouse_dragging = True
+717:                    self.mouse_last_x = x
+718:                    self.mouse_last_y = y
+719:                else:
+720:                    self.mouse_dragging = False
+721:                    
+722:    def handle_mouse_motion(self, x, y):
+723:        """Handle mouse motion."""
+724:        if x < self.gui_width:  # GUI area
+725:            # Update hover states
+726:            for element in self.gui_elements:
+727:                element.hovered = element.contains_point(x, y)
+728:        else:  # 3D area
+729:            if self.mouse_dragging:
+730:                dx = x - self.mouse_last_x
+731:                dy = y - self.mouse_last_y
+732:                
+733:                self.camera_theta += dx * 0.5
+734:                self.camera_phi += dy * 0.5
+735:                
+736:                # Clamp phi
+737:                self.camera_phi = max(-89.0, min(89.0, self.camera_phi))
+738:                
+739:                self.mouse_last_x = x
+740:                self.mouse_last_y = y
+741:
+742:# Global variables for GLUT callbacks
+743:sim = None
+744:renderer = None
+745:
+746:def display():
+747:    """GLUT display callback."""
+748:    global sim, renderer
+749:    sim.step()
+750:    renderer.render()
+751:
+752:def reshape(width, height):
+753:    """GLUT reshape callback."""
+754:    global renderer
+755:    renderer.window_width = width
+756:    renderer.window_height = height
+757:    glViewport(0, 0, width, height)
+758:
+759:def mouse(button, state, x, y):
+760:    """GLUT mouse callback."""
+761:    global renderer
+762:    renderer.handle_mouse(button, state, x, y)
+763:
+764:def motion(x, y):
+765:    """GLUT mouse motion callback."""
+766:    global renderer
+767:    renderer.handle_mouse_motion(x, y)
+768:
+769:def passive_motion(x, y):
+770:    """GLUT passive mouse motion callback."""
+771:    global renderer
+772:    renderer.handle_mouse_motion(x, y)
+773:
+774:def keyboard(key, x, y):
+775:    """GLUT keyboard callback."""
+776:    global sim
+777:    
+778:    if key == b' ':  # Space - pause/unpause
+779:        sim.paused = not sim.paused
+780:        renderer.pause_btn.label = "Resume" if sim.paused else "Pause"
+781:    elif key == b'r' or key == b'R':  # R - reset
+782:        sim.reset_particles()
+783:    elif key == b'\x1b':  # Escape - quit
+784:        print("Exiting...")
+785:        import sys
+786:        sys.exit(0)
+787:
+788:def idle():
+789:    """GLUT idle callback."""
+790:    glutPostRedisplay()
+791:
+792:def main():
+793:    """Main function."""
+794:    global sim, renderer
+795:    
+796:    if not OPENGL_AVAILABLE:
+797:        print("OpenGL not available. Cannot run visualization.")
+798:        return
+799:    
+800:    print("PBF Simulation with Simple GUI")
+801:    print("===============================")
+802:    
+803:    # Create simulation and renderer
+804:    sim = PBFSimulation(num_particles=8192)
+805:    renderer = GUIRenderer(sim)
+806:    
+807:    # Initialize GLUT
+808:    glutInit()
+809:    glutInitDisplayMode(GLUT_DOUBLE | GLUT_RGB | GLUT_DEPTH)
+810:    glutInitWindowSize(renderer.window_width, renderer.window_height)
+811:    glutCreateWindow(b"PBF Simulation - GUI Controls")
+812:    
+813:    # Set callbacks
+814:    glutDisplayFunc(display)
+815:    glutReshapeFunc(reshape)
+816:    glutKeyboardFunc(keyboard)
+817:    glutMouseFunc(mouse)
+818:    glutMotionFunc(motion)
+819:    glutPassiveMotionFunc(passive_motion)
+820:    glutIdleFunc(idle)
+821:    
+822:    # Initialize OpenGL
+823:    glEnable(GL_DEPTH_TEST)
+824:    glEnable(GL_POINT_SMOOTH)
+825:    glEnable(GL_BLEND)
+826:    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
+827:    glClearColor(0.02, 0.02, 0.05, 1.0)
+828:    
+829:    print("\nSimulation started!")
+830:    print("GUI Controls:")
+831:    print("  • Left panel: Interactive sliders and buttons")
+832:    print("  • Right panel: 3D fluid visualization")
+833:    print("  • Click sliders to adjust parameters")
+834:    print("  • Use preset buttons for quick settings")
+835:    print("  • Drag in 3D area to rotate camera")
+836:    print("  • Space: Pause/Resume")
+837:    print("  • R: Reset particles")
+838:    print("  • Escape: Exit")
+839:    
+840:    # Start main loop
+841:    glutMainLoop()
+842:
+843:if __name__ == "__main__":
+844:    main()
