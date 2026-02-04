@@ -1,49 +1,39 @@
+"""
+Warp simulation module.
+
+This module contains the WarpSim class which orchestrates the surgical simulation,
+managing physics, rendering, and interactions.
+"""
+
 import sys
-from centrelines import CentrelinePointInfo, ClampConstraint, attach_clip_to_nearest_centreline, compute_centreline_positions, cut_centrelines_near_haptic, emit_bleed_particles, update_bleed_particles, update_centreline_leaks
-from grasping import grasp_end, grasp_process, grasp_start
-from heating import heating_active_process, heating_conduction_process, heating_end, heating_start, paint_vertices_near_haptic_proxy, set_paint_strength
-from stretching import stretching_breaking_process
-from surface_reconstruction import extract_surface_triangles_bucketed
+import math
+
+import numpy as np
 import warp as wp
 import newton
 from pxr import Usd, UsdGeom
 
-import numpy as np
-import math
+from config import SimulationConfig, RenderConfig
+from coordinate_system import CoordinateSystem
+from instrument_manager import InstrumentManager, axis_angle_to_quat, multiply_quaternions
+from surgical_behaviors import SurgicalBehaviors
+from heating import set_paint_strength
+
+from centrelines import (
+    CentrelinePointInfo, ClampConstraint,
+    attach_clip_to_nearest_centreline, compute_centreline_positions,
+    cut_centrelines_near_haptic, emit_bleed_particles, update_bleed_particles,
+    update_centreline_leaks
+)
+from stretching import stretching_breaking_process
+from surface_reconstruction import extract_surface_triangles_bucketed
 
 from PBDSolver import PBDSolver
 from render_surgsim_opengl import SurgSimRendererOpenGL
 
 from mesh_loader import Tetrahedron, load_background_mesh, load_mesh_and_build_model, parse_centreline_file
 from render_opengl import CustomOpenGLRenderer
-from simulation_kernels import (
-    set_body_position,
-)
-
-def axis_angle_to_quat(axis, angle):
-    axis = np.array(axis, dtype=np.float64)
-    axis = axis / np.linalg.norm(axis)
-    half_angle = angle * 0.5
-    sin_half = np.sin(half_angle)
-    return [
-        axis[0] * sin_half,
-        axis[1] * sin_half,
-        axis[2] * sin_half,
-        np.cos(half_angle)
-    ]
-
-
-def multiply_quaternions(q1, q2):
-    """Multiply two quaternions: q1 * q2. Format: [x, y, z, w]"""
-    x1, y1, z1, w1 = q1
-    x2, y2, z2, w2 = q2
-    
-    return [
-        w1*x2 + x1*w2 + y1*z2 - z1*y2,  # x
-        w1*y2 - x1*z2 + y1*w2 + z1*x2,  # y
-        w1*z2 + x1*y2 - y1*x2 + z1*w2,  # z
-        w1*w2 - x1*x2 - y1*y2 - z1*z2   # w
-    ]
+from simulation_kernels import set_body_position
 
 @wp.kernel
 def set_active_tets_near_haptic(
@@ -358,28 +348,56 @@ def check_centreline_leaks(states, num_points, device=None):
     }
 
 class WarpSim:
+    """Main simulation class for the surgical simulator.
+
+    Manages physics simulation, rendering, haptic interaction, and surgical behaviors.
+    Uses Newton physics framework with custom PBD solver extensions.
+
+    Args:
+        stage_path: Path for USD output file.
+        num_frames: Number of frames for offline rendering.
+        use_opengl: Use OpenGL renderer (True) or USD renderer (False).
+        config: Simulation configuration (uses defaults if None).
+    """
+
     #region Initialization
-    def __init__(self, stage_path="output.usd", num_frames=300, use_opengl=True):
-        self.sim_substeps = 16
+    def __init__(
+        self,
+        stage_path: str = "output.usd",
+        num_frames: int = 300,
+        use_opengl: bool = True,
+        config: SimulationConfig = None
+    ):
+        # Use provided config or create default
+        self.config = config if config is not None else SimulationConfig()
+        self.coords = CoordinateSystem()
+
+        # Timing parameters from config
+        self.sim_substeps = self.config.substeps
         self.num_frames = num_frames
-        self.fps = 120
+        self.fps = self.config.fps
 
-        self.frame_dt = 1.0 / self.fps
-        self.substep_dt = self.frame_dt / self.sim_substeps
+        self.frame_dt = self.config.frame_dt
+        self.substep_dt = self.config.substep_dt
         self.sim_time = 0.0
-        self.sim_constraint_iterations = 1
 
-        self.haptic_pos_right = None  # Haptic device position in simulation space
-        self.haptic_rot_right = [0.0, 0.0, 0.0, 1.0]  # Haptic device rotation as quaternion
+        # Haptic state
+        self.haptic_pos_right = None
+        self.haptic_rot_right = [0.0, 0.0, 0.0, 1.0]
 
-        self.radius_collision = 0.1
-        self.radius_heating = 0.2
-        self.radius_clipping = 0.1
-        self.radius_cutting = 0.075
-        self.radius_grasping = 0.075
+        # Interaction radii from config
+        self.radius_collision = self.config.radius_collision
+        self.radius_heating = self.config.radius_heating
+        self.radius_clipping = self.config.radius_clipping
+        self.radius_cutting = self.config.radius_cutting
+        self.radius_grasping = self.config.radius_grasping
 
-        self.particle_mass = 0.1
+        self.particle_mass = self.config.particle_mass
 
+        # Initialize surgical behaviors manager
+        self.behaviors = SurgicalBehaviors(self.config)
+
+        # Legacy state flags (kept for backward compatibility during transition)
         self.cutting_active = False
         self.heating_active = False
         self.grasping_active = False
@@ -417,7 +435,7 @@ class WarpSim:
         self.tet_to_edges = wp.zeros((num_tets, 6), dtype=wp.int32, device=wp.get_device())
         self.tet_edge_counts = wp.zeros(num_tets, dtype=wp.int32, device=wp.get_device())
 
-        self.max_clips = 64
+        self.max_clips = self.config.max_clips
         self.clip_attached = wp.zeros(self.centreline_points.shape[0], dtype=wp.int32, device=wp.get_device())
         self.clip_indices = wp.zeros(self.max_clips, dtype=wp.int32, device=wp.get_device())
         self.clip_count = wp.zeros(1, dtype=wp.int32, device=wp.get_device())
@@ -425,7 +443,7 @@ class WarpSim:
         self.centreline_cut_flags = wp.zeros(self.centreline_points.shape[0], dtype=wp.int32, device=wp.get_device())
 
         # Bleeding
-        self.max_bleed_particles = 4096 # Max number of particles used for bleeding
+        self.max_bleed_particles = self.config.max_bleed_particles
         self.bleed_positions = wp.zeros(self.max_bleed_particles, dtype=wp.vec3f, device=wp.get_device())
         self.bleed_velocities = wp.zeros(self.max_bleed_particles, dtype=wp.vec3f, device=wp.get_device())
         self.bleed_lifetimes = wp.zeros(self.max_bleed_particles, dtype=wp.float32, device=wp.get_device())
@@ -433,9 +451,9 @@ class WarpSim:
         self.bleed_next_id = wp.zeros(1, dtype=wp.int32, device=wp.get_device())
 
         # Bleed marching cubes
-        self.bleeding_field_resolution = 96  # Max grid resolution per axis
-        self.bleeding_field_margin = 0.01    # Margin around AABB
-        self.bleeding_particle_sdf_radius = 0.007  # Particle radius for SDF
+        self.bleeding_field_resolution = self.config.bleeding_field_resolution
+        self.bleeding_field_margin = self.config.bleeding_field_margin
+        self.bleeding_particle_sdf_radius = self.config.bleeding_particle_sdf_radius
         
         self.bleeding_field_aabb_min = wp.zeros(3, dtype=wp.float32, device=wp.get_device())
         self.bleeding_field_aabb_max = wp.zeros(3, dtype=wp.float32, device=wp.get_device())
@@ -448,7 +466,7 @@ class WarpSim:
         self.bleeding_mesh_vertices = None
         self.bleeding_mesh_indices = None
         self.bleeding_mesh_triangle_count = 0
-        self.bleeding_isosurface_threshold = 0.0
+        self.bleeding_isosurface_threshold = self.config.bleeding_isosurface_threshold
 
         # Initialize simulation components
         self._setup_simulation()
@@ -457,7 +475,7 @@ class WarpSim:
         self._setup_renderer(stage_path, use_opengl)
 
         # Grasp setup
-        self.grasp_capacity = 1024
+        self.grasp_capacity = self.config.grasp_capacity
         self.grasped_particles_buffer = wp.zeros(self.grasp_capacity, dtype=wp.int32, device=wp.get_device())
         self.grasped_particles_counter = wp.zeros(1, dtype=wp.int32, device=wp.get_device())
 
@@ -1157,41 +1175,54 @@ class WarpSim:
         from pyglet.window import key
         if symbol == key.C:
             self.cutting_active = True
+            self.behaviors.start_cutting()
         elif symbol == key.V:
-            heating_start(self)
+            self.heating_active = True
+            self.behaviors.start_heating(self)
         elif symbol == key.B:
-            grasp_start(self)
+            self.grasping_active = True
+            self.behaviors.start_grasping(self)
         elif symbol == key.G:
             self.clipping = True
+            self.behaviors.place_clip()
         elif symbol == key.Y:
             self.integrator.volCnstrs = not self.integrator.volCnstrs
-
 
     def _on_key_release(self, symbol, modifiers):
         from pyglet.window import key
         if symbol == key.C:
             self.cutting_active = False
+            self.behaviors.stop_cutting()
         elif symbol == key.V:
-            heating_end(self)
+            self.heating_active = False
+            self.behaviors.stop_heating(self)
         elif symbol == key.B:
-            grasp_end(self)
+            self.grasping_active = False
+            self.behaviors.stop_grasping(self)
 #region  Model Setup
     def _build_model(self):
         """Build the simulation model with mesh and haptic device."""
         builder = newton.ModelBuilder(up_axis=newton.Axis.Y)
-        
-        spring_stiffness = 1.0
-        spring_dampen = 0.2
 
-        tetra_stiffness_mu = 1.0e4
-        tetra_stiffness_lambda = 1.0e4
-        tetra_dampen = 0.2
+        # Physics parameters from config
+        spring_stiffness = self.config.spring_stiffness
+        spring_dampen = self.config.spring_damping
+
+        tetra_stiffness_mu = self.config.tetra_stiffness_mu
+        tetra_stiffness_lambda = self.config.tetra_stiffness_lambda
+        tetra_dampen = self.config.tetra_damping
 
         # Import the mesh
-        tri_points_connectors, self.surface_tris, uvs, self.mesh_ranges, tetrahedra_wp = load_mesh_and_build_model(builder,
-            particle_mass=self.particle_mass, vertical_offset=-3.0, 
-            spring_stiffness=spring_stiffness, spring_dampen=spring_dampen,
-            tetra_stiffness_mu=tetra_stiffness_mu, tetra_stiffness_lambda=tetra_stiffness_lambda, tetra_dampen=tetra_dampen)
+        tri_points_connectors, self.surface_tris, uvs, self.mesh_ranges, tetrahedra_wp = load_mesh_and_build_model(
+            builder,
+            particle_mass=self.particle_mass,
+            vertical_offset=self.config.vertical_offset,
+            spring_stiffness=spring_stiffness,
+            spring_dampen=spring_dampen,
+            tetra_stiffness_mu=tetra_stiffness_mu,
+            tetra_stiffness_lambda=tetra_stiffness_lambda,
+            tetra_dampen=tetra_dampen
+        )
         
         self.surface_tris_wp = wp.array(self.surface_tris, dtype=wp.int32, device=wp.get_device())
         self.uvs_wp = wp.array(uvs, dtype=wp.vec2f, device=wp.get_device())
@@ -1277,7 +1308,11 @@ class WarpSim:
 
     def _setup_simulation(self):
         """Initialize simulation states and integrator."""
-        self.integrator = PBDSolver(self.model, iterations=5)
+        self.integrator = PBDSolver(
+            self.model,
+            config=self.config,
+            iterations=self.config.solver_iterations
+        )
         
         self.integrator.dev_pos_buffer = wp.array([0.0, 0.0, 0.0], dtype=wp.vec3, device=wp.get_device())
         self.integrator.dev_pos_prev_buffer = wp.array([0.0, 0.0, 0.0], dtype=wp.vec3, device=wp.get_device())
@@ -1354,8 +1389,8 @@ class WarpSim:
                 device=wp.get_device()
             )
 
-            # Heat conduction
-            heating_conduction_process(self)
+            # Passive behaviors (heat conduction runs every frame)
+            self.behaviors.process_passive(self)
             stretching_breaking_process(self)
             
             # Swap states
@@ -1411,9 +1446,8 @@ class WarpSim:
                 # num_collisions = int(detector.vertex_colliding_triangles_count.numpy().sum())
                 # print(f"Vertex-triangle collisions detected: {num_collisions}")
 
-                # Grasping
-                if self.grasping_active:
-                    grasp_process(self)
+                # Process active behaviors (grasping, etc.)
+                self.behaviors.process_active(self)
 
 
                 # Centreline update
@@ -1530,9 +1564,9 @@ class WarpSim:
                             device=wp.get_device()
                         )
 
-                    # Handle heating
-                    if self.heating_active:
-                        heating_active_process(self)
+                    # Handle heating (now processed via behaviors.process_active)
+                    # Legacy check kept for mesh-specific processing
+                    pass
 
                     # Emit new bleed particles from cut centrelines
                     wp.launch(

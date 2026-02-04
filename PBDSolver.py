@@ -13,7 +13,6 @@ from newton._src.solvers.xpbd.kernels import (
     solve_body_joints,
     solve_particle_particle_contacts,
     solve_particle_shape_contacts,
-    # solve_simple_body_joints,
     solve_springs,
     solve_tetrahedra,
     update_body_velocities,
@@ -40,27 +39,52 @@ from newton._src.solvers.vbd.tri_mesh_collision import (
     TriMeshCollisionInfo,
 )
 
+from config import SimulationConfig
+
 NUM_THREADS_PER_COLLISION_PRIMITIVE = 4
 
+
 class PBDSolver(SolverXPBD):
-    def __init__(self, model: Model, **kwargs):
+    """Position-Based Dynamics solver for surgical simulation.
+
+    Extends Newton's XPBD solver with surgical-specific constraints including
+    volume preservation, tissue connectors, and sphere collisions.
+
+    Args:
+        model: Newton simulation model.
+        config: Simulation configuration (uses defaults if None).
+        **kwargs: Additional arguments passed to SolverXPBD.
+    """
+
+    def __init__(self, model: Model, config: SimulationConfig = None, **kwargs):
         super().__init__(model, **kwargs)
+
+        # Use provided config or create default
+        self.config = config if config is not None else SimulationConfig()
+
         self.volCnstrs = True
         self.dev_pos_buffer = None
-        self.self_contact_radius: float = 0.002
-        self.self_contact_margin: float = 0.002
-        
-        # self.trimesh_collision_detector = TriMeshCollisionDetector(
-        #     self.model,
-        #     vertex_collision_buffer_pre_alloc=32,
-        #     edge_collision_buffer_pre_alloc=64,
-        #     edge_edge_parallel_epsilon=1e-5,
-        # )
 
-        # self.trimesh_collision_info = wp.array(
-        #     [self.trimesh_collision_detector.collision_info], dtype=TriMeshCollisionInfo, device=self.device
-        # )
-        
+        # Self-collision parameters from config
+        self.self_contact_radius: float = self.config.self_contact_radius
+        self.self_contact_margin: float = self.config.self_contact_margin
+
+        # Collision parameters from config
+        self.sphere_collision_radius: float = self.config.sphere_collision_radius
+        self.volume_stiffness: float = self.config.volume_stiffness
+
+        # Bounds from config
+        self.bounds_min = wp.vec3(
+            self.config.bounds_min[0],
+            self.config.bounds_min[1],
+            self.config.bounds_min[2]
+        )
+        self.bounds_max = wp.vec3(
+            self.config.bounds_max[0],
+            self.config.bounds_max[1],
+            self.config.bounds_max[2]
+        )
+
         soft_contact_max = model.shape_count * model.particle_count
         self.collision_evaluation_kernel_launch_size = max(
             self.model.particle_count * NUM_THREADS_PER_COLLISION_PRIMITIVE,
@@ -348,7 +372,7 @@ class PBDSolver(SolverXPBD):
                                         model.particle_inv_mass,
                                         model.tetrahedra_wp,
                                         model.tet_active,
-                                        0.1  # stiffness
+                                        self.volume_stiffness
                                     ],
                                     outputs=[
                                         particle_deltas_accumulator,
@@ -410,8 +434,8 @@ class PBDSolver(SolverXPBD):
                                 particle_qd,
                                 model.particle_inv_mass,
                                 model.tri_indices,
-                                self.dev_pos_buffer,  # sphere position
-                                0.05,  # sphere radius
+                                self.dev_pos_buffer,
+                                self.sphere_collision_radius,
                                 0.0,  # sphere restitution
                                 dt
                             ],
@@ -435,19 +459,19 @@ class PBDSolver(SolverXPBD):
 
                         wp.launch(
                             bounds_collision,
-                                  dim=model.particle_count,
-                                  inputs=[
-                                      particle_q,
-                                      particle_qd,
-                                      model.particle_inv_mass,
-                                      wp.vec3(-2.0, 0.0, -8.0),
-                                      wp.vec3(2.0, 10.0, -3.0),
-                                      0.0,
-                                      0.0,
-                                      dt
-                                  ],
-                                  device=model.device,
-                            )
+                            dim=model.particle_count,
+                            inputs=[
+                                particle_q,
+                                particle_qd,
+                                model.particle_inv_mass,
+                                self.bounds_min,
+                                self.bounds_max,
+                                0.0,
+                                0.0,
+                                dt
+                            ],
+                            device=model.device,
+                        )
 
                         particle_q, particle_qd = self.apply_particle_deltas(
                             model, state_in, state_out, particle_deltas, dt
