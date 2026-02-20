@@ -6,7 +6,8 @@ from stretching import stretching_breaking_process
 from surface_reconstruction import extract_surface_triangles_bucketed
 import warp as wp
 import newton
-from pxr import Usd, UsdGeom
+# pxr is imported lazily inside methods that need it to avoid conflicting
+# with ovrtx's bundled USD libraries when running in --ovrtx mode.
 
 import numpy as np
 import math
@@ -359,7 +360,8 @@ def check_centreline_leaks(states, num_points, device=None):
 
 class WarpSim:
     #region Initialization
-    def __init__(self, stage_path="output.usd", num_frames=300, use_opengl=True):
+    def __init__(self, stage_path="output.usd", num_frames=300, use_opengl=True, use_ovrtx=False,
+                 use_isaacsim=False, simulation_app=None):
         self.sim_substeps = 16
         self.num_frames = num_frames
         self.fps = 120
@@ -454,7 +456,7 @@ class WarpSim:
         self._setup_simulation()
         
         # Initialize rendering
-        self._setup_renderer(stage_path, use_opengl)
+        self._setup_renderer(stage_path, use_opengl, use_ovrtx, use_isaacsim, simulation_app)
 
         # Grasp setup
         self.grasp_capacity = 1024
@@ -469,7 +471,7 @@ class WarpSim:
         self._load_background_mesh()
 
         # Load textures
-        if self.use_opengl and self.renderer:
+        if (self.use_opengl or self.use_ovrtx or self.use_isaacsim) and self.renderer:
 
             self.background_diffuse = [self.renderer.load_texture("textures/cavity_diffuse.tga")]
             self.background_normal = [self.renderer.load_texture("textures/cavity_normals.tga")]
@@ -547,7 +549,8 @@ class WarpSim:
     def _load_instrument_from_usd(self, usd_path, builder, name="instrument"):
         """Load surgical instrument mesh from USD file as a hierarchical instrument with separate pieces"""
         import numpy as np
-        
+        from pxr import Usd, UsdGeom
+
         # Open USD stage
         stage = Usd.Stage.Open(usd_path)
         if not stage:
@@ -941,6 +944,7 @@ class WarpSim:
 
     def _list_usd_primitives(self, usd_path, max_depth=10):
         """List all primitives in a USD file"""
+        from pxr import Usd, UsdGeom
         try:
             stage = Usd.Stage.Open(usd_path)
             if not stage:
@@ -1291,18 +1295,30 @@ class WarpSim:
         # self.model.delta_accumulator = wp.zeros(self.model.particle_count, dtype=wp.vec3f, device=wp.get_device())
         # self.model.count_accumulator = wp.zeros(self.model.particle_count, dtype=wp.int32, device=wp.get_device())
 
-    def _setup_renderer(self, stage_path, use_opengl):
+    def _setup_renderer(self, stage_path, use_opengl, use_ovrtx=False,
+                        use_isaacsim=False, simulation_app=None):
         """Initialize the appropriate renderer."""
         self.use_opengl = use_opengl
-        
-        if self.use_opengl:
-            self.renderer = SurgSimRendererOpenGL(self.model, "Warp Surgical Simulation", scaling=1.0, near_plane=0.05, far_plane = 25)
+        self.use_ovrtx = use_ovrtx
+        self.use_isaacsim = use_isaacsim
+
+        if self.use_isaacsim:
+            from render_isaacsim import IsaacSimRenderer
+            self.renderer = IsaacSimRenderer(
+                simulation_app, self.model, "Warp Surgical Simulation",
+                scaling=1.0, near_plane=0.05, far_plane=25)
+        elif self.use_ovrtx:
+            from render_ovrtx import OvrtxRenderer
+            self.renderer = OvrtxRenderer(self.model, "Warp Surgical Simulation", scaling=1.0, near_plane=0.05, far_plane=25)
+        elif self.use_opengl:
+            self.renderer = SurgSimRendererOpenGL(self.model, "Warp Surgical Simulation", scaling=1.0, near_plane=0.05, far_plane=25)
         elif stage_path:
             self.renderer = newton.render.SimRenderer(self.model, stage_path, scaling=20.0)
         else:
             self.renderer = None
 
-        self.renderer._camera_pos = [0.2, 1.2, -1.0]
+        if self.renderer:
+            self.renderer._camera_pos = [0.2, 1.2, -1.0]
         #self.renderer.update_view_matrix()
 
     def _setup_cuda_graph(self):
@@ -1378,7 +1394,7 @@ class WarpSim:
             return
 
         with wp.ScopedTimer("render"):
-            if self.use_opengl:
+            if self.use_opengl or self.use_ovrtx or self.use_isaacsim:
                 self.renderer.begin_frame()
 
                 self.renderer.render_sphere(
@@ -1980,7 +1996,7 @@ class WarpSim:
 
     def is_running(self):
         """Check if the simulation should continue running."""
-        return self.renderer.is_running() if self.use_opengl else True
+        return self.renderer.is_running() if (self.use_opengl or self.use_ovrtx or self.use_isaacsim) else True
     
     def save(self):
         """Save the simulation results."""
