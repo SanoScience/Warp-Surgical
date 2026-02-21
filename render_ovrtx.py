@@ -39,6 +39,60 @@ def _sanitize_name(name: str) -> str:
     return sanitized or "_unnamed"
 
 
+# Per-organ OmniSurface SSS profiles.  Meshes listed here get OmniSurface
+# materials with subsurface scattering; all others fall back to OmniPBR.
+TISSUE_SSS_PROFILES: dict[str, dict] = {
+    "liver_mesh": {
+        "subsurface_weight": 0.7,
+        "transmission_color": (0.55, 0.05, 0.02),
+        "scattering_color": (0.8, 0.15, 0.08),
+        "subsurface_scale": 1.0,
+        "subsurface_anisotropy": 0.3,
+        "coat_weight": 0.15,
+        "coat_roughness": 0.3,
+        "coat_color": (1.0, 1.0, 1.0),
+        "specular_reflection_roughness": 0.4,
+        "specular_reflection_ior": 1.4,
+    },
+    "fat_mesh": {
+        "subsurface_weight": 0.85,
+        "transmission_color": (0.9, 0.7, 0.25),
+        "scattering_color": (1.0, 0.85, 0.35),
+        "subsurface_scale": 3.0,
+        "subsurface_anisotropy": 0.5,
+        "coat_weight": 0.3,
+        "coat_roughness": 0.2,
+        "coat_color": (1.0, 1.0, 1.0),
+        "specular_reflection_roughness": 0.3,
+        "specular_reflection_ior": 1.38,
+    },
+    "gallbladder_mesh": {
+        "subsurface_weight": 0.6,
+        "transmission_color": (0.35, 0.55, 0.25),
+        "scattering_color": (0.6, 0.7, 0.4),
+        "subsurface_scale": 1.5,
+        "subsurface_anisotropy": 0.2,
+        "coat_weight": 0.25,
+        "coat_roughness": 0.25,
+        "coat_color": (1.0, 1.0, 1.0),
+        "specular_reflection_roughness": 0.35,
+        "specular_reflection_ior": 1.4,
+    },
+    "background_mesh": {
+        "subsurface_weight": 0.5,
+        "transmission_color": (0.7, 0.35, 0.3),
+        "scattering_color": (0.85, 0.5, 0.4),
+        "subsurface_scale": 1.2,
+        "subsurface_anisotropy": 0.2,
+        "coat_weight": 0.1,
+        "coat_roughness": 0.4,
+        "coat_color": (1.0, 1.0, 1.0),
+        "specular_reflection_roughness": 0.45,
+        "specular_reflection_ior": 1.38,
+    },
+}
+
+
 def _make_float3_dltensor(arr: np.ndarray) -> DLTensor:
     """Create a DLTensor with dtype float32×3 (lanes=3) from an (N, 3) float32 array.
 
@@ -83,14 +137,29 @@ class OvrtxRenderer:
         self._cam_up = [0.0, 1.0, 0.0]
         self._cam_yaw = -90.0    # degrees, -90 = looking along -Z
         self._cam_pitch = 0.0    # degrees
-        self._cam_speed = 1.0    # units per second
+        self._cam_speed = 2.0    # units per second
+        self._mouse_sensitivity = 0.15  # degrees per pixel
 
         # Prim tracking
         self._mesh_prims: dict[str, str] = {}  # name -> prim_path
         self._sphere_prims: dict[str, str] = {}  # name -> prim_path
         self._texture_store: dict[int, str] = {}  # id -> abs filepath
         self._next_texture_id = 0
-        self._textured_meshes: set[str] = set()  # names with OmniPBR material
+        self._textured_meshes: set[str] = set()  # names with material (OmniPBR or OmniSurface)
+
+        # Light visibility state (stores original intensity for restore)
+        self._light_visibility: dict[str, bool] = {
+            "EndoscopeLight": True,
+            "KeyLight": False,
+            "DomeLight": False,
+            "SurgicalLight": True,
+        }
+        self._light_config: dict[str, dict] = {
+            "EndoscopeLight": {"prim": "/World/EndoscopeLight", "attr": "inputs:intensity", "intensity": 150000.0},
+            "KeyLight": {"prim": "/World/KeyLight", "attr": "inputs:intensity", "intensity": 500.0},
+            "DomeLight": {"prim": "/World/DomeLight", "attr": "inputs:intensity", "intensity": 200.0},
+            "SurgicalLight": {"prim": "/World/SurgicalLight", "attr": "inputs:intensity", "intensity": 800.0},
+        }
 
         # Keyboard callbacks and state
         self._on_key_press_callback = None
@@ -124,6 +193,22 @@ class OvrtxRenderer:
             self._keys_held.discard(symbol)
             if self._on_key_release_callback:
                 self._on_key_release_callback(symbol, modifiers)
+
+        @self._window.event
+        def on_mouse_motion(x, y, dx, dy):
+            self._cam_yaw += dx * self._mouse_sensitivity
+            self._cam_pitch += dy * self._mouse_sensitivity
+            self._cam_pitch = max(-89.0, min(89.0, self._cam_pitch))
+            self._update_cam_front_from_angles()
+            self._update_camera_transform()
+
+        @self._window.event
+        def on_mouse_drag(x, y, dx, dy, buttons, modifiers):
+            self._cam_yaw += dx * self._mouse_sensitivity
+            self._cam_pitch += dy * self._mouse_sensitivity
+            self._cam_pitch = max(-89.0, min(89.0, self._cam_pitch))
+            self._update_cam_front_from_angles()
+            self._update_camera_transform()
 
         # Create ovrtx renderer
         config = RendererConfig(sync_mode=True)
@@ -159,16 +244,32 @@ def Xform "World" {{
     }}
 
     def SphereLight "EndoscopeLight" {{
-        float intensity = 150000
+        float inputs:intensity = 150000
         float radius = 0.05
-        color3f color = (1, 1, 1)
+        color3f inputs:color = (1, 1, 1)
         matrix4d xformOp:transform = ((1,0,0,0),(0,1,0,0),(0,0,1,0),({self._cam_pos[0]},{self._cam_pos[1]},{self._cam_pos[2]},1))
         uniform token[] xformOpOrder = ["xformOp:transform"]
     }}
 
     def DomeLight "DomeLight" (prepend apiSchemas = ["ShapingAPI"]) {{
-        float inputs:intensity = 200
+        float inputs:intensity = 0
         token inputs:texture:format = "latlong"
+    }}
+
+    def DistantLight "KeyLight" {{
+        float inputs:intensity = 0
+        float inputs:angle = 2.0
+        color3f inputs:color = (1, 0.95, 0.9)
+        float3 xformOp:rotateXYZ = (-45, 30, 0)
+        uniform token[] xformOpOrder = ["xformOp:rotateXYZ"]
+    }}
+
+    def DistantLight "SurgicalLight" {{
+        float inputs:intensity = 800
+        float inputs:angle = 5.0
+        color3f inputs:color = (1, 0.95, 0.9)
+        float3 xformOp:rotateXYZ = (135, 0, 0)
+        uniform token[] xformOpOrder = ["xformOp:rotateXYZ"]
     }}
 }}
 
@@ -182,6 +283,7 @@ def "Render" (
             no_delete = true
         ) {{
             def RenderProduct "ViewportTexture0" (
+                prepend apiSchemas = ["OmniRtxSettingsCommonAdvancedAPI_1", "OmniRtxSettingsRtAdvancedAPI_1", "OmniRtxSettingsPtAdvancedAPI_1"]
                 hide_in_stage_window = true
                 no_delete = true
             ) {{
@@ -189,6 +291,8 @@ def "Render" (
                 token omni:rtx:background:source:type = "domeLight"
                 token[] omni:rtx:waitForEvents = ["AllLoadingFinished", "OnlyOnFirstRequest"]
                 rel orderedVars = [</Render/Vars/LdrColor>]
+                int omni:rtx:rt:sss:samples = 4
+                bool omni:rtx:scene:hydra:mdlMaterialWarmup = 1
                 uniform int2 resolution = ({self._width}, {self._height})
             }}
         }}
@@ -302,6 +406,38 @@ def "Render" (
         self._update_camera_transform()
 
     # ------------------------------------------------------------------
+    # Light helpers
+    # ------------------------------------------------------------------
+
+    def adjust_light_intensity(self, light_name: str, delta: float):
+        """Adjust a light's stored intensity by delta and write it (clamped to >= 0)."""
+        if light_name not in self._light_config:
+            return
+        cfg = self._light_config[light_name]
+        cfg["intensity"] = max(0.0, cfg["intensity"] + delta)
+        if self._light_visibility[light_name]:
+            tensor = DLTensor.from_dlpack(np.array([cfg["intensity"]], dtype=np.float32))
+            self._ovrtx.write_attribute(
+                prim_paths=[cfg["prim"]],
+                attribute_name=cfg["attr"],
+                tensor=tensor,
+            )
+
+    def toggle_light(self, light_name: str):
+        """Toggle a light by writing its intensity to 0 or restoring the original value."""
+        if light_name not in self._light_visibility:
+            return
+        self._light_visibility[light_name] = not self._light_visibility[light_name]
+        cfg = self._light_config[light_name]
+        val = cfg["intensity"] if self._light_visibility[light_name] else 0.0
+        tensor = DLTensor.from_dlpack(np.array([val], dtype=np.float32))
+        self._ovrtx.write_attribute(
+            prim_paths=[cfg["prim"]],
+            attribute_name=cfg["attr"],
+            tensor=tensor,
+        )
+
+    # ------------------------------------------------------------------
     # Transform helpers
     # ------------------------------------------------------------------
 
@@ -396,20 +532,38 @@ def "Render" (
                 self._cam_pos[i] -= right[i] * speed
             moved = True
 
-        # Rotate with Q / E
-        if key.Q in self._keys_held:
-            self._cam_yaw += 60.0 * self._dt
-            self._update_cam_front_from_angles()
-            moved = True
+        # Up / down with Q / E
         if key.E in self._keys_held:
-            self._cam_yaw -= 60.0 * self._dt
-            self._update_cam_front_from_angles()
+            self._cam_pos[1] += speed
+            moved = True
+        if key.Q in self._keys_held:
+            self._cam_pos[1] -= speed
             moved = True
 
         if moved:
             self._update_camera_transform()
 
+        # Light toggles: 1 = EndoscopeLight, 2 = KeyLight, 3 = DomeLight
+        if key._1 in self._keys_held:
+            self._keys_held.discard(key._1)
+            self.toggle_light("EndoscopeLight")
+        if key._2 in self._keys_held:
+            self._keys_held.discard(key._2)
+            self.toggle_light("KeyLight")
+        if key._3 in self._keys_held:
+            self._keys_held.discard(key._3)
+            self.toggle_light("DomeLight")
+        if key._4 in self._keys_held:
+            self._keys_held.discard(key._4)
+            self.toggle_light("SurgicalLight")
 
+        # EndoscopeLight intensity: 0 = decrease, 9 = increase
+        if key._0 in self._keys_held:
+            self._keys_held.discard(key._0)
+            self.adjust_light_intensity("EndoscopeLight", -100000.0)
+        if key._9 in self._keys_held:
+            self._keys_held.discard(key._9)
+            self.adjust_light_intensity("EndoscopeLight", 100000.0)
 
 
     def end_frame(self):
@@ -447,6 +601,37 @@ def "Render" (
     # ------------------------------------------------------------------
     # Mesh rendering
     # ------------------------------------------------------------------
+
+    def _build_omnisurface_shader_inputs(self, diffuse_path, normal_path, spec_path, profile):
+        """Build OmniSurface shader input lines with SSS, coat, and specular parameters."""
+        lines = []
+        # Texture inputs (OmniSurface naming)
+        if diffuse_path:
+            lines.append(f'            asset inputs:diffuse_reflection_color_image = @{diffuse_path}@')
+        if normal_path:
+            lines.append(f'            asset inputs:geometry_normal_image = @{normal_path}@')
+        if spec_path:
+            lines.append(f'            asset inputs:specular_reflection_roughness_image = @{spec_path}@')
+        # SSS parameters
+        lines.append('            bool inputs:enable_diffuse_transmission = 1')
+        lines.append(f'            float inputs:subsurface_weight = {profile["subsurface_weight"]}')
+        tc = profile["transmission_color"]
+        lines.append(f'            color3f inputs:subsurface_transmission_color = ({tc[0]}, {tc[1]}, {tc[2]})')
+        sc = profile["scattering_color"]
+        lines.append(f'            color3f inputs:subsurface_scattering_color = ({sc[0]}, {sc[1]}, {sc[2]})')
+        lines.append(f'            float inputs:subsurface_scale = {profile["subsurface_scale"]}')
+        lines.append(f'            float inputs:subsurface_anisotropy = {profile["subsurface_anisotropy"]}')
+        # Coat parameters (wet sheen)
+        lines.append(f'            float inputs:coat_weight = {profile["coat_weight"]}')
+        lines.append(f'            float inputs:coat_roughness = {profile["coat_roughness"]}')
+        cc = profile["coat_color"]
+        lines.append(f'            color3f inputs:coat_color = ({cc[0]}, {cc[1]}, {cc[2]})')
+        # Specular parameters
+        lines.append(f'            float inputs:specular_reflection_roughness = {profile["specular_reflection_roughness"]}')
+        lines.append(f'            float inputs:specular_reflection_ior = {profile["specular_reflection_ior"]}')
+        # Thin-walled mode for non-watertight surface meshes
+        lines.append('            uniform bool inputs:thin_walled = 1')
+        return "\n".join(lines) + "\n"
 
     def render_mesh_warp(
         self,
@@ -500,15 +685,31 @@ def "Render" (
             has_material = diffuse_maps is not None and len(diffuse_maps) > 0
             if has_material:
                 self._textured_meshes.add(name)
-                # Build OmniPBR shader input lines
+                # Resolve texture paths
                 diffuse_path = self._texture_store.get(diffuse_maps[0], "")
-                shader_inputs = f'            asset inputs:diffuse_texture = @{diffuse_path}@\n'
+                normal_path = ""
                 if normal_maps and len(normal_maps) > 0:
                     normal_path = self._texture_store.get(normal_maps[0], "")
-                    shader_inputs += f'            asset inputs:normalmap_texture = @{normal_path}@\n'
+                spec_path = ""
                 if specular_maps and len(specular_maps) > 0:
                     spec_path = self._texture_store.get(specular_maps[0], "")
-                    shader_inputs += f'            asset inputs:reflectionroughness_texture = @{spec_path}@\n'
+                # Choose OmniSurface (with SSS) for tissue meshes, OmniPBR otherwise
+                sss_profile = TISSUE_SSS_PROFILES.get(name)
+                if sss_profile is not None:
+                    shader_inputs = self._build_omnisurface_shader_inputs(
+                        diffuse_path, normal_path, spec_path, sss_profile,
+                    )
+                    mdl_asset = "OmniSurface.mdl"
+                    mdl_subidentifier = "OmniSurface"
+                else:
+                    shader_inputs = f'            asset inputs:diffuse_texture = @{diffuse_path}@\n'
+                    if normal_path:
+                        shader_inputs += f'            asset inputs:normalmap_texture = @{normal_path}@\n'
+                    if spec_path:
+                        shader_inputs += f'            asset inputs:reflectionroughness_texture = @{spec_path}@\n'
+                    shader_inputs += '            bool inputs:project_uvw = 0\n'
+                    mdl_asset = "OmniPBR.mdl"
+                    mdl_subidentifier = "OmniPBR"
                 # Bake UV coordinates into the USDA (fabric can't create primvars dynamically)
                 uv_usda = '    texCoord2f[] primvars:st = [] (\n        interpolation = "vertex"\n    )\n'
                 if texture_coords is not None:
@@ -540,9 +741,8 @@ def Mesh "{sanitized}" (
 
         def Shader "Shader" {{
             uniform token info:implementationSource = "sourceAsset"
-            uniform asset info:mdl:sourceAsset = @OmniPBR.mdl@
-            uniform token info:mdl:sourceAsset:subIdentifier = "OmniPBR"
-            bool inputs:project_uvw = 0
+            uniform asset info:mdl:sourceAsset = @{mdl_asset}@
+            uniform token info:mdl:sourceAsset:subIdentifier = "{mdl_subidentifier}"
 {shader_inputs}            token outputs:out
         }}
     }}
