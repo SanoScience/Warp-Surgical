@@ -29,4 +29,4 @@ url = "https://pypi.org/simple"
 [tool.uv.sources]
 newton = { path = "../newton", editable = true }
 ovrtx = { path = "../../ovrtx/ovrtx", editable = true }
-#warp-lang = { path = "../warp", editable = true }
+warp-lang = { path = "../../warp/warp", editable = true }

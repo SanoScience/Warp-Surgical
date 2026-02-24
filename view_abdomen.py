@@ -25,7 +25,7 @@ if _ovrtx_bindings.OVRTX_LIBRARY_PATH_HINT is None:
         _ovrtx_bindings.OVRTX_LIBRARY_PATH_HINT = _candidate
 
 WIDTH, HEIGHT = 1280, 720
-USD_FILE = os.path.join(os.path.dirname(__file__), "abdomen.usdc")
+USD_FILE = os.path.join(os.path.dirname(__file__), "abdomen2.usdc")
 RENDER_PRODUCT = "/Render/OmniverseKit/HydraTextures/ViewportTexture0"
 
 # Camera state
@@ -81,7 +81,7 @@ def write_camera(renderer):
 def main():
     global cam_pos, cam_front, cam_yaw, cam_pitch
 
-    window = pyglet.window.Window(width=WIDTH, height=HEIGHT, caption="abdomen.usdc", resizable=False)
+    window = pyglet.window.Window(width=WIDTH, height=HEIGHT, caption="abdomen2.usdc", resizable=False)
 
     @window.event
     def on_key_press(symbol, modifiers):

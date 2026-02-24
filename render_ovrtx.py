@@ -92,6 +92,22 @@ TISSUE_SSS_PROFILES: dict[str, dict] = {
     },
 }
 
+# Per-organ OmniPBR profiles extracted from abdomen.usda Looks scope.
+# Meshes listed here get extra OmniPBR-specific parameters; all others use
+# plain OmniPBR defaults (diffuse + normal + spec textures, project_uvw=0).
+TISSUE_OMNIPBR_PROFILES: dict[str, dict] = {
+    "liver_mesh": {
+        "albedo_add": -0.01,
+        "ao_to_diffuse": 0,
+        "bump_factor": 1,
+    },
+    "gallbladder_mesh": {
+        "ao_to_diffuse": 0,
+        "diffuse_color_constant": (0.15, 0.2, 0.2),
+        "flip_tangent_u": 0,
+    },
+}
+
 
 def _make_float3_dltensor(arr: np.ndarray) -> DLTensor:
     """Create a DLTensor with dtype float32×3 (lanes=3) from an (N, 3) float32 array.
@@ -124,12 +140,13 @@ def _make_float3_dltensor(arr: np.ndarray) -> DLTensor:
 class OvrtxRenderer:
     """Real-time RTX ray-tracing renderer using ovrtx with a pyglet display window."""
 
-    def __init__(self, model, path, scaling=1.0, near_plane=0.05, far_plane=25):
+    def __init__(self, model, path, scaling=1.0, near_plane=0.05, far_plane=25, use_sss=True):
         self._width = 1280
         self._height = 720
         self._scaling = scaling
         self._near_plane = near_plane
         self._far_plane = far_plane
+        self._use_sss = use_sss
 
         # Camera state — look along -Z towards the simulation (around Z≈-4)
         self._cam_pos = [0.2, 1.2, -1.0]
@@ -151,15 +168,20 @@ class OvrtxRenderer:
         self._light_visibility: dict[str, bool] = {
             "EndoscopeLight": True,
             "KeyLight": False,
-            "DomeLight": False,
+            "DomeLight": True,
             "SurgicalLight": True,
         }
         self._light_config: dict[str, dict] = {
             "EndoscopeLight": {"prim": "/World/EndoscopeLight", "attr": "inputs:intensity", "intensity": 150000.0},
             "KeyLight": {"prim": "/World/KeyLight", "attr": "inputs:intensity", "intensity": 500.0},
-            "DomeLight": {"prim": "/World/DomeLight", "attr": "inputs:intensity", "intensity": 200.0},
-            "SurgicalLight": {"prim": "/World/SurgicalLight", "attr": "inputs:intensity", "intensity": 800.0},
+            "DomeLight": {"prim": "/World/DomeLight", "attr": "inputs:intensity", "intensity": 1000.0},
+            "SurgicalLight": {"prim": "/World/SurgicalLight", "attr": "inputs:intensity", "intensity": 5000.0},
         }
+
+        # KeyLight rotation angles (IJKL keys) — pitch (X) and yaw (Y)
+        self._keylight_pitch = -45.0  # degrees around X
+        self._keylight_yaw = -30.0    # degrees around Y
+        self._keylight_angle_speed = 60.0  # degrees per second
 
         # Keyboard callbacks and state
         self._on_key_press_callback = None
@@ -217,8 +239,9 @@ class OvrtxRenderer:
         # Add base USD scene (camera, lights, render product)
         self._setup_base_scene()
 
-        # Set initial camera transform
+        # Set initial camera and KeyLight transforms
         self._update_camera_transform()
+        self._update_keylight_transform()
 
     # ------------------------------------------------------------------
     # USD scene setup
@@ -247,12 +270,15 @@ def Xform "World" {{
         float inputs:intensity = 150000
         float radius = 0.05
         color3f inputs:color = (1, 1, 1)
+        bool inputs:normalize = 1
+        bool inputs:enableColorTemperature = 1
         matrix4d xformOp:transform = ((1,0,0,0),(0,1,0,0),(0,0,1,0),({self._cam_pos[0]},{self._cam_pos[1]},{self._cam_pos[2]},1))
         uniform token[] xformOpOrder = ["xformOp:transform"]
     }}
 
     def DomeLight "DomeLight" (prepend apiSchemas = ["ShapingAPI"]) {{
-        float inputs:intensity = 0
+        float inputs:intensity = 1000
+        float inputs:exposure = 1
         token inputs:texture:format = "latlong"
     }}
 
@@ -260,14 +286,17 @@ def Xform "World" {{
         float inputs:intensity = 0
         float inputs:angle = 2.0
         color3f inputs:color = (1, 0.95, 0.9)
-        float3 xformOp:rotateXYZ = (-45, 30, 0)
+        float3 xformOp:rotateXYZ = ({self._keylight_pitch}, {self._keylight_yaw}, 0)
         uniform token[] xformOpOrder = ["xformOp:rotateXYZ"]
     }}
 
-    def DistantLight "SurgicalLight" {{
-        float inputs:intensity = 800
-        float inputs:angle = 5.0
-        color3f inputs:color = (1, 0.95, 0.9)
+    def SphereLight "SurgicalLight" (prepend apiSchemas = ["ShapingAPI"]) {{
+        float inputs:intensity = 5000
+        float inputs:radius = 0.1
+        color3f inputs:color = (0.99, 1, 1)
+        bool inputs:normalize = 0
+        bool inputs:enableColorTemperature = 1
+        float inputs:shaping:cone:angle = 180
         float3 xformOp:rotateXYZ = (135, 0, 0)
         uniform token[] xformOpOrder = ["xformOp:rotateXYZ"]
     }}
@@ -394,6 +423,26 @@ def "Render" (
     def _camera_pos(self, value):
         self._cam_pos = list(value)
         self._update_camera_transform()
+
+    def _update_keylight_transform(self):
+        """Write KeyLight rotation from pitch/yaw angles (rotateXYZ order)."""
+        import math
+        px = math.radians(self._keylight_pitch)
+        py = math.radians(self._keylight_yaw)
+        cx, sx = math.cos(px), math.sin(px)
+        cy, sy = math.cos(py), math.sin(py)
+        # Ry * Rx  (USD rotateXYZ applies X then Y then Z, Z is 0)
+        m = Matrix4d()
+        m[0] = [cy,     sx * sy,  -cx * sy, 0.0]
+        m[1] = [0.0,    cx,        sx,      0.0]
+        m[2] = [sy,    -sx * cy,   cx * cy, 0.0]
+        m[3] = [0.0,    0.0,       0.0,     1.0]
+        self._ovrtx.write_attribute(
+            prim_paths=["/World/KeyLight"],
+            attribute_name="omni:fabric:localMatrix",
+            tensor=m.to_dltensor(),
+            semantic="transform_4x4",
+        )
 
     def update_view_matrix(self, cam_pos=None, cam_front=None, cam_up=None, stiffness=1.0):
         """Update camera view matrix from position/direction/up."""
@@ -557,13 +606,44 @@ def "Render" (
             self._keys_held.discard(key._4)
             self.toggle_light("SurgicalLight")
 
-        # EndoscopeLight intensity: 0 = decrease, 9 = increase
+        # Light intensity controls:
+        # 0/9 = EndoscopeLight, 5/6 = KeyLight, 7/8 = DomeLight
         if key._0 in self._keys_held:
             self._keys_held.discard(key._0)
-            self.adjust_light_intensity("EndoscopeLight", -100000.0)
+            self.adjust_light_intensity("EndoscopeLight", -15000.0)
         if key._9 in self._keys_held:
             self._keys_held.discard(key._9)
-            self.adjust_light_intensity("EndoscopeLight", 100000.0)
+            self.adjust_light_intensity("EndoscopeLight", 15000.0)
+        if key._5 in self._keys_held:
+            self._keys_held.discard(key._5)
+            self.adjust_light_intensity("KeyLight", -50.0)
+        if key._6 in self._keys_held:
+            self._keys_held.discard(key._6)
+            self.adjust_light_intensity("KeyLight", 50.0)
+        if key._7 in self._keys_held:
+            self._keys_held.discard(key._7)
+            self.adjust_light_intensity("DomeLight", -100.0)
+        if key._8 in self._keys_held:
+            self._keys_held.discard(key._8)
+            self.adjust_light_intensity("DomeLight", 100.0)
+
+        # KeyLight angle: I/K = pitch, J/L = yaw
+        kl_step = self._keylight_angle_speed * self._dt
+        kl_moved = False
+        if key.I in self._keys_held:
+            self._keylight_pitch -= kl_step
+            kl_moved = True
+        if key.K in self._keys_held:
+            self._keylight_pitch += kl_step
+            kl_moved = True
+        if key.J in self._keys_held:
+            self._keylight_yaw -= kl_step
+            kl_moved = True
+        if key.L in self._keys_held:
+            self._keylight_yaw += kl_step
+            kl_moved = True
+        if kl_moved:
+            self._update_keylight_transform()
 
 
     def end_frame(self):
@@ -633,6 +713,29 @@ def "Render" (
         lines.append('            uniform bool inputs:thin_walled = 1')
         return "\n".join(lines) + "\n"
 
+    def _build_omnipbr_shader_inputs(self, diffuse_path, normal_path, spec_path, profile):
+        """Build OmniPBR shader input lines with per-organ parameters from abdomen scene."""
+        lines = []
+        if diffuse_path:
+            lines.append(f'            asset inputs:diffuse_texture = @{diffuse_path}@')
+        if normal_path:
+            lines.append(f'            asset inputs:normalmap_texture = @{normal_path}@')
+        if spec_path:
+            lines.append(f'            asset inputs:reflectionroughness_texture = @{spec_path}@')
+        lines.append('            bool inputs:project_uvw = 0')
+        if profile:
+            for key, val in profile.items():
+                if isinstance(val, tuple):
+                    lines.append(f'            color3f inputs:{key} = ({val[0]}, {val[1]}, {val[2]})')
+                elif isinstance(val, float):
+                    lines.append(f'            float inputs:{key} = {val}')
+                elif isinstance(val, int):
+                    if isinstance(val, bool):
+                        lines.append(f'            bool inputs:{key} = {int(val)}')
+                    else:
+                        lines.append(f'            float inputs:{key} = {val}')
+        return "\n".join(lines) + "\n"
+
     def render_mesh_warp(
         self,
         name: str,
@@ -693,21 +796,21 @@ def "Render" (
                 spec_path = ""
                 if specular_maps and len(specular_maps) > 0:
                     spec_path = self._texture_store.get(specular_maps[0], "")
-                # Choose OmniSurface (with SSS) for tissue meshes, OmniPBR otherwise
+                # Choose material type based on use_sss flag
                 sss_profile = TISSUE_SSS_PROFILES.get(name)
-                if sss_profile is not None:
+                if self._use_sss and sss_profile is not None:
+                    # OmniSurface with subsurface scattering
                     shader_inputs = self._build_omnisurface_shader_inputs(
                         diffuse_path, normal_path, spec_path, sss_profile,
                     )
                     mdl_asset = "OmniSurface.mdl"
                     mdl_subidentifier = "OmniSurface"
                 else:
-                    shader_inputs = f'            asset inputs:diffuse_texture = @{diffuse_path}@\n'
-                    if normal_path:
-                        shader_inputs += f'            asset inputs:normalmap_texture = @{normal_path}@\n'
-                    if spec_path:
-                        shader_inputs += f'            asset inputs:reflectionroughness_texture = @{spec_path}@\n'
-                    shader_inputs += '            bool inputs:project_uvw = 0\n'
+                    # OmniPBR with per-organ parameters from abdomen scene
+                    pbr_profile = TISSUE_OMNIPBR_PROFILES.get(name)
+                    shader_inputs = self._build_omnipbr_shader_inputs(
+                        diffuse_path, normal_path, spec_path, pbr_profile,
+                    )
                     mdl_asset = "OmniPBR.mdl"
                     mdl_subidentifier = "OmniPBR"
                 # Bake UV coordinates into the USDA (fabric can't create primvars dynamically)
@@ -720,6 +823,7 @@ def "Render" (
                     uv_usda = f'    texCoord2f[] primvars:st = [{uv_strs}] (\n        interpolation = "vertex"\n    )\n'
                 # Material as child — use RELATIVE paths (absolute paths break
                 # with path_prefix because they don't exist in the raw layer).
+                no_shadow = '    bool primvars:doNotCastShadows = 1\n' if name == "background_mesh" else ''
                 usda = f"""#usda 1.0
 (defaultPrim = "{sanitized}")
 def Mesh "{sanitized}" (
@@ -731,7 +835,7 @@ def Mesh "{sanitized}" (
     normal3f[] normals = [] (
         interpolation = "vertex"
     )
-{uv_usda}    matrix4d xformOp:transform = ((1,0,0,0),(0,1,0,0),(0,0,1,0),(0,0,0,1))
+{no_shadow}{uv_usda}    matrix4d xformOp:transform = ((1,0,0,0),(0,1,0,0),(0,0,1,0),(0,0,0,1))
     uniform token[] xformOpOrder = ["xformOp:transform"]
 
     def Material "Material" {{

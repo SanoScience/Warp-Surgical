@@ -361,7 +361,7 @@ def check_centreline_leaks(states, num_points, device=None):
 class WarpSim:
     #region Initialization
     def __init__(self, stage_path="output.usd", num_frames=300, use_opengl=True, use_ovrtx=False,
-                 use_isaacsim=False, simulation_app=None):
+                 use_isaacsim=False, simulation_app=None, use_sss=True):
         self.sim_substeps = 16
         self.num_frames = num_frames
         self.fps = 120
@@ -456,7 +456,7 @@ class WarpSim:
         self._setup_simulation()
         
         # Initialize rendering
-        self._setup_renderer(stage_path, use_opengl, use_ovrtx, use_isaacsim, simulation_app)
+        self._setup_renderer(stage_path, use_opengl, use_ovrtx, use_isaacsim, simulation_app, use_sss=use_sss)
 
         # Grasp setup
         self.grasp_capacity = 1024
@@ -1296,7 +1296,7 @@ class WarpSim:
         # self.model.count_accumulator = wp.zeros(self.model.particle_count, dtype=wp.int32, device=wp.get_device())
 
     def _setup_renderer(self, stage_path, use_opengl, use_ovrtx=False,
-                        use_isaacsim=False, simulation_app=None):
+                        use_isaacsim=False, simulation_app=None, use_sss=True):
         """Initialize the appropriate renderer."""
         self.use_opengl = use_opengl
         self.use_ovrtx = use_ovrtx
@@ -1309,7 +1309,7 @@ class WarpSim:
                 scaling=1.0, near_plane=0.05, far_plane=25)
         elif self.use_ovrtx:
             from render_ovrtx import OvrtxRenderer
-            self.renderer = OvrtxRenderer(self.model, "Warp Surgical Simulation", scaling=1.0, near_plane=0.05, far_plane=25)
+            self.renderer = OvrtxRenderer(self.model, "Warp Surgical Simulation", scaling=1.0, near_plane=0.05, far_plane=25, use_sss=use_sss)
         elif self.use_opengl:
             self.renderer = SurgSimRendererOpenGL(self.model, "Warp Surgical Simulation", scaling=1.0, near_plane=0.05, far_plane=25)
         elif stage_path:

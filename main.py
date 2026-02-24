@@ -15,6 +15,7 @@ def parse_arguments():
     parser.add_argument("--num_frames", type=int, default=300, help="Total number of frames.")
     parser.add_argument("--usd", action="store_true", help="Render to USD instead of OpenGL.")
     parser.add_argument("--ovrtx", action="store_true", help="Render with ovrtx RTX ray tracing.")
+    parser.add_argument("--no-sss", action="store_true", help="Use OmniPBR materials instead of OmniSurface SSS (ovrtx only).")
     parser.add_argument("--isaacsim", action="store_true", help="Render with Isaac Sim RTX renderer.")
     parser.add_argument("--isaacsim_headless", action="store_true", help="Run Isaac Sim in headless mode.")
     parser.add_argument("--isaacsim_renderer", type=str, default="RayTracedLighting",
@@ -43,6 +44,7 @@ def run_simulation(args, simulation_app=None):
         use_ovrtx=args.ovrtx,
         use_isaacsim=use_isaacsim,
         simulation_app=simulation_app,
+        use_sss=not args.no_sss,
     )
 
     if args.usd:
