@@ -1159,10 +1159,13 @@ def CreateSurgSimRenderer(renderer):
             except gl.GLException:
                 pass
 
-            _, _, _, _, geo_hash, _ = self._shapes[shape]
-            assert(self._shape_geo_hash[geo_hash] == shape)
-
-            del self._shape_geo_hash[geo_hash]
+            shape_data = self._shapes[shape]
+            if len(shape_data) < 5:
+                return
+            geo_hash = shape_data[4]
+            if geo_hash in self._shape_geo_hash and self._shape_geo_hash[geo_hash] == shape:
+                del self._shape_geo_hash[geo_hash]
+                
             #del self._shape_gl_buffers[shape]
             #self._shapes.pop(shape)
 
