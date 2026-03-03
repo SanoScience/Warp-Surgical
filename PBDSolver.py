@@ -123,7 +123,7 @@ class PBDSolver(SolverXPBD):
 
         if contacts:
             if self.rigid_contact_con_weighting:
-                rigid_contact_inv_weight = wp.zeros_like(contacts.rigid_contact_thickness0)
+                rigid_contact_inv_weight = wp.zeros(model.body_count, dtype=float, device=model.device)
             rigid_contact_inv_weight_init = None
 
         if control is None:
@@ -151,7 +151,10 @@ class PBDSolver(SolverXPBD):
 
                 body_deltas = wp.empty_like(state_out.body_qd)
 
+                body_f_tmp = state_in.body_f
                 if model.joint_count:
+                    # Avoid accumulating joint_f into the persistent state body_f buffer.
+                    body_f_tmp = wp.clone(state_in.body_f)
                     wp.launch(
                         kernel=apply_joint_forces,
                         dim=model.joint_count,
@@ -162,16 +165,23 @@ class PBDSolver(SolverXPBD):
                             model.joint_parent,
                             model.joint_child,
                             model.joint_X_p,
+                            model.joint_X_c,
                             model.joint_qd_start,
                             model.joint_dof_dim,
                             model.joint_axis,
                             control.joint_f,
                         ],
-                        outputs=[state_in.body_f],
+                        outputs=[body_f_tmp],
                         device=model.device,
                     )
 
-                self.integrate_bodies(model, state_in, state_out, dt, self.angular_damping)
+                if body_f_tmp is state_in.body_f:
+                    self.integrate_bodies(model, state_in, state_out, dt, self.angular_damping)
+                else:
+                    body_f_prev = state_in.body_f
+                    state_in.body_f = body_f_tmp
+                    self.integrate_bodies(model, state_in, state_out, dt, self.angular_damping)
+                    state_in.body_f = body_f_prev
 
             spring_constraint_lambdas = None
             if model.spring_count:
@@ -449,7 +459,7 @@ class PBDSolver(SolverXPBD):
                                   device=model.device,
                             )
 
-                        particle_q, particle_qd = self.apply_particle_deltas(
+                        particle_q, particle_qd = self._apply_particle_deltas(
                             model, state_in, state_out, particle_deltas, dt
                         )
 
@@ -617,22 +627,19 @@ class PBDSolver(SolverXPBD):
                 if model.particle_count:
                     wp.launch(
                         kernel=apply_particle_shape_restitution,
-                        dim=model.particle_count,
+                        dim=contacts.soft_contact_max,
                         inputs=[
-                            particle_q,
                             particle_qd,
                             self.particle_q_init,
                             self.particle_qd_init,
-                            model.particle_inv_mass,
                             model.particle_radius,
                             model.particle_flags,
                             body_q,
+                            body_q_init,
                             body_qd,
+                            body_qd_init,
                             model.body_com,
-                            model.body_inv_mass,
-                            model.body_inv_inertia,
                             model.shape_body,
-                            model.shape_materials,
                             model.particle_adhesion,
                             model.soft_contact_restitution,
                             contacts.soft_contact_count,
@@ -642,8 +649,6 @@ class PBDSolver(SolverXPBD):
                             contacts.soft_contact_body_vel,
                             contacts.soft_contact_normal,
                             contacts.soft_contact_max,
-                            dt,
-                            self.soft_contact_relaxation,
                         ],
                         outputs=[state_out.particle_qd],
                         device=model.device,

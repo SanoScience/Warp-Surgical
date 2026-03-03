@@ -357,10 +357,11 @@ def check_centreline_leaks(states, num_points, device=None):
 
 class WarpSim:
     #region Initialization
-    def __init__(self, stage_path="output.usd", num_frames=300, use_opengl=True):
+    def __init__(self, stage_path="output.usd", num_frames=300, use_opengl=True, enable_textures=True):
         self.sim_substeps = 16
         self.num_frames = num_frames
         self.fps = 120
+        self.enable_textures = enable_textures  # Global toggle for texture loading
 
         self.frame_dt = 1.0 / self.fps
         self.substep_dt = self.frame_dt / self.sim_substeps
@@ -494,6 +495,9 @@ class WarpSim:
 
         self.renderer.renderer.register_key_press(self._on_key_press)
         self.renderer.renderer.register_key_release(self._on_key_release)
+
+        # Pre-load textures into memory to avoid disk I/O every frame
+        self._load_textures()
 
         # Setup CUDA graph if available
         self._setup_cuda_graph()
@@ -1273,6 +1277,49 @@ class WarpSim:
         self.background_uvs = uvs
         self.background_vertex_colors = vertex_colors
 
+    def _load_textures(self):
+        """Pre-load all textures into memory to avoid disk I/O every frame."""
+        from PIL import Image
+        import os
+
+        self.texture_cache = {}
+
+        if not self.enable_textures:
+            print("Textures disabled (enable_textures=False)")
+            return
+
+        # Load background mesh textures
+        background_textures = {
+            "diffuse": "textures/cavity_diffuse.tga",
+            "normal": "textures/cavity_normals.tga",
+            "specular": "textures/cavity_spec.png"
+        }
+
+        for tex_type, texture_path in background_textures.items():
+            if os.path.exists(texture_path):
+                try:
+                    img = Image.open(texture_path).convert("RGBA")
+                    self.texture_cache[f"background_{tex_type}"] = np.array(img)
+                    print(f"Pre-loaded background texture: {texture_path}")
+                except Exception as e:
+                    print(f"Failed to load background texture {texture_path}: {e}")
+
+        # Load textures for each mesh
+        for mesh_name in self.mesh_ranges.keys():
+            texture_path = f"textures/{mesh_name}/diffuse-base.png"
+
+            if os.path.exists(texture_path):
+                try:
+                    img = Image.open(texture_path).convert("RGBA")
+                    self.texture_cache[f"{mesh_name}_diffuse"] = np.array(img)
+                    print(f"Pre-loaded texture: {texture_path}")
+                except Exception as e:
+                    print(f"Failed to load texture {texture_path}: {e}")
+            else:
+                print(f"Texture not found: {texture_path}")
+
+        print(f"Loaded {len(self.texture_cache)} textures into memory")
+
     def _setup_simulation(self):
         """Initialize simulation states and integrator."""
         self.integrator = PBDSolver(self.model, iterations=5)
@@ -1392,28 +1439,22 @@ class WarpSim:
                 )
             # Render background mesh
             if self.background_mesh is not None and self.background_tri_indices is not None:
+                background_texture = self.texture_cache.get("background_diffuse", None) if self.enable_textures else None
 
                 self.renderer.log_mesh(
                     name="background_mesh",
                     points=self.background_mesh,
                     indices=self.background_tri_indices,
-                    #texture_coords=self.background_uvs,
-                    #vertex_colors=self.background_vertex_colors,
-                    #diffuse_maps=self.background_diffuse,
-                    #normal_maps=self.background_normal,
-                    #specular_maps=self.background_spec,
-                    #pos=(0.0, 1.0, -5.4),
-                    #rot=(0.0, 0.0, 0.0, 1.0),
-                    #scale=(1.2, 1.2, 1.2),
-                    #update_topology=True, # TODO: Disable update-topology once it works properly
-                    #smooth_shading=True,
+                    texture=background_texture,
+                    uvs=self.background_uvs,
+                    
                     hidden=True
                 )
 
                 xforms = wp.array([wp.transform()], dtype=wp.transformf)
                 scales = wp.array([1.2, 1.2, 1.2], dtype=wp.vec3)
                 colors = wp.array([wp.vec3(0.5, 0.5, 0.5)], dtype=wp.vec3)
-                mat = wp.array([wp.vec4(1.0, 0.7, 0.0, 0.0)], dtype=wp.vec4)
+                mat = wp.array([wp.vec4(1.0, 0.0, 0.0, 1.0)], dtype=wp.vec4)
 
                 self.renderer.log_instances("background_mesh_instance", "background_mesh", xforms, scales, colors, materials=mat)
 
@@ -1553,32 +1594,24 @@ class WarpSim:
                 
                 num_triangles = int(tet_surface_counter.numpy()[0])
                 if num_triangles > 0:
-                    #diffuse_maps = getattr(self, f"{mesh_name}_diffuse_maps", None)
-                    #normal_maps = getattr(self, f"{mesh_name}_normal_maps", None)
-                    #specular_maps = getattr(self, f"{mesh_name}_specular_maps", None)
-
                     mesh_full_name = f"{mesh_name}_mesh"
+
+                    # Use pre-loaded texture from cache instead of file path
+                    texture_data = self.texture_cache.get(f"{mesh_name}_diffuse", None) if self.enable_textures else None
 
                     self.renderer.log_mesh(
                         name=mesh_full_name,
                         points=self.state_0.particle_q,
                         indices=tet_surface_indices.flatten(),
                         uvs=self.uvs_wp,
-                        hidden=True
-                        #texture=f"textures/{mesh_name}/diffuse-base.png"
-                        #diffuse_maps=diffuse_maps,
-                        #normal_maps=normal_maps,
-                        #specular_maps=specular_maps,
-                        #colors=self.vertex_colors,
-                        #index_start=0,
-                        #index_count=num_triangles,
-                        #update_topology=True
+                        texture=texture_data,
+                        hidden=True,
                     )
 
                     xforms = wp.array([wp.transform()], dtype=wp.transformf)
                     scales = wp.array([1.0, 1.0, 1.0], dtype=wp.vec3)
                     colors = wp.array([wp.vec3(1.0, 1.0, 1.0)], dtype=wp.vec3)
-                    mat_default = wp.array([wp.vec4(1.0, 0.7, 0.0, 0.0)], dtype=wp.vec4)
+                    mat_default = wp.array([wp.vec4(0.0, 0.0, 0.0, 1.0)], dtype=wp.vec4)
 
                     self.renderer.log_instances(f"{mesh_name}_instance", mesh_full_name, xforms, scales, colors, materials=mat_default)
                 
@@ -1659,18 +1692,22 @@ class WarpSim:
                         if not piece['visible']:
                             continue
                         
+                        name = f"instrument_{instrument_idx}_piece_{piece_idx}_{piece['name']}"
+
                         self.renderer.log_mesh(
-                            name=f"instrument_{instrument_idx}_piece_{piece_idx}_{piece['name']}",
+                            name=name,
                             points=piece['vertices'],
                             indices=piece['indices'],
-                            #pos=(0.0, 0.0, 0.0),
-                            #rot=(0.0, 0.0, 0.0, 1.0),
-                            #scale=(1.0, 1.0, 1.0),
-                            #basic_color=(0.7, 0.7, 0.8),
-                            #update_topology=False,
-                            #smooth_shading=True,
-                            #visible=True
+                            hidden=True
                         )
+
+
+                        xforms = wp.array([wp.transform()], dtype=wp.transformf)
+                        scales = wp.array([1.0, 1.0, 1.0], dtype=wp.vec3)
+                        colors = wp.array([wp.vec3(1.0, 1.0, 1.0)], dtype=wp.vec3)
+                        mat_default = wp.array([wp.vec4(0.1, 1.0, 0.0, 0.0)], dtype=wp.vec4)
+
+                        self.renderer.log_instances(f"{name}_instance", name, xforms, scales, colors, materials=mat_default)
 
             
             # Update all bleed particles
@@ -1759,7 +1796,7 @@ class WarpSim:
         """Compute scalar field from bleeding particles for marching cubes."""
         # Count active particles
         active_count = int(np.sum(self.bleed_active.numpy()))
-        print(f"Active bleeding particles: {active_count}")
+        #print(f"Active bleeding particles: {active_count}")
         if active_count == 0:
             return None
         
@@ -1864,7 +1901,7 @@ class WarpSim:
         field_data = self.compute_bleeding_field()
         if field_data is None:
             self.bleeding_mesh_triangle_count = 0
-            print("No field data")
+            #print("No field data")
             return None
         
         field = field_data['field']
