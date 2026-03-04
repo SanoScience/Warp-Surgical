@@ -32,7 +32,8 @@ def run_simulation(args):
     sim = WarpSim(
         stage_path=args.stage_path, 
         num_frames=args.num_frames, 
-        use_opengl=not args.usd
+        use_opengl=not args.usd,
+        enable_textures=False
     )
     
     if args.usd:

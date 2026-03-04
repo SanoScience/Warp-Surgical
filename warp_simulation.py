@@ -1,6 +1,6 @@
 import sys
 from centrelines import CentrelinePointInfo, ClampConstraint, attach_clip_to_nearest_centreline, compute_centreline_positions, cut_centrelines_near_haptic, emit_bleed_particles, update_bleed_particles, update_centreline_leaks
-from grasping import grasp_end, grasp_process, grasp_start
+from grasping import grasp_end, grasp_start
 from heating import heating_active_process, heating_conduction_process, heating_end, heating_start, paint_vertices_near_haptic_proxy, set_paint_strength
 from stretching import stretching_breaking_process
 from surface_reconstruction import extract_surface_triangles_bucketed
@@ -375,7 +375,7 @@ class WarpSim:
         self.radius_heating = 0.2
         self.radius_clipping = 0.1
         self.radius_cutting = 0.2
-        self.radius_grasping = 0.075
+        self.radius_grasping = 0.1
 
         self.particle_mass = 0.1
 
@@ -449,16 +449,18 @@ class WarpSim:
         self.bleeding_mesh_triangle_count = 0
         self.bleeding_isosurface_threshold = 0.0
 
-        # Initialize simulation components
-        self._setup_simulation()
-        
-        # Initialize rendering
-        self._setup_renderer(stage_path, use_opengl)
-
         # Grasp setup
         self.grasp_capacity = 1024
         self.grasped_particles_buffer = wp.zeros(self.grasp_capacity, dtype=wp.int32, device=wp.get_device())
         self.grasped_particles_counter = wp.zeros(1, dtype=wp.int32, device=wp.get_device())
+        self.grasp_offsets_buffer = wp.zeros(self.grasp_capacity, dtype=wp.vec3f, device=wp.get_device())
+        self.grasp_stiffness = 1.0
+
+        # Initialize simulation components
+        self._setup_simulation()
+
+        # Initialize rendering
+        self._setup_renderer(stage_path, use_opengl)
 
         # Heating setup
         self.paint_color_buffer = wp.array([wp.vec4(1.0, 0.0, 0.0, 0.0)], dtype=wp.vec4, device=wp.get_device())
@@ -1323,9 +1325,14 @@ class WarpSim:
     def _setup_simulation(self):
         """Initialize simulation states and integrator."""
         self.integrator = PBDSolver(self.model, iterations=5)
-        
+
         self.integrator.dev_pos_buffer = wp.array([0.0, 0.0, 0.0], dtype=wp.vec3, device=wp.get_device())
         self.integrator.dev_pos_prev_buffer = wp.array([0.0, 0.0, 0.0], dtype=wp.vec3, device=wp.get_device())
+
+        self.integrator.grasped_particles_buffer = self.grasped_particles_buffer
+        self.integrator.grasped_particles_counter = self.grasped_particles_counter
+        self.integrator.grasp_offsets_buffer = self.grasp_offsets_buffer
+        self.integrator.grasp_stiffness = self.grasp_stiffness
 
         self.rest = self.model.state()
         self.state_0 = self.model.state()
@@ -1440,6 +1447,7 @@ class WarpSim:
             # Render background mesh
             if self.background_mesh is not None and self.background_tri_indices is not None:
                 background_texture = self.texture_cache.get("background_diffuse", None) if self.enable_textures else None
+                use_texture = 1.0 if self.enable_textures else 0.0
 
                 self.renderer.log_mesh(
                     name="background_mesh",
@@ -1454,13 +1462,10 @@ class WarpSim:
                 xforms = wp.array([wp.transform()], dtype=wp.transformf)
                 scales = wp.array([1.2, 1.2, 1.2], dtype=wp.vec3)
                 colors = wp.array([wp.vec3(0.5, 0.5, 0.5)], dtype=wp.vec3)
-                mat = wp.array([wp.vec4(1.0, 0.0, 0.0, 1.0)], dtype=wp.vec4)
+                mat = wp.array([wp.vec4(1.0, 0.0, 0.0, use_texture)], dtype=wp.vec4)
 
                 self.renderer.log_instances("background_mesh_instance", "background_mesh", xforms, scales, colors, materials=mat)
 
-            # Grasping
-            if self.grasping_active:
-                grasp_process(self)
 
 
             # Centreline update
@@ -1598,6 +1603,7 @@ class WarpSim:
 
                     # Use pre-loaded texture from cache instead of file path
                     texture_data = self.texture_cache.get(f"{mesh_name}_diffuse", None) if self.enable_textures else None
+                    use_texture = 1.0 if self.enable_textures else 0.0
 
                     self.renderer.log_mesh(
                         name=mesh_full_name,
@@ -1611,7 +1617,7 @@ class WarpSim:
                     xforms = wp.array([wp.transform()], dtype=wp.transformf)
                     scales = wp.array([1.0, 1.0, 1.0], dtype=wp.vec3)
                     colors = wp.array([wp.vec3(1.0, 1.0, 1.0)], dtype=wp.vec3)
-                    mat_default = wp.array([wp.vec4(0.0, 0.0, 0.0, 1.0)], dtype=wp.vec4)
+                    mat_default = wp.array([wp.vec4(0.0, 0.0, 0.0, use_texture)], dtype=wp.vec4)
 
                     self.renderer.log_instances(f"{mesh_name}_instance", mesh_full_name, xforms, scales, colors, materials=mat_default)
                 

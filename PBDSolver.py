@@ -29,6 +29,8 @@ from simulation_kernels import (
     bounds_collision
 )
 
+from grasping import solve_grasp_distance_constraints
+
 from collision_kernels import (
     collide_particles_vs_sphere,
     collide_triangles_vs_sphere,
@@ -49,6 +51,12 @@ class PBDSolver(SolverXPBD):
         self.dev_pos_buffer = None
         self.self_contact_radius: float = 0.002
         self.self_contact_margin: float = 0.002
+
+        self.grasping_active = False
+        self.grasped_particles_buffer = None
+        self.grasped_particles_counter = None
+        self.grasp_offsets_buffer = None
+        self.grasp_stiffness = 1.0
         
         # self.trimesh_collision_detector = TriMeshCollisionDetector(
         #     self.model,
@@ -391,7 +399,36 @@ class PBDSolver(SolverXPBD):
                             device=model.device,
                         )
 
-                        
+                        # Grasp constraints
+                        wp.launch(
+                            solve_grasp_distance_constraints,
+                            dim=len(self.grasped_particles_buffer),
+                            inputs=[
+                                particle_q,
+                                model.particle_inv_mass,
+                                self.grasped_particles_buffer,
+                                self.grasped_particles_counter,
+                                self.dev_pos_buffer,
+                                self.grasp_offsets_buffer,
+                                self.grasp_stiffness,
+                                particle_deltas_accumulator,
+                                particle_deltas_count,
+                            ],
+                            device=model.device,
+                        )
+
+                        wp.launch(
+                            kernel=apply_deltas_and_zero_accumulators,
+                            dim=model.particle_count,
+                            inputs=[
+                                particle_deltas_accumulator,
+                                particle_deltas_count,
+                            ],
+                            outputs=[particle_deltas],
+                            device=model.device,
+                        )
+
+
 
 
 
