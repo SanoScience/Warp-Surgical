@@ -17,6 +17,7 @@ dependencies = [
     "usd-core>=25.5.1",
     "warp-lang==1.12.0rc2",
     "imgui-bundle>=1.92.5",
+    "ovrtx>=0.1.0.529",
 ]
 
 
@@ -29,5 +30,7 @@ explicit = true
 url = "https://pypi.org/simple"
 
 [tool.uv.sources]
-#newton = { path = "../newton", editable = true }
+#newton = { path = "/home/pkorzeniowsk/Projects/newton/newton-1.0", editable = true }
+newton = { path = "/home/pkorzeniowsk/Projects/newton/mmacklin-viewer-rtx", editable = true }
 #warp-lang = { path = "../warp", editable = true }
+ovrtx = { path = "/home/pkorzeniowsk/Downloads/ovrtx-0.2.0.278102-py3-none-manylinux_2_35_x86_64.whl" }

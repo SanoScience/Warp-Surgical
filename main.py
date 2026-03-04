@@ -24,7 +24,8 @@ def parse_arguments():
     )
     parser.add_argument("--num_frames", type=int, default=300, help="Total number of frames.")
     parser.add_argument("--usd", action="store_true", help="Render to USD instead of OpenGL.")
-    
+    parser.add_argument("--viewer", type=str, default="gl", choices=["gl", "rtx"], help="Viewer backend to use.")
+
     return parser.parse_known_args()[0]
 
 def run_simulation(args):
@@ -39,7 +40,9 @@ def run_simulation(args):
     sim = WarpSim(
         stage_path=args.stage_path,
         num_frames=args.num_frames,
-        use_opengl=not args.usd
+        use_opengl=not args.usd,
+        viewer=args.viewer,
+        enable_textures = True
     )
 
     if args.usd:

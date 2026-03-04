@@ -357,7 +357,7 @@ def check_centreline_leaks(states, num_points, device=None):
 
 class WarpSim:
     #region Initialization
-    def __init__(self, stage_path="output.usd", num_frames=300, use_opengl=True, enable_textures=True):
+    def __init__(self, stage_path="output.usd", num_frames=300, use_opengl=True, viewer="gl", enable_textures=True):
         self.sim_substeps = 16
         self.num_frames = num_frames
         self.fps = 120
@@ -460,14 +460,21 @@ class WarpSim:
         self._setup_simulation()
 
         # Initialize rendering
-        self._setup_renderer(stage_path, use_opengl)
+        self._setup_renderer(stage_path, use_opengl, viewer)
+
+        # Grasp setup
+        self.grasp_capacity = 1024
+        self.grasped_particles_buffer = wp.zeros(self.grasp_capacity, dtype=wp.int32, device=wp.get_device())
+        self.grasped_particles_counter = wp.zeros(1, dtype=wp.int32, device=wp.get_device())
 
         # Heating setup
         self.paint_color_buffer = wp.array([wp.vec4(1.0, 0.0, 0.0, 0.0)], dtype=wp.vec4, device=wp.get_device())
         self.paint_strength_buffer = wp.array([0.0], dtype=wp.float32, device=wp.get_device()) 
         set_paint_strength(self, 0.0)
     
-        self._load_background_mesh()
+        #self._load_background_mesh()
+        self.background_mesh = None
+        self.background_tri_indices = None
 
         '''
         # Load textures
@@ -495,8 +502,9 @@ class WarpSim:
                                                             self.renderer.load_texture(f"textures/{mesh_name}/spec-blood.png")])
         '''
 
-        self.renderer.renderer.register_key_press(self._on_key_press)
-        self.renderer.renderer.register_key_release(self._on_key_release)
+        if hasattr(self.renderer, 'renderer'):
+            self.renderer.renderer.register_key_press(self._on_key_press)
+            self.renderer.renderer.register_key_release(self._on_key_release)
 
         # Pre-load textures into memory to avoid disk I/O every frame
         self._load_textures()
@@ -1343,12 +1351,15 @@ class WarpSim:
         # self.model.delta_accumulator = wp.zeros(self.model.particle_count, dtype=wp.vec3f, device=wp.get_device())
         # self.model.count_accumulator = wp.zeros(self.model.particle_count, dtype=wp.int32, device=wp.get_device())
 
-    def _setup_renderer(self, stage_path, use_opengl):
+    def _setup_renderer(self, stage_path, use_opengl, viewer="gl"):
         """Initialize the appropriate renderer."""
         self.use_opengl = use_opengl
-        
+
         if self.use_opengl:
-            self.renderer = newton.viewer.ViewerGL()
+            if viewer == "rtx":
+                self.renderer = newton.viewer.ViewerRTX()
+            else:
+                self.renderer = newton.viewer.ViewerGL()
             self.renderer.set_model(self.model)
 
         elif stage_path:
@@ -1441,7 +1452,7 @@ class WarpSim:
                     "haptic_proxy_sphere",
                     wp.array([[self.haptic_pos_right[0] * 0.01, self.haptic_pos_right[1] * 0.01, self.haptic_pos_right[2] * 0.01]], dtype=wp.vec3f, device=wp.get_device()),
                     wp.array([0.025], dtype=wp.float32, device=wp.get_device()),
-                    wp.array([[0.0, 0.0, 0.0, 1.0]], dtype=wp.vec4f, device=wp.get_device()),
+                    wp.array([[0.0, 0.0, 0.0]], dtype=wp.vec3f, device=wp.get_device()),
 
                 )
             # Render background mesh
@@ -1789,7 +1800,7 @@ class WarpSim:
                     f"bleed_points",
                     bleed_pos,
                     wp.full(bleed_pos.size, 0.008, dtype=wp.float32, device=wp.get_device()),
-                    wp.full(bleed_pos.size, [0.0, 0.0, 0.0, 1.0], dtype=wp.vec4f, device=wp.get_device()),
+                    wp.full(bleed_pos.size, [0.0, 0.0, 0.0], dtype=wp.vec3f, device=wp.get_device()),
                 )
                 
             
