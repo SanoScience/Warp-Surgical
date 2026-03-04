@@ -2,7 +2,14 @@ import argparse
 import sys
 import warp as wp
 
-from haptic_device import HapticController
+try:
+    from haptic_device import HapticController
+    HAPTICS_AVAILABLE = True
+except (ImportError, OSError) as e:
+    print(f"Warning: Haptic device not available ({e}). Running without haptics.")
+    HapticController = None
+    HAPTICS_AVAILABLE = False
+
 from warp_simulation import WarpSim
 
 def parse_arguments():
@@ -26,36 +33,35 @@ def run_simulation(args):
     print("Python version:", sys.version)
 
     # Initialize haptic controller
-    haptic_controller = HapticController(scale=1.0)
-    
+    haptic_controller = HapticController(scale=1.0) if HAPTICS_AVAILABLE else None
+
     # Initialize simulation
     sim = WarpSim(
-        stage_path=args.stage_path, 
-        num_frames=args.num_frames, 
-        use_opengl=not args.usd,
-        enable_textures=False
+        stage_path=args.stage_path,
+        num_frames=args.num_frames,
+        use_opengl=not args.usd
     )
-    
+
     if args.usd:
         # Offline rendering mode
         for _ in range(args.num_frames):
-            # Update haptic position and rotation
-            haptic_pos = haptic_controller.get_scaled_position()
-            haptic_rot = haptic_controller.get_rotation()
-            sim.update_haptic_position(haptic_pos)
-            sim.update_haptic_rotation(haptic_rot)
-            
+            if haptic_controller:
+                haptic_pos = haptic_controller.get_scaled_position()
+                haptic_rot = haptic_controller.get_rotation()
+                sim.update_haptic_position(haptic_pos)
+                sim.update_haptic_rotation(haptic_rot)
+
             sim.step()
             sim.render()
     else:
         # Real-time interactive mode
         while sim.is_running():
-            # Get current haptic device position and rotation
-            haptic_pos = haptic_controller.get_scaled_position()
-            haptic_rot = haptic_controller.get_rotation()
-            sim.update_haptic_position(haptic_pos)
-            sim.update_haptic_rotation(haptic_rot)
-            
+            if haptic_controller:
+                haptic_pos = haptic_controller.get_scaled_position()
+                haptic_rot = haptic_controller.get_rotation()
+                sim.update_haptic_position(haptic_pos)
+                sim.update_haptic_rotation(haptic_rot)
+
             # Advance simulation
             sim.step()
             sim.render()

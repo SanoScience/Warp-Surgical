@@ -1635,7 +1635,7 @@ class WarpSim:
                         continue
                     
                     # Update instrument position and rotation to follow haptic device
-                    if instrument_idx == 0:
+                    if instrument_idx == 0 and self.haptic_pos_right is not None:
                         haptic_pos = [
                             self.haptic_pos_right[0] * 0.01, 
                             self.haptic_pos_right[1] * 0.01, 
