@@ -1170,7 +1170,7 @@ def CreateSurgSimRenderer(renderer):
             self.skip_rendering = False
 
             self.model = model
-            self.num_envs = model.num_worlds
+            self.num_envs = 1
             self.body_names = []
 
             self.body_env = []  # mapping from body index to its environment index
@@ -1179,7 +1179,7 @@ def CreateSurgSimRenderer(renderer):
 
             # create rigid body nodes
             for b in range(model.body_count):
-                body_name = f"body_{b}_{self.model.body_key[b].replace(' ', '_')}"
+                body_name = f"body_{b}"
                 self.body_names.append(body_name)
                 self.register_body(body_name)
                 if b > 0 and b % self.bodies_per_env == 0:
@@ -1200,7 +1200,7 @@ def CreateSurgSimRenderer(renderer):
                 shape_geo_src = model.shape_source
                 shape_geo_type = model.shape_type.numpy()
                 shape_geo_scale = model.shape_scale.numpy()
-                shape_geo_thickness = model.shape_thickness.numpy()
+                shape_geo_thickness = model.shape_gap.numpy()
                 shape_geo_is_solid = model.shape_is_solid.numpy()
                 shape_transform = model.shape_transform.numpy()
                 shape_flags = model.shape_flags.numpy()
@@ -1216,7 +1216,7 @@ def CreateSurgSimRenderer(renderer):
                     geo_thickness = float(shape_geo_thickness[s])
                     geo_is_solid = bool(shape_geo_is_solid[s])
                     geo_src = shape_geo_src[s]
-                    name = model.shape_key[s]
+                    name = model.shape_label[s]
                     count = self._instance_key_count.get(name, 0)
                     if count > 0:
                         self._instance_key_count[name] += 1
@@ -1337,9 +1337,9 @@ def CreateSurgSimRenderer(renderer):
                     )
                     for i, t in enumerate(joint_type):
                         if t not in {
-                            newton.JOINT_REVOLUTE,
-                            # newton.JOINT_PRISMATIC,
-                            newton.JOINT_D6,
+                            newton.JointType.REVOLUTE,
+                            # newton.JointType.PRISMATIC,
+                            newton.JointType.D6,
                         }:
                             continue
                         tf = joint_tf[i]

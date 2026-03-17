@@ -229,7 +229,7 @@ class KRNSolver(SolverBase):
 
         if contacts:
             if self.rigid_contact_con_weighting:
-                rigid_contact_inv_weight = wp.zeros_like(contacts.rigid_contact_thickness0)
+                rigid_contact_inv_weight = wp.zeros_like(contacts.rigid_contact_margin0)
 
         if control is None:
             control = model.control(clone_variables=False)
@@ -272,6 +272,7 @@ class KRNSolver(SolverBase):
                             model.joint_parent,
                             model.joint_child,
                             model.joint_X_p,
+                            model.joint_X_c,
                             model.joint_qd_start,
                             model.joint_dof_dim,
                             model.joint_axis,
@@ -438,94 +439,94 @@ class KRNSolver(SolverBase):
                         )
 
                     # Handle rigid bodies
-                    if model.body_count:
-                        # Solve body joints
-                        if model.joint_count:
-                            wp.launch(
-                                kernel=solve_body_joints,
-                                dim=model.joint_count,
-                                inputs=[
-                                    body_q,
-                                    body_qd,
-                                    model.body_com,
-                                    model.body_inv_mass,
-                                    model.body_inv_inertia,
-                                    model.joint_type,
-                                    model.joint_enabled,
-                                    model.joint_parent,
-                                    model.joint_child,
-                                    model.joint_X_p,
-                                    model.joint_X_c,
-                                    model.joint_limit_lower,
-                                    model.joint_limit_upper,
-                                    model.joint_qd_start,
-                                    model.joint_dof_dim,
-                                    model.joint_dof_mode,
-                                    model.joint_axis,
-                                    control.joint_target,
-                                    model.joint_target_ke,
-                                    model.joint_target_kd,
-                                    self.joint_linear_compliance,
-                                    self.joint_angular_compliance,
-                                    self.joint_angular_relaxation,
-                                    self.joint_linear_relaxation,
-                                    dt,
-                                ],
-                                outputs=[body_deltas],
-                                device=model.device,
-                            )
+                    # if model.body_count:
+                    #     # Solve body joints
+                    #     if model.joint_count:
+                    #         wp.launch(
+                    #             kernel=solve_body_joints,
+                    #             dim=model.joint_count,
+                    #             inputs=[
+                    #                 body_q,
+                    #                 body_qd,
+                    #                 model.body_com,
+                    #                 model.body_inv_mass,
+                    #                 model.body_inv_inertia,
+                    #                 model.joint_type,
+                    #                 model.joint_enabled,
+                    #                 model.joint_parent,
+                    #                 model.joint_child,
+                    #                 model.joint_X_p,
+                    #                 model.joint_X_c,
+                    #                 model.joint_limit_lower,
+                    #                 model.joint_limit_upper,
+                    #                 model.joint_qd_start,
+                    #                 model.joint_dof_dim,
+                    #                 model.joint_dof_mode,
+                    #                 model.joint_axis,
+                    #                 control.joint_target,
+                    #                 model.joint_target_ke,
+                    #                 model.joint_target_kd,
+                    #                 self.joint_linear_compliance,
+                    #                 self.joint_angular_compliance,
+                    #                 self.joint_angular_relaxation,
+                    #                 self.joint_linear_relaxation,
+                    #                 dt,
+                    #             ],
+                    #             outputs=[body_deltas],
+                    #             device=model.device,
+                    #         )
 
-                            body_q, body_qd = self.apply_body_deltas(model, state_in, state_out, body_deltas, dt)
+                    #         body_q, body_qd = self.apply_body_deltas(model, state_in, state_out, body_deltas, dt)
 
-                        # Solve rigid contact constraints
-                        if contacts is not None:
-                            if self.rigid_contact_con_weighting:
-                                rigid_contact_inv_weight.zero_()
-                            body_deltas.zero_()
+                    #     # Solve rigid contact constraints
+                    #     if contacts is not None:
+                    #         if self.rigid_contact_con_weighting:
+                    #             rigid_contact_inv_weight.zero_()
+                    #         body_deltas.zero_()
 
-                            wp.launch(
-                                kernel=solve_body_contact_positions,
-                                dim=contacts.rigid_contact_max,
-                                inputs=[
-                                    body_q,
-                                    body_qd,
-                                    model.body_com,
-                                    model.body_inv_mass,
-                                    model.body_inv_inertia,
-                                    model.shape_body,
-                                    contacts.rigid_contact_count,
-                                    contacts.rigid_contact_point0,
-                                    contacts.rigid_contact_point1,
-                                    contacts.rigid_contact_offset0,
-                                    contacts.rigid_contact_offset1,
-                                    contacts.rigid_contact_normal,
-                                    contacts.rigid_contact_thickness0,
-                                    contacts.rigid_contact_thickness1,
-                                    contacts.rigid_contact_shape0,
-                                    contacts.rigid_contact_shape1,
-                                    model.shape_material_mu,
-                                    self.rigid_contact_relaxation,
-                                    dt,
-                                    model.rigid_contact_torsional_friction,
-                                    model.rigid_contact_rolling_friction,
-                                ],
-                                outputs=[
-                                    body_deltas,
-                                    rigid_contact_inv_weight,
-                                ],
-                                device=model.device,
-                            )
+                    #         wp.launch(
+                    #             kernel=solve_body_contact_positions,
+                    #             dim=contacts.rigid_contact_max,
+                    #             inputs=[
+                    #                 body_q,
+                    #                 body_qd,
+                    #                 model.body_com,
+                    #                 model.body_inv_mass,
+                    #                 model.body_inv_inertia,
+                    #                 model.shape_body,
+                    #                 contacts.rigid_contact_count,
+                    #                 contacts.rigid_contact_point0,
+                    #                 contacts.rigid_contact_point1,
+                    #                 contacts.rigid_contact_offset0,
+                    #                 contacts.rigid_contact_offset1,
+                    #                 contacts.rigid_contact_normal,
+                    #                 contacts.rigid_contact_thickness0,
+                    #                 contacts.rigid_contact_thickness1,
+                    #                 contacts.rigid_contact_shape0,
+                    #                 contacts.rigid_contact_shape1,
+                    #                 model.shape_material_mu,
+                    #                 self.rigid_contact_relaxation,
+                    #                 dt,
+                    #                 model.rigid_contact_torsional_friction,
+                    #                 model.rigid_contact_rolling_friction,
+                    #             ],
+                    #             outputs=[
+                    #                 body_deltas,
+                    #                 rigid_contact_inv_weight,
+                    #             ],
+                    #             device=model.device,
+                    #         )
 
-                            if self.enable_restitution and i == 0:
-                                # Remember contact constraint weighting from the first iteration
-                                if self.rigid_contact_con_weighting:
-                                    rigid_contact_inv_weight_init = wp.clone(rigid_contact_inv_weight)
-                                else:
-                                    rigid_contact_inv_weight_init = None
+                    #         if self.enable_restitution and i == 0:
+                    #             # Remember contact constraint weighting from the first iteration
+                    #             if self.rigid_contact_con_weighting:
+                    #                 rigid_contact_inv_weight_init = wp.clone(rigid_contact_inv_weight)
+                    #             else:
+                    #                 rigid_contact_inv_weight_init = None
 
-                            body_q, body_qd = self.apply_body_deltas(
-                                model, state_in, state_out, body_deltas, dt, rigid_contact_inv_weight
-                            )
+                    #         body_q, body_qd = self.apply_body_deltas(
+                    #             model, state_in, state_out, body_deltas, dt, rigid_contact_inv_weight
+                    #         )
 
             if model.particle_count:
                 if particle_q.ptr != state_out.particle_q.ptr:
@@ -561,20 +562,17 @@ class KRNSolver(SolverBase):
                         kernel=apply_particle_shape_restitution,
                         dim=model.particle_count,
                         inputs=[
-                            particle_q,
                             particle_qd,
                             self.particle_q_init,
                             self.particle_qd_init,
-                            model.particle_inv_mass,
                             model.particle_radius,
                             model.particle_flags,
                             body_q,
+                            body_q_init,
                             body_qd,
+                            body_qd_init,
                             model.body_com,
-                            model.body_inv_mass,
-                            model.body_inv_inertia,
                             model.shape_body,
-                            model.shape_materials,
                             model.particle_adhesion,
                             model.soft_contact_restitution,
                             contacts.soft_contact_count,
@@ -584,8 +582,6 @@ class KRNSolver(SolverBase):
                             contacts.soft_contact_body_vel,
                             contacts.soft_contact_normal,
                             contacts.soft_contact_max,
-                            dt,
-                            self.soft_contact_relaxation,
                         ],
                         outputs=[state_out.particle_qd],
                         device=model.device,
@@ -604,17 +600,19 @@ class KRNSolver(SolverBase):
                             model.body_com,
                             model.body_inv_mass,
                             model.body_inv_inertia,
+                            model.body_world,
                             model.shape_body,
                             contacts.rigid_contact_count,
                             contacts.rigid_contact_normal,
                             contacts.rigid_contact_shape0,
                             contacts.rigid_contact_shape1,
-                            model.shape_materials,
+                            model.shape_material_restitution,
                             contacts.rigid_contact_point0,
                             contacts.rigid_contact_point1,
                             contacts.rigid_contact_offset0,
                             contacts.rigid_contact_offset1,
-                            contacts.rigid_contact_thickness,
+                            contacts.rigid_contact_margin0,
+                            contacts.rigid_contact_margin1,
                             rigid_contact_inv_weight_init,
                             model.gravity,
                             dt,

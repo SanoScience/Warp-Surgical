@@ -1119,117 +1119,117 @@ class WarpSim:
                 '''
 
                 # Generate bleeding mesh using marching cubes
-                with wp.ScopedTimer("rendering fluids"):
-                    fluid_mesh_data = fluids.generate_fluid_mesh(self)
-                    if fluid_mesh_data is not None and fluid_mesh_data['triangle_count'] > 0:
-                        source_vertices = fluid_mesh_data['vertices']
-                        vertex_count = source_vertices.shape[0]
-                        device = wp.get_device()
+                # with wp.ScopedTimer("rendering fluids"):
+                #     fluid_mesh_data = fluids.generate_fluid_mesh(self)
+                #     if fluid_mesh_data is not None and fluid_mesh_data['triangle_count'] > 0:
+                #         source_vertices = fluid_mesh_data['vertices']
+                #         vertex_count = source_vertices.shape[0]
+                #         device = wp.get_device()
 
-                        if self.fluid_mesh_vertices_world is None or self.fluid_mesh_vertices_world.shape[0] != vertex_count:
-                            self.fluid_mesh_vertices_world = wp.zeros(vertex_count, dtype=wp.vec3f, device=device)
+                #         if self.fluid_mesh_vertices_world is None or self.fluid_mesh_vertices_world.shape[0] != vertex_count:
+                #             self.fluid_mesh_vertices_world = wp.zeros(vertex_count, dtype=wp.vec3f, device=device)
 
-                        wp.launch(
-                            transform_mesh_vertices,
-                            dim=vertex_count,
-                            inputs=[
-                                source_vertices,
-                                fluid_mesh_data['origin'],
-                                fluid_mesh_data['spacing'],
-                                self.fluid_mesh_vertices_world
-                            ],
-                            device=device
-                        )
+                #         wp.launch(
+                #             transform_mesh_vertices,
+                #             dim=vertex_count,
+                #             inputs=[
+                #                 source_vertices,
+                #                 fluid_mesh_data['origin'],
+                #                 fluid_mesh_data['spacing'],
+                #                 self.fluid_mesh_vertices_world
+                #             ],
+                #             device=device
+                #         )
 
-                        indices = fluid_mesh_data['indices']
-                        index_count = indices.shape[0]
-                        topology_changed = (
-                            self.fluid_mesh_shape_id is None
-                            or self.fluid_mesh_last_vertex_count != vertex_count
-                            or self.fluid_mesh_last_index_count != index_count
-                        )
+                #         indices = fluid_mesh_data['indices']
+                #         index_count = indices.shape[0]
+                #         topology_changed = (
+                #             self.fluid_mesh_shape_id is None
+                #             or self.fluid_mesh_last_vertex_count != vertex_count
+                #             or self.fluid_mesh_last_index_count != index_count
+                #         )
 
-                        shape_id = self.renderer.render_mesh_warp(
-                            name="fluid_mesh",
-                            points=self.fluid_mesh_vertices_world,
-                            indices=indices,
-                            pos=(0.0, 0.0, 0.0),
-                            rot=(0.0, 0.0, 0.0, 1.0),
-                            scale=(1.0, 1.0, 1.0),
-                            basic_color=(0.1, 0.3, 0.8),  # Blue fluid color
-                            update_topology=topology_changed,
-                            smooth_shading=True,
-                            visible=True
-                        )
+                #         shape_id = self.renderer.render_mesh_warp(
+                #             name="fluid_mesh",
+                #             points=self.fluid_mesh_vertices_world,
+                #             indices=indices,
+                #             pos=(0.0, 0.0, 0.0),
+                #             rot=(0.0, 0.0, 0.0, 1.0),
+                #             scale=(1.0, 1.0, 1.0),
+                #             basic_color=(0.1, 0.3, 0.8),  # Blue fluid color
+                #             update_topology=topology_changed,
+                #             smooth_shading=True,
+                #             visible=True
+                #         )
 
-                        if shape_id is not None:
-                            self.fluid_mesh_shape_id = shape_id
-                        self.fluid_mesh_indices_current = indices
-                        self.fluid_mesh_last_vertex_count = vertex_count
-                        self.fluid_mesh_last_index_count = index_count
-                    elif (
-                        self.fluid_mesh_shape_id is not None
-                        and self.fluid_mesh_vertices_world is not None
-                        and self.fluid_mesh_indices_current is not None
-                    ):
-                        # Keep existing geometry but hide it
-                        self.renderer.render_mesh_warp(
-                            name="fluid_mesh",
-                            points=self.fluid_mesh_vertices_world,
-                            indices=self.fluid_mesh_indices_current,
-                            pos=(0.0, 0.0, 0.0),
-                            rot=(0.0, 0.0, 0.0, 1.0),
-                            scale=(1.0, 1.0, 1.0),
-                            basic_color=(0.1, 0.3, 0.8),
-                            update_topology=False,
-                            smooth_shading=True,
-                            visible=False
-                        )
-                    else:
-                        # Lazily create a tiny placeholder mesh for initial registration
-                        if self._fluid_empty_vertices is None or self._fluid_empty_indices is None:
-                            device = wp.get_device()
-                            self._fluid_empty_vertices = wp.zeros(1, dtype=wp.vec3f, device=device)
-                            self._fluid_empty_indices = wp.zeros(3, dtype=wp.int32, device=device)
+                #         if shape_id is not None:
+                #             self.fluid_mesh_shape_id = shape_id
+                #         self.fluid_mesh_indices_current = indices
+                #         self.fluid_mesh_last_vertex_count = vertex_count
+                #         self.fluid_mesh_last_index_count = index_count
+                #     elif (
+                #         self.fluid_mesh_shape_id is not None
+                #         and self.fluid_mesh_vertices_world is not None
+                #         and self.fluid_mesh_indices_current is not None
+                #     ):
+                #         # Keep existing geometry but hide it
+                #         self.renderer.render_mesh_warp(
+                #             name="fluid_mesh",
+                #             points=self.fluid_mesh_vertices_world,
+                #             indices=self.fluid_mesh_indices_current,
+                #             pos=(0.0, 0.0, 0.0),
+                #             rot=(0.0, 0.0, 0.0, 1.0),
+                #             scale=(1.0, 1.0, 1.0),
+                #             basic_color=(0.1, 0.3, 0.8),
+                #             update_topology=False,
+                #             smooth_shading=True,
+                #             visible=False
+                #         )
+                #     else:
+                #         # Lazily create a tiny placeholder mesh for initial registration
+                #         if self._fluid_empty_vertices is None or self._fluid_empty_indices is None:
+                #             device = wp.get_device()
+                #             self._fluid_empty_vertices = wp.zeros(1, dtype=wp.vec3f, device=device)
+                #             self._fluid_empty_indices = wp.zeros(3, dtype=wp.int32, device=device)
 
-                        shape_id = self.renderer.render_mesh_warp(
-                            name="fluid_mesh",
-                            points=self._fluid_empty_vertices,
-                            indices=self._fluid_empty_indices,
-                            pos=(0.0, 0.0, 0.0),
-                            rot=(0.0, 0.0, 0.0, 1.0),
-                            scale=(1.0, 1.0, 1.0),
-                            basic_color=(0.1, 0.3, 0.8),
-                            update_topology=self.fluid_mesh_shape_id is None,
-                            smooth_shading=True,
-                            visible=False
-                        )
+                #         shape_id = self.renderer.render_mesh_warp(
+                #             name="fluid_mesh",
+                #             points=self._fluid_empty_vertices,
+                #             indices=self._fluid_empty_indices,
+                #             pos=(0.0, 0.0, 0.0),
+                #             rot=(0.0, 0.0, 0.0, 1.0),
+                #             scale=(1.0, 1.0, 1.0),
+                #             basic_color=(0.1, 0.3, 0.8),
+                #             update_topology=self.fluid_mesh_shape_id is None,
+                #             smooth_shading=True,
+                #             visible=False
+                #         )
 
-                        if self.fluid_mesh_shape_id is None and shape_id is not None:
-                            self.fluid_mesh_shape_id = shape_id
+                #         if self.fluid_mesh_shape_id is None and shape_id is not None:
+                #             self.fluid_mesh_shape_id = shape_id
                     
-                    # Render individual bleed particles (debug)
-                    '''
-                    bleed_pos = self.bleed_positions.numpy()
-                    bleed_active = self.bleed_active.numpy()
-                    for i in range(self.max_bleed_particles):
-                        if bleed_active[i]:
-                            self.renderer.render_sphere(
-                                name=f"bleed_{i}",
-                                pos=bleed_pos[i],
-                                rot=[0.0, 0.0, 0.0, 1.0],
-                                color=[0.8, 0.0, 0.0],
-                                radius=0.008
-                            )
-                        else:
-                            self.renderer.render_sphere(
-                                name=f"bleed_{i}",
-                                pos=[0.0, 0.0, 0.0],
-                                rot=[0.0, 0.0, 0.0, 1.0],
-                                color=[0.8, 0.0, 0.0],
-                                radius=0.008
-                            )
-                    '''   
+                #     # Render individual bleed particles (debug)
+                #     '''
+                #     bleed_pos = self.bleed_positions.numpy()
+                #     bleed_active = self.bleed_active.numpy()
+                #     for i in range(self.max_bleed_particles):
+                #         if bleed_active[i]:
+                #             self.renderer.render_sphere(
+                #                 name=f"bleed_{i}",
+                #                 pos=bleed_pos[i],
+                #                 rot=[0.0, 0.0, 0.0, 1.0],
+                #                 color=[0.8, 0.0, 0.0],
+                #                 radius=0.008
+                #             )
+                #         else:
+                #             self.renderer.render_sphere(
+                #                 name=f"bleed_{i}",
+                #                 pos=[0.0, 0.0, 0.0],
+                #                 rot=[0.0, 0.0, 0.0, 1.0],
+                #                 color=[0.8, 0.0, 0.0],
+                #                 radius=0.008
+                #             )
+                #     '''   
 
                 wp.copy(self.integrator.dev_pos_prev_buffer, self.integrator.dev_pos_target_buffer)
                 self.renderer.end_frame()
