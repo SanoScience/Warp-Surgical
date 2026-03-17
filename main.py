@@ -24,7 +24,7 @@ def parse_arguments():
     )
     parser.add_argument("--num_frames", type=int, default=300, help="Total number of frames.")
     parser.add_argument("--usd", action="store_true", help="Render to USD instead of OpenGL.")
-    parser.add_argument("--viewer", type=str, default="gl", choices=["gl", "rtx"], help="Viewer backend to use.")
+    parser.add_argument("--viewer", type=str, default="gl", choices=["gl", "rtx", "surgsim"], help="Viewer backend to use.")
 
     return parser.parse_known_args()[0]
 

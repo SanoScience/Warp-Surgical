@@ -271,3 +271,52 @@ def update_bleed_particles(
         bleed_lifetimes[tid] -= dt
         if bleed_lifetimes[tid] <= 0.0:
             bleed_active[tid] = 0
+
+def check_centreline_leaks(states, num_points, device=None):
+    """
+    Launch the update_centreline_leaks kernel and return results as Python values.
+
+    Args:
+        states: wp.array(dtype=wp.int32), shape=[num_points]
+        num_points: int
+        device: Warp device (optional)
+
+    Returns:
+        dict with keys: clipping_ready_to_cut, clipping_done, clipping_error, valid_ids_to_cut
+    """
+    if device is None:
+        device = wp.get_device()
+
+    out_clipping_ready_to_cut = wp.zeros(1, dtype=wp.int32, device=device)
+    out_clipping_done = wp.zeros(1, dtype=wp.int32, device=device)
+    out_clipping_error = wp.zeros(1, dtype=wp.int32, device=device)
+    out_valid_ids_to_cut = wp.zeros(num_points, dtype=wp.int32, device=device)
+    out_valid_ids_count = wp.zeros(1, dtype=wp.int32, device=device)
+
+    wp.launch(
+        update_centreline_leaks,
+        dim=1,
+        inputs=[
+            states,
+            num_points,
+            out_clipping_ready_to_cut,
+            out_clipping_done,
+            out_clipping_error,
+            out_valid_ids_to_cut,
+            out_valid_ids_count
+        ],
+        device=device
+    )
+
+    ready = bool(out_clipping_ready_to_cut.numpy()[0])
+    done = bool(out_clipping_done.numpy()[0])
+    error = bool(out_clipping_error.numpy()[0])
+    count = int(out_valid_ids_count.numpy()[0])
+    valid_ids = out_valid_ids_to_cut.numpy()[:count].tolist()
+
+    return {
+        "clipping_ready_to_cut": ready,
+        "clipping_done": done,
+        "clipping_error": error,
+        "valid_ids_to_cut": valid_ids
+    }

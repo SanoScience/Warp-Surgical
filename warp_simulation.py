@@ -1,9 +1,12 @@
 import sys
-from centrelines import CentrelinePointInfo, ClampConstraint, attach_clip_to_nearest_centreline, compute_centreline_positions, cut_centrelines_near_haptic, emit_bleed_particles, update_bleed_particles, update_centreline_leaks
-from grasping import grasp_end, grasp_start
+import KRNSolver
+from centrelines import CentrelinePointInfo, ClampConstraint, attach_clip_to_nearest_centreline, check_centreline_leaks, compute_centreline_positions, cut_centrelines_near_haptic, emit_bleed_particles, update_bleed_particles, update_centreline_leaks
+from connectivity import generate_connectivity, recompute_connectivity, setup_connectivity
+from grasping import grasp_end, grasp_start, grasp_process
 from heating import heating_active_process, heating_conduction_process, heating_end, heating_start, paint_vertices_near_haptic_proxy, set_paint_strength
 from stretching import stretching_breaking_process
 from surface_reconstruction import extract_surface_triangles_bucketed
+from simulation_systems import BoundsCollisionSystem, CustomCollisionSystem, DistanceConstraintSystem, ExternalSphereCollisionSystem, TrianglePointConstraintSystem, VolumeConstraintSystem
 import warp as wp
 import newton
 from pxr import Usd, UsdGeom
@@ -12,6 +15,9 @@ import numpy as np
 import math
 
 from PBDSolver import PBDSolver
+from render_surgsim_opengl import SurgSimRendererOpenGL
+import fluids
+import instruments
 
 from mesh_loader import Tetrahedron, load_background_mesh, load_mesh_and_build_model, parse_centreline_file
 from simulation_kernels import (
@@ -44,6 +50,23 @@ def multiply_quaternions(q1, q2):
     ]
 
 @wp.kernel
+def interpolate_haptic_position(
+    haptic_pos_src: wp.array(dtype=wp.vec3f),
+    haptic_pos_dst: wp.array(dtype=wp.vec3f),
+    haptic_pos_result: wp.array(dtype=wp.vec3f),
+    factor: float,
+):
+    tid = wp.tid()
+    if tid >= 1:
+        return
+
+    pos_src = haptic_pos_src[0]
+    pos_dst = haptic_pos_dst[0]
+
+    result = wp.lerp(pos_src, pos_dst, factor)
+    haptic_pos_result[0] = result
+
+@wp.kernel
 def set_active_tets_near_haptic(
     tet_active: wp.array(dtype=wp.int32),         # [num_tets]
     tets: wp.array(dtype=Tetrahedron),            # [num_tets]
@@ -68,132 +91,6 @@ def set_active_tets_near_haptic(
     dist = wp.length(c - hpos)
     if dist < radius:
         tet_active[tid] = 0
-
-@wp.kernel
-def build_vertex_neighbor_table(
-    tet_active: wp.array(dtype=wp.int32),         # [num_tets]
-    tets: wp.array(dtype=Tetrahedron),            # [num_tets]
-    vertex_neighbors: wp.array(dtype=wp.int32, ndim = 2),   # [num_vertices, max_neighbors]
-    vertex_neighbor_counts: wp.array(dtype=wp.int32),       # [num_vertices]
-    num_tets: int,
-    max_neighbors: int
-):
-    tid = wp.tid()
-    if tid >= num_tets:
-        return
-
-    if tet_active[tid] == 0:
-        return
-
-    tet = tets[tid]
-    for i in range(4):
-        v = tet.ids[i]
-
-        for j in range(4):
-            if i == j:
-                continue
-
-            n = tet.ids[j]
-
-            # Atomically add neighbor if not already present
-            # (no duplicate check)
-            idx = wp.atomic_add(vertex_neighbor_counts, v, 1)
-            if idx < max_neighbors:
-                vertex_neighbors[v, idx] = n
-
-
-@wp.kernel
-def build_tet_edge_table(
-    tets: wp.array(dtype=Tetrahedron),                # [num_tets]
-    springs: wp.array(dtype=wp.int32),                # [num_springs * 2], flat array
-    tet_to_edges: wp.array(dtype=wp.int32, ndim=2),   # [num_tets, 6]
-    tet_edge_counts: wp.array(dtype=wp.int32),        # [num_tets]
-    num_tets: int,
-    num_springs: int,
-):
-    tid = wp.tid()
-    if tid >= num_tets:
-        return
-
-    tet = tets[tid]
-    tet_ids = tet.ids
-    count = int(0)
-    for i in range(num_springs):
-
-        spring_a = springs[i * 2 + 0]
-        spring_b = springs[i * 2 + 1]
-        # Edge 0: (0,1)
-        a = tet_ids[0]
-        b = tet_ids[1]
-        if ((spring_a == a and spring_b == b) or (spring_a == b and spring_b == a)):
-            idx = wp.atomic_add(tet_edge_counts, tid, 1)
-            if idx < 6:
-                tet_to_edges[tid, idx] = i
-            count += 1
-        # Edge 1: (0,2)
-        a = tet_ids[0]
-        b = tet_ids[2]
-        if ((spring_a == a and spring_b == b) or (spring_a == b and spring_b == a)):
-            idx = wp.atomic_add(tet_edge_counts, tid, 1)
-            if idx < 6:
-                tet_to_edges[tid, idx] = i
-            count += 1
-        # Edge 2: (0,3)
-        a = tet_ids[0]
-        b = tet_ids[3]
-        if ((spring_a == a and spring_b == b) or (spring_a == b and spring_b == a)):
-            idx = wp.atomic_add(tet_edge_counts, tid, 1)
-            if idx < 6:
-                tet_to_edges[tid, idx] = i
-            count += 1
-        # Edge 3: (1,2)
-        a = tet_ids[1]
-        b = tet_ids[2]
-        if ((spring_a == a and spring_b == b) or (spring_a == b and spring_b == a)):
-            idx = wp.atomic_add(tet_edge_counts, tid, 1)
-            if idx < 6:
-                tet_to_edges[tid, idx] = i
-            count += 1
-        # Edge 4: (1,3)
-        a = tet_ids[1]
-        b = tet_ids[3]
-        if ((spring_a == a and spring_b == b) or (spring_a == b and spring_b == a)):
-            idx = wp.atomic_add(tet_edge_counts, tid, 1)
-            if idx < 6:
-                tet_to_edges[tid, idx] = i
-            count += 1
-        # Edge 5: (2,3)
-        a = tet_ids[2]
-        b = tet_ids[3]
-        if ((spring_a == a and spring_b == b) or (spring_a == b and spring_b == a)):
-            idx = wp.atomic_add(tet_edge_counts, tid, 1)
-            if idx < 6:
-                tet_to_edges[tid, idx] = i
-            count += 1
-
-
-@wp.kernel
-def build_vertex_edge_table(
-    spring_indices: wp.array(dtype=wp.int32),              # [num_springs * 2]
-    vertex_to_edges: wp.array(dtype=wp.int32, ndim=2),     # [num_vertices, max_edges]
-    vertex_edge_counts: wp.array(dtype=wp.int32),           # [num_vertices]
-    num_springs: int,
-    max_edges: int
-):
-    eid = wp.tid()
-    if eid >= num_springs:
-        return
-
-    a = spring_indices[eid * 2 + 0]
-    b = spring_indices[eid * 2 + 1]
-
-    idx_a = wp.atomic_add(vertex_edge_counts, a, 1)
-    if idx_a < max_edges:
-        vertex_to_edges[a, idx_a] = eid
-
-    idx_b = wp.atomic_add(vertex_edge_counts, b, 1)
-    if idx_b < max_edges:
-        vertex_to_edges[b, idx_b] = eid
 
 @wp.kernel
 def fill_float32_3d(arr: wp.array(dtype=wp.float32, ndim=3), value: float):
@@ -300,61 +197,6 @@ def transform_mesh_vertices(
     transformed_vertices[tid] = world_pos
 
 
-def check_centreline_leaks(states, num_points, device=None):
-    """
-    Launch the update_centreline_leaks kernel and return results as Python values.
-
-    Args:
-        states: wp.array(dtype=wp.int32), shape=[num_points]
-        num_points: int
-        device: Warp device (optional)
-
-    Returns:
-        {
-            "clipping_ready_to_cut": bool,
-            "clipping_done": bool,
-            "clipping_error": bool,
-            "valid_ids_to_cut": list of int
-        }
-    """
-    if device is None:
-        device = wp.get_device()
-
-    out_clipping_ready_to_cut = wp.zeros(1, dtype=wp.int32, device=device)
-    out_clipping_done = wp.zeros(1, dtype=wp.int32, device=device)
-    out_clipping_error = wp.zeros(1, dtype=wp.int32, device=device)
-    out_valid_ids_to_cut = wp.zeros(num_points, dtype=wp.int32, device=device)
-    out_valid_ids_count = wp.zeros(1, dtype=wp.int32, device=device)
-
-    wp.launch(
-        update_centreline_leaks,
-        dim=1,
-        inputs=[
-            states,
-            num_points,
-            out_clipping_ready_to_cut,
-            out_clipping_done,
-            out_clipping_error,
-            out_valid_ids_to_cut,
-            out_valid_ids_count
-        ],
-        device=device
-    )
-
-    # Pull results to CPU
-    ready = bool(out_clipping_ready_to_cut.numpy()[0])
-    done = bool(out_clipping_done.numpy()[0])
-    error = bool(out_clipping_error.numpy()[0])
-    count = int(out_valid_ids_count.numpy()[0])
-    valid_ids = out_valid_ids_to_cut.numpy()[:count].tolist()
-
-    return {
-        "clipping_ready_to_cut": ready,
-        "clipping_done": done,
-        "clipping_error": error,
-        "valid_ids_to_cut": valid_ids
-    }
-
 class WarpSim:
     #region Initialization
     def __init__(self, stage_path="output.usd", num_frames=300, use_opengl=True, viewer="gl", enable_textures=True):
@@ -395,26 +237,8 @@ class WarpSim:
         self._build_model()
         self.vertex_colors = wp.zeros(self.model.particle_count, dtype=wp.vec4f, device=wp.get_device())
         
-        # Connectivity setup
-        vertex_count = self.model.particle_count
-        vertex_neighbour_count = 32
-
-        self.vertex_to_vneighbours = wp.zeros((vertex_count, vertex_neighbour_count), dtype=wp.int32, device=wp.get_device())
-        self.vertex_vneighbor_counts = wp.zeros(vertex_count, dtype=wp.int32, device=wp.get_device())
-        self.vneighbours_max = vertex_neighbour_count
-
-        # Vertex to edge mapping setup
-        vertex_edge_count = 32
-        self.vertex_to_edges = wp.zeros((vertex_count, vertex_edge_count), dtype=wp.int32, device=wp.get_device())
-        self.vertex_edge_counts = wp.zeros(vertex_count, dtype=wp.int32, device=wp.get_device())
-        self.vertex_edges_max = vertex_edge_count
-
-        # Tetrahedron to edge mapping setup
-        num_tets = self.model.tetrahedra_wp.shape[0]
-        num_springs = self.model.spring_indices.shape[0] // 2
-
-        self.tet_to_edges = wp.zeros((num_tets, 6), dtype=wp.int32, device=wp.get_device())
-        self.tet_edge_counts = wp.zeros(num_tets, dtype=wp.int32, device=wp.get_device())
+        # Connectivity setup (from connectivity module)
+        setup_connectivity(self)
 
         self.max_clips = 64
         self.clip_attached = wp.zeros(self.centreline_points.shape[0], dtype=wp.int32, device=wp.get_device())
@@ -455,6 +279,10 @@ class WarpSim:
         self.grasped_particles_counter = wp.zeros(1, dtype=wp.int32, device=wp.get_device())
         self.grasp_offsets_buffer = wp.zeros(self.grasp_capacity, dtype=wp.vec3f, device=wp.get_device())
         self.grasp_stiffness = 1.0
+
+        # Fluids setup (from fluids module)
+        fluids.setup_fluids_data(self)
+        fluids.setup_fluids_rendering(self)
 
         # Initialize simulation components
         self._setup_simulation()
@@ -512,33 +340,7 @@ class WarpSim:
         # Setup CUDA graph if available
         self._setup_cuda_graph()
 
-        wp.launch(
-            build_tet_edge_table,
-            dim=num_tets,
-            inputs=[
-                self.model.tetrahedra_wp,
-                self.model.spring_indices,  # flat int32 array
-                self.tet_to_edges,
-                self.tet_edge_counts,
-                num_tets,
-                num_springs
-            ],
-            device=wp.get_device()
-        )
-
-        # Build vertex to edge table
-        wp.launch(
-            build_vertex_edge_table,
-            dim=num_springs,
-            inputs=[
-                self.model.spring_indices,
-                self.vertex_to_edges,
-                self.vertex_edge_counts,
-                num_springs,
-                self.vertex_edges_max
-            ],
-            device=wp.get_device()
-        )
+        generate_connectivity(self)
 
 #endregion
 
@@ -1332,42 +1134,51 @@ class WarpSim:
 
     def _setup_simulation(self):
         """Initialize simulation states and integrator."""
-        self.integrator = PBDSolver(self.model, iterations=5)
+        self.integrator = KRNSolver.KRNSolver(self.model, iterations=self.sim_constraint_iterations)
+
+        # Register simulation systems (plugin architecture)
+        self.integrator.register_system(DistanceConstraintSystem(priority=50))
+        self.integrator.register_system(VolumeConstraintSystem(priority=60))
+        self.integrator.register_system(TrianglePointConstraintSystem(priority=70))
+        self.integrator.register_system(ExternalSphereCollisionSystem(priority=80))
+        self.integrator.register_system(BoundsCollisionSystem(
+            bounds_min=wp.vec3(-2.0, 0.0, -8.0),
+            bounds_max=wp.vec3(2.0, 10.0, -3.0),
+            priority=100
+        ))
 
         self.integrator.dev_pos_buffer = wp.array([0.0, 0.0, 0.0], dtype=wp.vec3, device=wp.get_device())
+        self.integrator.dev_pos_target_buffer = wp.array([0.0, 0.0, 0.0], dtype=wp.vec3, device=wp.get_device())
         self.integrator.dev_pos_prev_buffer = wp.array([0.0, 0.0, 0.0], dtype=wp.vec3, device=wp.get_device())
-
-        self.integrator.grasped_particles_buffer = self.grasped_particles_buffer
-        self.integrator.grasped_particles_counter = self.grasped_particles_counter
-        self.integrator.grasp_offsets_buffer = self.grasp_offsets_buffer
-        self.integrator.grasp_stiffness = self.grasp_stiffness
 
         self.rest = self.model.state()
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
         self.contacts = self.model.collide(self.state_0)
-        
-        # Create Jacobian accumulators
-        # self.model.delta_accumulator = wp.zeros(self.model.particle_count, dtype=wp.vec3f, device=wp.get_device())
-        # self.model.count_accumulator = wp.zeros(self.model.particle_count, dtype=wp.int32, device=wp.get_device())
+
+        instruments._update_jaw_colliders(self, states=[self.state_0, self.state_1], update_solver=True)
 
     def _setup_renderer(self, stage_path, use_opengl, viewer="gl"):
         """Initialize the appropriate renderer."""
         self.use_opengl = use_opengl
 
         if self.use_opengl:
-            if viewer == "rtx":
+            if viewer == "surgsim":
+                self.renderer = SurgSimRendererOpenGL(self.model, "Warp Surgical Simulation", scaling=1.0, near_plane=0.05, far_plane=25)
+                self.renderer._camera_pos = [0.2, 1.2, -1.0]
+            elif viewer == "rtx":
                 self.renderer = newton.viewer.ViewerRTX()
+                self.renderer.set_model(self.model)
+                self.renderer.set_camera(wp.vec3f(0.2, 1.2, -1.0), 0, -90)
             else:
                 self.renderer = newton.viewer.ViewerGL()
-            self.renderer.set_model(self.model)
+                self.renderer.set_model(self.model)
+                self.renderer.set_camera(wp.vec3f(0.2, 1.2, -1.0), 0, -90)
 
         elif stage_path:
             self.renderer = newton.render.SimRenderer(self.model, stage_path, scaling=20.0)
         else:
             self.renderer = None
-
-        self.renderer.set_camera(wp.vec3f(0.2, 1.2, -1.0), 0, -90)
 
     def _setup_cuda_graph(self):
         """Setup CUDA graph for performance optimization."""
@@ -1383,11 +1194,25 @@ class WarpSim:
 
         #self.integrator.collison_detection(self.state_0.particle_q)
 
-        for _ in range(self.sim_substeps):
+        for i in range(self.sim_substeps):
             self.state_0.clear_forces()
             self.state_1.clear_forces()
 
-            # Update haptic device position
+            # Interpolate haptic position across substeps for smoother collision
+            factor = float(i) / float(self.sim_substeps)
+            wp.launch(
+                interpolate_haptic_position,
+                dim=1,
+                inputs=[
+                    self.integrator.dev_pos_prev_buffer,
+                    self.integrator.dev_pos_target_buffer,
+                    self.integrator.dev_pos_buffer,
+                    factor
+                ],
+                device=wp.get_device()
+            )
+
+            # Update haptic device body position
             wp.launch(
                 set_body_position,
                 dim=1,
@@ -1400,29 +1225,21 @@ class WarpSim:
             #if self.contacts:
             #    print(f"Contacts detected: {self.contacts.soft_contact_normal}")
 
-            self.integrator.step(self.model, self.state_0, self.state_1, None, self.contacts, self.substep_dt)
+            instruments._update_jaw_colliders(self, states=[self.state_0, self.state_1], update_solver=True)
+
+            fluids.simulate_fluid(self)
+
+            self.integrator.step(self.state_0, self.state_1, None, self.contacts, self.substep_dt)
 
             # Recompute connectivity
-            wp.copy(self.vertex_vneighbor_counts, wp.zeros(self.model.particle_count, dtype=wp.int32, device=wp.get_device()))
-            wp.launch(
-                build_vertex_neighbor_table,
-                dim=self.model.tetrahedra_wp.shape[0],
-                inputs=[
-                    self.model.tet_active,
-                    self.model.tetrahedra_wp,
-                    self.vertex_to_vneighbours,
-                    self.vertex_vneighbor_counts,
-                    self.model.tetrahedra_wp.shape[0],
-                    self.vneighbours_max
-                ],
-                device=wp.get_device()
-            )
+            recompute_connectivity(self)
 
             # Heat conduction
             heating_conduction_process(self)
             stretching_breaking_process(self)
             
             # Swap states
+            instruments._update_jaw_colliders(self, states=[self.state_1], update_solver=False)
             (self.state_0, self.state_1) = (self.state_1, self.state_0)
 
     def step(self):
@@ -2003,7 +1820,8 @@ class WarpSim:
         """Update the haptic device position in the simulation."""
         haptic_pos = wp.vec3(position[0], position[1] + 100.0, position[2] - 400.0)  # Offset to avoid collision with ground
         self.haptic_pos_right = [haptic_pos[0], haptic_pos[1], haptic_pos[2]]
-        wp.copy(self.integrator.dev_pos_buffer, wp.array([haptic_pos], dtype=wp.vec3, device=wp.get_device()))
+        wp.copy(self.integrator.dev_pos_prev_buffer, self.integrator.dev_pos_target_buffer)
+        wp.copy(self.integrator.dev_pos_target_buffer, wp.array([haptic_pos], dtype=wp.vec3, device=wp.get_device()))
 
     def update_haptic_rotation(self, rotation):
         """Update the haptic device rotation in the simulation."""

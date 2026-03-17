@@ -124,3 +124,35 @@ def grasp_end(sim):
 
 def grasp_process(sim):
     pass
+
+@wp.kernel
+def move_and_lock_grasped_particles(
+    particle_q: wp.array(dtype=wp.vec3f),
+    particle_qd: wp.array(dtype=wp.vec3f),
+    particle_inv_mass: wp.array(dtype=wp.float32),
+    grasped_ids: wp.array(dtype=wp.int32),
+    grasped_count: int,
+    dev_pos: wp.array(dtype=wp.vec3f),
+    dev_pos_prev: wp.array(dtype=wp.vec3f),
+):
+    gid = wp.tid()
+    if gid >= grasped_count:
+        return
+
+    pid = grasped_ids[gid]
+    delta = (dev_pos[0] - dev_pos_prev[0]) * 0.01
+    particle_q[pid] += delta
+    particle_inv_mass[pid] = 0.0
+
+@wp.kernel
+def unlock_grasped_particles(
+    particle_inv_mass: wp.array(dtype=wp.float32),
+    grasped_ids: wp.array(dtype=wp.int32),
+    grasped_count: int,
+):
+    gid = wp.tid()
+    if gid >= grasped_count:
+        return
+
+    pid = grasped_ids[gid]
+    particle_inv_mass[pid] = 1.0
