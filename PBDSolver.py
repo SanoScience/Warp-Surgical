@@ -170,6 +170,7 @@ class PBDSolver(SolverXPBD):
                             state_in.body_q,
                             model.body_com,
                             model.joint_type,
+                            model.joint_enabled,
                             model.joint_parent,
                             model.joint_child,
                             model.joint_X_p,
