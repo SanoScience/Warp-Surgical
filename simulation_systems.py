@@ -49,6 +49,11 @@ class DistanceConstraintSystem(SimulationSystem):
         self.particle_deltas_count = None
         self.spring_constraint_lambdas = None
 
+    def get_accumulators(self):
+        if self.particle_deltas_accumulator is not None:
+            return (self.particle_deltas_accumulator, self.particle_deltas_count)
+        return None
+
     def initialize(self, model):
         self.particle_deltas_accumulator = wp.zeros(
             model.particle_count, dtype=wp.vec3f, device=wp.get_device()
@@ -82,13 +87,14 @@ class DistanceConstraintSystem(SimulationSystem):
                 device=model.device,
             )
 
-            wp.launch(
-                kernel=apply_deltas_and_zero_accumulators,
-                dim=model.particle_count,
-                inputs=[self.particle_deltas_accumulator, self.particle_deltas_count],
-                outputs=[particle_deltas],
-                device=model.device,
-            )
+            if not self.deferred_apply:
+                wp.launch(
+                    kernel=apply_deltas_and_zero_accumulators,
+                    dim=model.particle_count,
+                    inputs=[self.particle_deltas_accumulator, self.particle_deltas_count],
+                    outputs=[particle_deltas],
+                    device=model.device,
+                )
 
 
 class CustomCollisionSystem(SimulationSystem):
@@ -119,6 +125,11 @@ class VolumeConstraintSystem(SimulationSystem):
         self.particle_deltas_accumulator = None
         self.particle_deltas_count = None
 
+    def get_accumulators(self):
+        if self.particle_deltas_accumulator is not None:
+            return (self.particle_deltas_accumulator, self.particle_deltas_count)
+        return None
+
     def initialize(self, model):
         self.particle_deltas_accumulator = wp.zeros(
             model.particle_count, dtype=wp.vec3f, device=wp.get_device()
@@ -148,16 +159,17 @@ class VolumeConstraintSystem(SimulationSystem):
                 device=model.device,
             )
 
-            wp.launch(
-                kernel=apply_deltas_and_zero_accumulators,
-                dim=model.particle_count,
-                inputs=[
-                    self.particle_deltas_accumulator,
-                    self.particle_deltas_count,
-                ],
-                outputs=[particle_deltas],
-                device=model.device,
-            )
+            if not self.deferred_apply:
+                wp.launch(
+                    kernel=apply_deltas_and_zero_accumulators,
+                    dim=model.particle_count,
+                    inputs=[
+                        self.particle_deltas_accumulator,
+                        self.particle_deltas_count,
+                    ],
+                    outputs=[particle_deltas],
+                    device=model.device,
+                )
 
 
 class TrianglePointConstraintSystem(SimulationSystem):
@@ -190,6 +202,11 @@ class ExternalSphereCollisionSystem(SimulationSystem):
         self.restitution = restitution
         self.particle_deltas_accumulator = None
         self.particle_deltas_count = None
+
+    def get_accumulators(self):
+        if self.particle_deltas_accumulator is not None:
+            return (self.particle_deltas_accumulator, self.particle_deltas_count)
+        return None
 
     def initialize(self, model):
         self.particle_deltas_accumulator = wp.zeros(
@@ -253,13 +270,14 @@ class ExternalSphereCollisionSystem(SimulationSystem):
                 device=model.device,
             )
 
-            wp.launch(
-                kernel=apply_deltas_and_zero_accumulators,
-                dim=model.particle_count,
-                inputs=[
-                    self.particle_deltas_accumulator,
-                    self.particle_deltas_count,
-                ],
-                outputs=[particle_deltas],
-                device=model.device,
-            )
+            if not self.deferred_apply:
+                wp.launch(
+                    kernel=apply_deltas_and_zero_accumulators,
+                    dim=model.particle_count,
+                    inputs=[
+                        self.particle_deltas_accumulator,
+                        self.particle_deltas_count,
+                    ],
+                    outputs=[particle_deltas],
+                    device=model.device,
+                )

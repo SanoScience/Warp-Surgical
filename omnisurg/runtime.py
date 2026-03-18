@@ -117,6 +117,7 @@ class Runtime:
         self.sim_time = 0.0
 
         self._haptic_staging = wp.zeros(1, dtype=wp.vec3, device="cpu")
+        self._haptic_staging_view = self._haptic_staging.numpy()
         self._haptic_render_pos = wp.zeros(1, dtype=wp.vec3, device=self.device)
 
         self.use_cuda_graph = self.device.is_cuda
@@ -149,7 +150,7 @@ class Runtime:
 
         wp.copy(self.proxy.center_prev, self.proxy.center_target)
 
-        self._haptic_staging.numpy()[0] = [pos[0], pos[1], pos[2]]
+        self._haptic_staging_view[0] = [pos[0], pos[1], pos[2]]
         wp.copy(self.proxy.center_target, self._haptic_staging)
 
     def _simulate_step(self):

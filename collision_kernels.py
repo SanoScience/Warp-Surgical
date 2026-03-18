@@ -77,6 +77,7 @@ def collide_triangles_vs_sphere(
     sphere_center_scale: wp.float32,
     restitution: wp.float32,
     dt: wp.float32,
+    cull_radius: wp.float32,
     delta_accumulator: wp.array(dtype=wp.vec3f),
     delta_counter: wp.array(dtype=wp.int32)
 ):
@@ -92,6 +93,13 @@ def collide_triangles_vs_sphere(
     p2 = positions[t2]
     p3 = positions[t3]
 
+    sp = sphere_center[0] * sphere_center_scale
+
+    if cull_radius > 0.0:
+        centroid = (p1 + p2 + p3) / 3.0
+        if wp.length(centroid - sp) > cull_radius:
+            return
+
     w1 = inv_masses[t1]
     w2 = inv_masses[t2]
     w3 = inv_masses[t3]
@@ -99,8 +107,6 @@ def collide_triangles_vs_sphere(
 
     if w <= 0.0:
         return
-
-    sp = sphere_center[0] * sphere_center_scale
 
     closest_p, bary, feature_type = triangle_closest_point(p1, p2, p3, sp)
     

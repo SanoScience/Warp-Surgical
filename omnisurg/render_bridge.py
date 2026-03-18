@@ -90,7 +90,6 @@ class RenderBridge:
                 smooth_shading=True,
                 visible=True,
             )
-            self._mesh_created.add(name)
         else:
             self._renderer.log_mesh(
                 name=name,
@@ -98,14 +97,16 @@ class RenderBridge:
                 indices=surface_indices,
                 hidden=True,
             )
-            self._renderer.log_instances(
-                f"{name}_inst",
-                name,
-                self.gpu.identity_xform,
-                self.gpu.unit_scale,
-                self.gpu.white_color,
-                materials=self.gpu.default_material,
-            )
+            if name not in self._mesh_created:
+                self._renderer.log_instances(
+                    f"{name}_inst",
+                    name,
+                    self.gpu.identity_xform,
+                    self.gpu.unit_scale,
+                    self.gpu.white_color,
+                    materials=self.gpu.default_material,
+                )
+        self._mesh_created.add(name)
 
     def draw_haptic_sphere(self, position: wp.array):
         """Render the haptic proxy sphere."""

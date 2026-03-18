@@ -18,8 +18,14 @@ class HapticSphereCollisionSystem(SimulationSystem):
     def __init__(self, proxy: HapticProxyState, priority: int = 80):
         super().__init__(priority=priority)
         self.proxy = proxy
+        self._cull_radius = proxy.radius + proxy.max_tri_extent
         self._accumulator: wp.array | None = None
         self._count: wp.array | None = None
+
+    def get_accumulators(self):
+        if self._accumulator is not None:
+            return (self._accumulator, self._count)
+        return None
 
     def initialize(self, model):
         self._accumulator = wp.zeros(
@@ -51,15 +57,17 @@ class HapticSphereCollisionSystem(SimulationSystem):
                 1.0,
                 0.0,
                 dt,
+                self._cull_radius,
             ],
             outputs=[self._accumulator, self._count],
             device=model.device,
         )
 
-        wp.launch(
-            kernel=apply_deltas_and_zero_accumulators,
-            dim=model.particle_count,
-            inputs=[self._accumulator, self._count],
-            outputs=[particle_deltas],
-            device=model.device,
-        )
+        if not self.deferred_apply:
+            wp.launch(
+                kernel=apply_deltas_and_zero_accumulators,
+                dim=model.particle_count,
+                inputs=[self._accumulator, self._count],
+                outputs=[particle_deltas],
+                device=model.device,
+            )

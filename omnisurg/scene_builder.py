@@ -19,6 +19,7 @@ class HapticProxyState:
     center_scaled: wp.array
     body_id: int
     radius: float
+    max_tri_extent: float = 0.0
 
 
 @dataclass
@@ -119,6 +120,17 @@ def build_scene(
         device=device,
     )
 
+    max_tri_extent = 0.0
+    translated_positions = asset.rest_positions + translation
+    for i in range(len(asset.surface_tri_indices)):
+        ids = asset.surface_tri_indices[i]
+        pts = translated_positions[ids]
+        centroid = pts.mean(axis=0)
+        extent = float(np.max(np.linalg.norm(pts - centroid, axis=1)))
+        if extent > max_tri_extent:
+            max_tri_extent = extent
+    max_tri_extent *= 2.0
+
     proxy = HapticProxyState(
         center_prev=wp.zeros(1, dtype=wp.vec3, device=device),
         center_target=wp.zeros(1, dtype=wp.vec3, device=device),
@@ -126,6 +138,7 @@ def build_scene(
         center_scaled=wp.zeros(1, dtype=wp.vec3, device=device),
         body_id=haptic_body_id,
         radius=haptic.collision_radius,
+        max_tri_extent=max_tri_extent,
     )
 
     return SceneData(

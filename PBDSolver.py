@@ -462,7 +462,8 @@ class PBDSolver(SolverXPBD):
                                 0.05,  # sphere radius
                                 0.01,  # sphere center scale
                                 0.0,  # sphere restitution
-                                dt
+                                dt,
+                                0.0,  # cull_radius (disabled)
                             ],
                             outputs=[
                                 particle_deltas_accumulator,

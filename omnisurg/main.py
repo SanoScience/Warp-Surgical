@@ -31,6 +31,17 @@ def parse_args():
         "--num_frames", type=int, default=0,
         help="Max frames to run (0 = unlimited)",
     )
+    parser.add_argument(
+        "--no-vsync", action="store_true",
+        help="Disable vsync for profiling",
+    )
+    parser.add_argument(
+        "--preset",
+        type=str,
+        default=None,
+        choices=["quality", "balanced", "performance"],
+        help="Simulation preset (overrides default substeps/fps)",
+    )
     return parser.parse_args()
 
 
@@ -45,14 +56,18 @@ def main():
         HapticConfig,
         SceneConfig,
         SimulationConfig,
+        SIMULATION_PRESETS,
         ViewerConfig,
     )
     from omnisurg.runtime import Runtime
 
-    sim_config = SimulationConfig()
+    if args.preset:
+        sim_config = SIMULATION_PRESETS[args.preset]
+    else:
+        sim_config = SimulationConfig()
     scene_config = SceneConfig(asset_name=args.asset)
     haptic_config = HapticConfig()
-    viewer_config = ViewerConfig(backend=args.viewer)
+    viewer_config = ViewerConfig(backend=args.viewer, vsync=not args.no_vsync)
     bounds_config = BoundsConfig()
 
     source = None

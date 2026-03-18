@@ -49,3 +49,10 @@ class ViewerConfig:
 class BoundsConfig:
     bounds_min: tuple = (-2.0, 0.0, -8.0)
     bounds_max: tuple = (2.0, 10.0, -3.0)
+
+
+SIMULATION_PRESETS: dict[str, SimulationConfig] = {
+    "quality": SimulationConfig(substeps=16, fps=120),
+    "balanced": SimulationConfig(substeps=8, fps=90),
+    "performance": SimulationConfig(substeps=4, fps=60),
+}

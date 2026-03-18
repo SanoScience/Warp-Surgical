@@ -154,6 +154,33 @@ def apply_deltas_and_zero_accumulators(
     delta[tid] = wp.vec3(0.0, 0.0, 0.0)
     delta_counter[tid] = 0
 
+
+@wp.kernel
+def apply_fused_3_accumulators(
+    da: wp.array(dtype=wp.vec3),
+    ca: wp.array(dtype=wp.int32),
+    db: wp.array(dtype=wp.vec3),
+    cb: wp.array(dtype=wp.int32),
+    dc: wp.array(dtype=wp.vec3),
+    cc: wp.array(dtype=wp.int32),
+    target: wp.array(dtype=wp.vec3),
+):
+    tid = wp.tid()
+    r = wp.vec3(0.0, 0.0, 0.0)
+    if ca[tid] > 0:
+        r = r + da[tid] / wp.float32(ca[tid])
+    if cb[tid] > 0:
+        r = r + db[tid] / wp.float32(cb[tid])
+    if cc[tid] > 0:
+        r = r + dc[tid] / wp.float32(cc[tid])
+    target[tid] = target[tid] + r
+    da[tid] = wp.vec3(0.0, 0.0, 0.0)
+    ca[tid] = 0
+    db[tid] = wp.vec3(0.0, 0.0, 0.0)
+    cb[tid] = 0
+    dc[tid] = wp.vec3(0.0, 0.0, 0.0)
+    cc[tid] = 0
+
 @wp.kernel
 def solve_volume_constraints(
     positions: wp.array(dtype=wp.vec3f),

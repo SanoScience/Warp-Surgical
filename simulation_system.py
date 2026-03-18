@@ -15,6 +15,11 @@ class SimulationSystem(ABC):
         """
         self.priority = priority
         self.enabled = True
+        self.deferred_apply = False
+
+    def get_accumulators(self) -> tuple[wp.array, wp.array] | None:
+        """Return (delta, count) arrays if this system uses the accumulator pattern."""
+        return None
 
     def initialize(self, model: Model):
         pass
