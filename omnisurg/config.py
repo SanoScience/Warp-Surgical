@@ -42,6 +42,7 @@ class HapticConfig:
 class ViewerConfig:
     backend: str = "gl"
     camera_pos: tuple = (0.2, 1.2, -1.0)
+    vsync: bool = True
 
 
 @dataclass

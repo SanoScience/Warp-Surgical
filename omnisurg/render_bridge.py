@@ -59,7 +59,7 @@ class RenderBridge:
         else:
             import newton
 
-            self._renderer = newton.viewer.ViewerGL()
+            self._renderer = newton.viewer.ViewerGL(vsync=viewer_config.vsync)
             self._renderer.set_model(model)
             self._renderer.set_camera(
                 wp.vec3f(*viewer_config.camera_pos), 0, -90,

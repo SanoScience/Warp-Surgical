@@ -1,3 +1,5 @@
+import time
+
 import warp as wp
 
 from simulation_systems import BoundsCollisionSystem, DistanceConstraintSystem, VolumeConstraintSystem
@@ -124,6 +126,8 @@ class Runtime:
                 self._simulate_step()
             self.graph = capture.graph
 
+        self._frame_start = time.perf_counter()
+
     def poll_input(self, source: InputSource):
         """Read one sample from the input source and copy to device.
 
@@ -204,6 +208,15 @@ class Runtime:
         self.renderer.draw_mesh("tissue", self.state_0.particle_q, self.surface_indices)
         self.renderer.draw_haptic_sphere(self._haptic_render_pos)
         self.renderer.end_frame()
+
+    def pace(self):
+        """Sleep for the remaining frame budget to hold the target FPS."""
+        deadline = self._frame_start + self.sim_config.frame_dt
+        now = time.perf_counter()
+        remaining = deadline - now
+        if remaining > 1e-4:
+            time.sleep(remaining)
+        self._frame_start = time.perf_counter()
 
     def is_running(self) -> bool:
         return self.renderer.is_running()
