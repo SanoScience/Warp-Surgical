@@ -64,8 +64,6 @@ class DistanceConstraintSystem(SimulationSystem):
                          body_q, body_qd, body_deltas, dt, iteration):
         if model.spring_count and self.spring_constraint_lambdas is not None:
             self.spring_constraint_lambdas.zero_()
-            self.particle_deltas_accumulator.zero_()
-            self.particle_deltas_count.zero_()
 
             wp.launch(
                 kernel=solve_distance_constraints,
@@ -133,9 +131,6 @@ class VolumeConstraintSystem(SimulationSystem):
                          particle_q, particle_qd, particle_deltas,
                          body_q, body_qd, body_deltas, dt, iteration):
         if hasattr(model, 'tetrahedra_wp') and len(model.tetrahedra_wp) > 0:
-            self.particle_deltas_accumulator.zero_()
-            self.particle_deltas_count.zero_()
-
             wp.launch(
                 kernel=solve_volume_constraints,
                 dim=len(model.tetrahedra_wp),
@@ -236,9 +231,6 @@ class ExternalSphereCollisionSystem(SimulationSystem):
             self.external_sphere_centers is not None and
             self.external_sphere_radii is not None and
             model.tri_count > 0):
-
-            self.particle_deltas_accumulator.zero_()
-            self.particle_deltas_count.zero_()
 
             wp.launch(
                 kernel=collide_triangles_vs_spheres,

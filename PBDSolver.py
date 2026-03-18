@@ -460,6 +460,7 @@ class PBDSolver(SolverXPBD):
                                 model.tri_indices,
                                 self.dev_pos_buffer,  # sphere position
                                 0.05,  # sphere radius
+                                0.01,  # sphere center scale
                                 0.0,  # sphere restitution
                                 dt
                             ],

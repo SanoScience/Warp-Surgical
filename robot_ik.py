@@ -389,7 +389,7 @@ class Example:
             wp.launch(
                 set_body_position,
                 dim=1,
-                inputs=[self.state_0.body_q, self.state_0.body_qd, self.haptic_body_id, self.dev_pos_buffer, self.sim_dt],
+                inputs=[self.state_0.body_q, self.state_0.body_qd, self.haptic_body_id, self.dev_pos_buffer, 0.01, self.sim_dt],
                 device=self.state_0.body_q.device,
             )
             

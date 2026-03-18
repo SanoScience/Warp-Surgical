@@ -16,6 +16,11 @@ class Phase1Solver(SolverBase):
         self._particle_delta_counter = 0
         self.systems: list[SimulationSystem] = []
 
+        n = model.particle_count
+        if n:
+            self._particle_q_init = wp.zeros(n, dtype=wp.vec3f, device=model.device)
+            self._particle_deltas = wp.zeros(n, dtype=wp.vec3f, device=model.device)
+
     def register_system(self, system: SimulationSystem):
         system.initialize(self.model)
         self.systems.append(system)
@@ -40,8 +45,8 @@ class Phase1Solver(SolverBase):
         if not model.particle_count:
             return state_out
 
-        self.particle_q_init = wp.clone(state_in.particle_q)
-        particle_deltas = wp.empty_like(state_out.particle_qd)
+        wp.copy(self._particle_q_init, state_in.particle_q)
+        self._particle_deltas.zero_()
 
         self.integrate_particles(model, state_in, state_out, dt)
 
@@ -49,19 +54,19 @@ class Phase1Solver(SolverBase):
         particle_qd = state_out.particle_qd
 
         for i in range(self.iterations):
-            particle_deltas.zero_()
+            self._particle_deltas.zero_()
 
             for system in self.systems:
                 if system.enabled:
                     system.solve_constraints(
                         model, state_in, state_out,
-                        particle_q, particle_qd, particle_deltas,
+                        particle_q, particle_qd, self._particle_deltas,
                         None, None, None,
                         dt, i,
                     )
 
             particle_q, particle_qd = self.apply_particle_deltas(
-                model, state_in, state_out, particle_deltas, dt,
+                model, state_in, state_out, self._particle_deltas, dt,
             )
 
         if particle_q.ptr != state_out.particle_q.ptr:
@@ -96,7 +101,7 @@ class Phase1Solver(SolverBase):
             kernel=apply_particle_deltas,
             dim=model.particle_count,
             inputs=[
-                self.particle_q_init,
+                self._particle_q_init,
                 particle_q,
                 model.particle_flags,
                 particle_deltas,

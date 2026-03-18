@@ -1216,7 +1216,7 @@ class WarpSim:
             wp.launch(
                 set_body_position,
                 dim=1,
-                inputs=[self.state_0.body_q, self.state_0.body_qd, self.haptic_body_id, self.integrator.dev_pos_buffer, self.substep_dt],
+                inputs=[self.state_0.body_q, self.state_0.body_qd, self.haptic_body_id, self.integrator.dev_pos_buffer, 0.01, self.substep_dt],
                 device=self.state_0.body_q.device,
             )
 

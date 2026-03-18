@@ -34,8 +34,8 @@ class SceneConfig:
 @dataclass
 class HapticConfig:
     collision_radius: float = 0.1
-    # Offset applied in raw device units BEFORE the kernels' built-in 0.01 scale
     position_offset: tuple = (0.0, 100.0, -400.0)
+    position_scale: float = 0.01
 
 
 @dataclass

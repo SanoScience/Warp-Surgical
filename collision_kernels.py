@@ -39,6 +39,7 @@ def collide_particles_vs_sphere(
     inv_masses: wp.array(dtype=wp.float32),
     sphere_center: wp.array(dtype=wp.vec3f),
     sphere_radius: wp.float32,
+    sphere_center_scale: wp.float32,
     restitution: wp.float32,
     dt: wp.float32,
     deltas: wp.array(dtype=wp.vec3f)
@@ -47,11 +48,9 @@ def collide_particles_vs_sphere(
     if tid >= len(positions):
         return
     pos = positions[tid]
-    #vel = velocities[tid]
     inv_mass = inv_masses[tid]
 
-    # Sphere collision detection
-    to_sphere = pos - sphere_center[0] * 0.01  # Scale the sphere center if needed
+    to_sphere = pos - sphere_center[0] * sphere_center_scale
     dist = wp.length(to_sphere)
     if inv_mass > 0 and dist < sphere_radius:
         # Collision response
@@ -75,6 +74,7 @@ def collide_triangles_vs_sphere(
     tri_indices: wp.array(dtype=wp.int32, ndim=2),
     sphere_center: wp.array(dtype=wp.vec3f),
     sphere_radius: wp.float32,
+    sphere_center_scale: wp.float32,
     restitution: wp.float32,
     dt: wp.float32,
     delta_accumulator: wp.array(dtype=wp.vec3f),
@@ -97,11 +97,10 @@ def collide_triangles_vs_sphere(
     w3 = inv_masses[t3]
     w = w1 + w2 + w3
 
-    # Skip if all vertices are static (infinite mass)
     if w <= 0.0:
         return
 
-    sp = sphere_center[0] * 0.01
+    sp = sphere_center[0] * sphere_center_scale
 
     closest_p, bary, feature_type = triangle_closest_point(p1, p2, p3, sp)
     

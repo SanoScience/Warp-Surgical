@@ -57,15 +57,14 @@ def set_body_position(body_q: wp.array(dtype=wp.transformf),
                       body_qd: wp.array(dtype=wp.spatial_vectorf),
                       body_id: int, 
                       posParameter: wp.array(dtype=wp.vec3f),
+                      scale: wp.float32,
                       dt: wp.float32):
     t = body_q[body_id]
     prev_pos = wp.transform_get_translation(t)
-    new_pos = posParameter[0] * 0.01
+    new_pos = posParameter[0] * scale
 
-    # Set translation part while preserving rotation
     body_q[body_id] = wp.transform(new_pos, wp.quat(t[3], t[4], t[5], t[6]))
 
-    # Update velocity
     lin_vel = (new_pos - prev_pos) / dt
     body_qd[body_id] = wp.spatial_vector(lin_vel, wp.vec3f(0.0, 0.0, 0.0))
 

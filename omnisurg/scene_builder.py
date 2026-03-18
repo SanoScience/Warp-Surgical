@@ -16,6 +16,7 @@ class HapticProxyState:
     center_prev: wp.array
     center_target: wp.array
     center_current: wp.array
+    center_scaled: wp.array
     body_id: int
     radius: float
 
@@ -122,6 +123,7 @@ def build_scene(
         center_prev=wp.zeros(1, dtype=wp.vec3, device=device),
         center_target=wp.zeros(1, dtype=wp.vec3, device=device),
         center_current=wp.zeros(1, dtype=wp.vec3, device=device),
+        center_scaled=wp.zeros(1, dtype=wp.vec3, device=device),
         body_id=haptic_body_id,
         radius=haptic.collision_radius,
     )

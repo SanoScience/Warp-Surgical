@@ -38,9 +38,6 @@ class HapticSphereCollisionSystem(SimulationSystem):
         if model.tri_count == 0:
             return
 
-        self._accumulator.zero_()
-        self._count.zero_()
-
         wp.launch(
             kernel=collide_triangles_vs_sphere,
             dim=model.tri_count,
@@ -49,8 +46,9 @@ class HapticSphereCollisionSystem(SimulationSystem):
                 particle_qd,
                 model.particle_inv_mass,
                 model.tri_indices,
-                self.proxy.center_current,
+                self.proxy.center_scaled,
                 self.proxy.radius,
+                1.0,
                 0.0,
                 dt,
             ],
