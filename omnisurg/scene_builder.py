@@ -7,19 +7,7 @@ import newton
 from mesh_loader import Tetrahedron, compute_tet_volume
 from omnisurg.assets import TetMeshAsset
 from omnisurg.config import SceneConfig, HapticConfig
-
-
-@dataclass
-class HapticProxyState:
-    """GPU-resident haptic sphere state. Updated in-place, never reallocated."""
-
-    center_prev: wp.array
-    center_target: wp.array
-    center_current: wp.array
-    center_scaled: wp.array
-    body_id: int
-    radius: float
-    max_tri_extent: float = 0.0
+from omnisurg.haptic_kinematic import HapticProxyState, create_haptic_proxy_state
 
 
 @dataclass
@@ -131,13 +119,10 @@ def build_scene(
             max_tri_extent = extent
     max_tri_extent *= 2.0
 
-    proxy = HapticProxyState(
-        center_prev=wp.zeros(1, dtype=wp.vec3, device=device),
-        center_target=wp.zeros(1, dtype=wp.vec3, device=device),
-        center_current=wp.zeros(1, dtype=wp.vec3, device=device),
-        center_scaled=wp.zeros(1, dtype=wp.vec3, device=device),
+    proxy = create_haptic_proxy_state(
         body_id=haptic_body_id,
         radius=haptic.collision_radius,
+        device=device,
         max_tri_extent=max_tri_extent,
     )
 

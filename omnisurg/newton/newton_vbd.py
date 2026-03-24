@@ -1,118 +1,68 @@
 import math
-import os
-import sys
 
 import warp as wp
 
 import newton
 import newton.examples
 
-_PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-if _PROJECT_ROOT not in sys.path:
-    sys.path.insert(0, _PROJECT_ROOT)
-
-
-@wp.kernel
-def _update_haptic_sphere(
-    pos_prev: wp.array(dtype=wp.vec3f),
-    pos_target: wp.array(dtype=wp.vec3f),
-    pos_current: wp.array(dtype=wp.vec3f),
-    body_q: wp.array(dtype=wp.transformf),
-    body_qd: wp.array(dtype=wp.spatial_vectorf),
-    body_id: int,
-    factor: float,
-    position_scale: float,
-    dt: float,
-):
-    if wp.tid() == 0:
-        current = wp.lerp(pos_prev[0], pos_target[0], factor)
-        pos_current[0] = current
-
-        scaled = current * position_scale
-
-        xform = body_q[body_id]
-        prev = wp.transform_get_translation(xform)
-        body_q[body_id] = wp.transform(scaled, wp.transform_get_rotation(xform))
-        vel = (scaled - prev) / dt
-        body_qd[body_id] = wp.spatial_vector(vel, wp.vec3f(0.0, 0.0, 0.0))
+from omnisurg.config import HapticConfig, SimulationConfig
+from omnisurg.haptic_kinematic import (
+    create_haptic_proxy_state,
+    create_vec3_staging_buffer,
+    update_haptic_proxy,
+)
+from omnisurg.haptics import LiveHapticSource, ReplayInputSource
+from omnisurg.newton.soft_grid_scene import SoftGridSceneConfig, build_soft_grid_scene
 
 
 class SoftBodySim:
     def __init__(self, viewer, args):
         self.viewer = viewer
-        self.solver_type = args.solver
         self.sim_time = 0.0
-        self.fps = 60
-        self.frame_dt = 1.0 / self.fps
-        self.sim_substeps = 10
-        self.iterations = 10
-        self.sim_dt = self.frame_dt / self.sim_substeps
+        self.device = wp.get_device()
 
-        if self.solver_type != "vbd":
-            raise ValueError("The hanging softbody example only supports the VBD solver.")
-
-        builder = newton.ModelBuilder(up_axis=newton.Axis.Y)
-        builder.add_ground_plane()
-
-        dim_x = 12
-        dim_y = 4
-        dim_z = 4
-        cell_size = 0.1
-
-        builder.add_soft_grid(
-            pos=wp.vec3(0.0, 1.0, 1.0),
-            rot=wp.quat_identity(),
-            vel=wp.vec3(0.0, 0.0, 0.0),
-            dim_x=dim_x,
-            dim_y=dim_y,
-            dim_z=dim_z,
-            cell_x=cell_size,
-            cell_y=cell_size,
-            cell_z=cell_size,
-            density=1.0e3,
-            k_mu=1.0e5,
-            k_lambda=1.0e5,
-            k_damp=1.0e-1,
-            fix_left=True,
+        self.sim_config = SimulationConfig(
+            substeps=10,
+            fps=120,
+            constraint_iterations=10,
         )
-
-        # Haptic-driven kinematic sphere for collision
-        self.haptic_radius = 0.15
-        haptic_start = wp.vec3(0.5, 1.2, 1.2)
-
-        self.haptic_body_id = builder.add_body(
-            xform=wp.transform(haptic_start, wp.quat_identity()),
-            mass=0.0,
-            armature=0.0,
+        self.haptic_config = HapticConfig(
+            collision_radius=0.15,
+            position_offset=(100.0, 100.0, 0.0),
+            position_scale=0.02,
         )
-        builder.add_shape_sphere(
-            body=self.haptic_body_id,
-            xform=wp.transform([0.0, 0.0, 0.0], wp.quat_identity()),
-            radius=self.haptic_radius,
-            cfg=newton.ModelBuilder.ShapeConfig(density=10),
-        )
+        self.scene_config = SoftGridSceneConfig()
 
-        builder.color()
+        self.fps = self.sim_config.fps
+        self.frame_dt = self.sim_config.frame_dt
+        self.sim_substeps = self.sim_config.substeps
+        self.iterations = self.sim_config.constraint_iterations
+        self.sim_dt = self.sim_config.substep_dt
+        self._pending_substeps = self.sim_substeps
+        self._pending_constraint_iterations = self.iterations
 
-        self.model = builder.finalize()
-        self.model.soft_contact_ke = 1.0e5
-        self.model.soft_contact_kd = 1.0e-4
-        self.model.soft_contact_mu = 1.0
-
-        self.model.shape_material_ke.fill_(1.0e5)
-        self.model.shape_material_kd.fill_(1.0e-4)
-        self.model.shape_material_mu.fill_(1.0)
+        scene = build_soft_grid_scene(self.scene_config, self.haptic_config)
+        self.model = scene.model
+        self.proxy = self._create_haptic_proxy(scene.haptic_body_id, scene.haptic_start)
 
         self.solver = newton.solvers.SolverVBD(
             model=self.model,
             iterations=self.iterations,
+            particle_collision_detection_interval = 1,
             particle_enable_self_contact=False,
             particle_enable_tile_solve=False,
         )
 
+        # self.solver = newton.solvers.SolverXPBD(
+        #     model=self.model, 
+        #     iterations=self.iterations, 
+        #     soft_body_relaxation=1e-6,
+        #     soft_contact_relaxation=0.9,
+        #     )
+
         self.collision_pipeline = newton.CollisionPipeline(
             self.model,
-            soft_contact_margin=self.haptic_radius,
+            soft_contact_margin=self.haptic_config.collision_radius,
         )
 
         self.state_0 = self.model.state()
@@ -120,40 +70,79 @@ class SoftBodySim:
         self.control = self.model.control()
         self.contacts = self.collision_pipeline.contacts()
 
-        # Haptic mapping: raw haptic coords + offset, then * scale on GPU
-        # Matches omnisurg/runtime.py convention
-        self.haptic_position_scale = 0.02
-        self.haptic_position_offset = (0.0, 100.0, 100.0)
-
-        # Initial buffers in raw haptic units (haptic_start / scale)
-        raw_start = wp.vec3(
-            haptic_start[0] / self.haptic_position_scale,
-            haptic_start[1] / self.haptic_position_scale,
-            haptic_start[2] / self.haptic_position_scale,
-        )
-        dev = wp.get_device()
-        self.haptic_pos_prev = wp.array([raw_start], dtype=wp.vec3f, device=dev)
-        self.haptic_pos_target = wp.array([raw_start], dtype=wp.vec3f, device=dev)
-        self.haptic_pos_current = wp.array([raw_start], dtype=wp.vec3f, device=dev)
-
-        self.input_source = None
-        try:
-            from omnisurg.haptics import LiveHapticSource
-            self.input_source = LiveHapticSource()
-            print("Haptic device connected")
-        except Exception as e:
-            print(f"No haptic device ({e}). Sphere follows a demo trajectory.")
+        self._haptic_staging, self._haptic_staging_view = create_vec3_staging_buffer()
+        self.input_source = self._init_input_source(args)
 
         self.viewer.set_model(self.model)
+        self.viewer.show_particles = True
+
         self.capture()
 
+    def _create_haptic_proxy(self, body_id: int, haptic_start: wp.vec3):
+        scale = self.haptic_config.position_scale
+        raw_start = wp.vec3(
+            haptic_start[0] / scale,
+            haptic_start[1] / scale,
+            haptic_start[2] / scale,
+        )
+        return create_haptic_proxy_state(
+            body_id=body_id,
+            radius=self.haptic_config.collision_radius,
+            device=self.device,
+            initial_position=raw_start,
+            initial_scaled_position=haptic_start,
+        )
+
+    def _map_haptic_position(self, position) -> wp.vec3:
+        """Map device coordinates into the simulation's world axes."""
+
+        x = float(position[0])
+        y = float(position[1])
+        z = float(position[2])
+        if self.model.up_axis == newton.Axis.Z:
+            return wp.vec3(z, x, y)
+        return wp.vec3(x, y, z)
+
+    def _init_input_source(self, args):
+        if args.replay:
+            print(f"Using replay input: {args.replay}")
+            return ReplayInputSource(args.replay)
+
+        try:
+            source = LiveHapticSource()
+            print("Using live haptic device")
+            return source
+        except Exception as e:
+            print(f"Haptic device not available ({e}), sphere follows a demo trajectory.")
+            return None
+
     def capture(self):
-        if wp.get_device().is_cuda:
+        if self.device.is_cuda:
             with wp.ScopedCapture() as capture:
                 self.simulate()
             self.graph = capture.graph
         else:
             self.graph = None
+
+    def _apply_pending_sim_settings(self):
+        substeps = max(1, int(self._pending_substeps))
+        iterations = max(1, int(self._pending_constraint_iterations))
+        if substeps == self.sim_substeps and iterations == self.iterations:
+            return
+
+        self.sim_substeps = substeps
+        self.iterations = iterations
+        self.sim_dt = self.frame_dt / float(self.sim_substeps)
+
+        self.sim_config.substeps = self.sim_substeps
+        self.sim_config.constraint_iterations = self.iterations
+        self.sim_config.substep_dt = self.sim_dt
+        self.solver.iterations = self.iterations
+
+        self.graph = None
+        if self.device.is_cuda:
+            # Rebuild the captured graph so updated loop counts take effect.
+            self.capture()
 
     def simulate(self):
         for i in range(self.sim_substeps):
@@ -161,13 +150,23 @@ class SoftBodySim:
             self.viewer.apply_forces(self.state_0)
 
             factor = float(i) / float(self.sim_substeps)
-            wp.launch(_update_haptic_sphere, dim=1, inputs=[
-                self.haptic_pos_prev, self.haptic_pos_target,
-                self.haptic_pos_current,
-                self.state_0.body_q, self.state_0.body_qd,
-                self.haptic_body_id, factor,
-                self.haptic_position_scale, self.sim_dt,
-            ])
+            wp.launch(
+                update_haptic_proxy,
+                dim=1,
+                inputs=[
+                    self.proxy.center_prev,
+                    self.proxy.center_target,
+                    self.proxy.center_current,
+                    self.proxy.center_scaled,
+                    self.state_0.body_q,
+                    self.state_0.body_qd,
+                    self.proxy.body_id,
+                    factor,
+                    self.haptic_config.position_scale,
+                    self.sim_dt,
+                ],
+                device=self.device,
+            )
 
             self.collision_pipeline.collide(self.state_0, self.contacts)
             self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
@@ -175,46 +174,41 @@ class SoftBodySim:
 
     def _read_haptic_position(self):
         """Return haptic position in raw units (+ offset). Scale is applied on GPU."""
-        off = self.haptic_position_offset
+        off = self.haptic_config.position_offset
         if self.input_source:
             sample = self.input_source.poll()
             if "position" in sample:
                 raw = sample["position"]
-                return wp.vec3(
+                return self._map_haptic_position((
                     float(raw[0]) + off[0],
                     float(raw[1]) + off[1],
                     float(raw[2]) + off[2],
-                )
+                ))
         # Demo: sinusoidal sweep in raw haptic units around the grid center
-        s = 1.0 / self.haptic_position_scale
+        s = 1.0 / self.haptic_config.position_scale
         t = self.sim_time
-        return wp.vec3(
+        return self._map_haptic_position((
             0.6 * s + 0.5 * s * math.sin(t * 1.5),
             1.2 * s + 0.2 * s * math.sin(t * 0.7),
             1.2 * s + 0.2 * s * math.cos(t * 1.0),
-        )
+        ))
 
     def step(self):
+        self._apply_pending_sim_settings()
         new_pos = self._read_haptic_position()
-        wp.copy(self.haptic_pos_prev, self.haptic_pos_target)
-        wp.copy(
-            self.haptic_pos_target,
-            wp.array([new_pos], dtype=wp.vec3f, device=wp.get_device()),
-        )
+        wp.copy(self.proxy.center_prev, self.proxy.center_target)
+        self._haptic_staging_view[0] = [new_pos[0], new_pos[1], new_pos[2]]
+        wp.copy(self.proxy.center_target, self._haptic_staging)
 
         if self.graph:
             wp.capture_launch(self.graph)
         else:
             self.simulate()
 
-        self.sim_time += self.frame_dt
+        self.sim_time += self.sim_config.frame_dt
 
     def test_final(self):
-        # Test that particles are in a reasonable range (soft body may settle or deform)
-        # We check that they haven't exploded or collapsed completely
-        # 4 grids, each roughly 1.2 x 0.4 x 0.4 in size, positioned along Y-axis
-        # Initial positions: Y from 1.0 to ~3.2, X from 0 to 1.2, Z around 1.0 to 1.4
-        # With fix_left=True, grids hang and sag significantly towards the ground
+        # Keep the sanity check broad: the soft grid can sag and deform significantly.
         p_lower = wp.vec3(-1.0, -0.5, 0.0)
         p_upper = wp.vec3(3.0, 4.0, 3.0)
         newton.examples.test_particle_state(
@@ -224,20 +218,50 @@ class SoftBodySim:
         )
 
     def render(self):
+        self._apply_pending_sim_settings()
         self.viewer.begin_frame(self.sim_time)
         self.viewer.log_state(self.state_0)
         self.viewer.log_contacts(self.contacts, self.state_0)
         self.viewer.end_frame()
 
+    def gui(self, ui):
+        ui.text("Soft Body Settings")
+        changed, substeps = ui.slider_int("Substeps", self._pending_substeps, 1, 64)
+        if changed:
+            self._pending_substeps = substeps
+
+        changed, iterations = ui.slider_int(
+            "Constraint Iterations",
+            self._pending_constraint_iterations,
+            1,
+            32,
+        )
+        if changed:
+            self._pending_constraint_iterations = iterations
+
+        preview_dt_ms = (self.frame_dt / max(1, self._pending_substeps)) * 1000.0
+        ui.text(f"Substep dt: {preview_dt_ms:.3f} ms")
+        if (
+            self._pending_substeps != self.sim_substeps
+            or self._pending_constraint_iterations != self.iterations
+        ):
+            message = "Changes apply on the next frame."
+            if self.device.is_cuda:
+                message += " CUDA graph will be rebuilt."
+            ui.text(message)
+
+    def close(self):
+        if self.input_source:
+            self.input_source.close()
+
     @staticmethod
     def create_parser():
         parser = newton.examples.create_parser()
         parser.add_argument(
-            "--solver",
-            help="Type of solver (only 'vbd' supports volumetric soft bodies)",
+            "--replay",
             type=str,
-            choices=["vbd"],
-            default="vbd",
+            default=None,
+            help="Path to .npy haptic replay trace (N,7) for deterministic testing",
         )
         return parser
 

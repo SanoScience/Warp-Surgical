@@ -3,8 +3,7 @@ import warp as wp
 from simulation_system import SimulationSystem
 from collision_kernels import collide_triangles_vs_sphere
 from simulation_kernels import apply_deltas_and_zero_accumulators
-
-from omnisurg.scene_builder import HapticProxyState
+from omnisurg.haptic_kinematic import HapticProxyState
 
 
 class HapticSphereCollisionSystem(SimulationSystem):

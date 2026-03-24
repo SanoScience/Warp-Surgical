@@ -13,53 +13,16 @@ from omnisurg.config import (
     ViewerConfig,
 )
 from omnisurg.haptic_collision import HapticSphereCollisionSystem
+from omnisurg.haptic_kinematic import (
+    HapticProxyState,
+    create_vec3_staging_buffer,
+    scale_position,
+    update_haptic_proxy,
+)
 from omnisurg.haptics import InputSource
 from omnisurg.render_bridge import RenderBridge
-from omnisurg.scene_builder import HapticProxyState, build_scene
+from omnisurg.scene_builder import build_scene
 from omnisurg.solver import Phase1Solver
-
-
-@wp.kernel
-def _update_haptic_proxy(
-    center_prev: wp.array(dtype=wp.vec3f),
-    center_target: wp.array(dtype=wp.vec3f),
-    center_current: wp.array(dtype=wp.vec3f),
-    center_scaled: wp.array(dtype=wp.vec3f),
-    body_q: wp.array(dtype=wp.transformf),
-    body_qd: wp.array(dtype=wp.spatial_vectorf),
-    body_id: int,
-    factor: float,
-    position_scale: float,
-    dt: float,
-):
-    tid = wp.tid()
-    if tid >= 1:
-        return
-
-    current = wp.lerp(center_prev[0], center_target[0], factor)
-    center_current[0] = current
-
-    scaled = current * position_scale
-    center_scaled[0] = scaled
-
-    t = body_q[body_id]
-    prev_pos = wp.transform_get_translation(t)
-    body_q[body_id] = wp.transform(scaled, wp.quat(t[3], t[4], t[5], t[6]))
-
-    lin_vel = (scaled - prev_pos) / dt
-    body_qd[body_id] = wp.spatial_vector(lin_vel, wp.vec3f(0.0, 0.0, 0.0))
-
-
-@wp.kernel
-def _scale_position(
-    src: wp.array(dtype=wp.vec3f),
-    dst: wp.array(dtype=wp.vec3f),
-    scale: float,
-):
-    tid = wp.tid()
-    if tid >= 1:
-        return
-    dst[0] = src[0] * scale
 
 
 class Runtime:
@@ -116,8 +79,7 @@ class Runtime:
         self.renderer = RenderBridge(viewer_config, self.model, self.device)
         self.sim_time = 0.0
 
-        self._haptic_staging = wp.zeros(1, dtype=wp.vec3, device="cpu")
-        self._haptic_staging_view = self._haptic_staging.numpy()
+        self._haptic_staging, self._haptic_staging_view = create_vec3_staging_buffer()
         self._haptic_render_pos = wp.zeros(1, dtype=wp.vec3, device=self.device)
 
         self.use_cuda_graph = self.device.is_cuda
@@ -162,7 +124,7 @@ class Runtime:
 
             factor = float(i) / float(self.sim_config.substeps)
             wp.launch(
-                _update_haptic_proxy,
+                update_haptic_proxy,
                 dim=1,
                 inputs=[
                     self.proxy.center_prev,
@@ -195,7 +157,7 @@ class Runtime:
     def render(self):
         """Render phase: static surface + dynamic positions, pre-allocated buffers."""
         wp.launch(
-            _scale_position,
+            scale_position,
             dim=1,
             inputs=[
                 self.proxy.center_current,
