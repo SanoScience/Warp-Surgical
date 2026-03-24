@@ -1,0 +1,11 @@
+{
+    "version": "1.0",
+    "file_records": [
+        {
+            "source_url": "omniverse://localhost/Library/sage/2025-10-02/robot/fr3_assembly.usda",
+            "source_hash": "sha-256-flat;1048576;08aa745082be064e9c146d78197b55a6453a14647ccd1a824d31433c70f7f917",
+            "target_url": "./fr3_assembly.usda",
+            "target_hash": "sha-256-flat;1048576;08aa745082be064e9c146d78197b55a6453a14647ccd1a824d31433c70f7f917"
+        }
+    ]
+}

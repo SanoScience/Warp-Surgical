@@ -94,7 +94,7 @@ def main():
                 rt.poll_input(source)
             rt.step()
             rt.render()
-            #rt.pace()
+            rt.pace()
 
             frame += 1
             if args.num_frames > 0 and frame >= args.num_frames:
