@@ -1,3 +1,23 @@
-from omnisurg.input.sources import InputSource, LiveHapticSource, ReplayInputSource
+from omnisurg.input.sources import (
+    BimanualOpenHapticsRig,
+    BimanualReplayRig,
+    ControllerSample,
+    InputRig,
+    InputSource,
+    LiveHapticSource,
+    LiveMiniMouSource,
+    MultiSourceRig,
+    ReplayInputSource,
+)
 
-__all__ = ["InputSource", "LiveHapticSource", "ReplayInputSource"]
+__all__ = [
+    "BimanualOpenHapticsRig",
+    "BimanualReplayRig",
+    "ControllerSample",
+    "InputRig",
+    "InputSource",
+    "LiveHapticSource",
+    "LiveMiniMouSource",
+    "MultiSourceRig",
+    "ReplayInputSource",
+]

@@ -7,7 +7,7 @@ if "WARP_CACHE_PATH" not in os.environ:
     os.environ["WARP_CACHE_PATH"] = str(_cache_dir)
 
 from omnisurg.config import BoundsConfig, HapticConfig, SceneConfig, SimulationConfig, ViewerConfig
-from omnisurg.input.sources import InputSource
+from omnisurg.input.sources import InputRig, InputSource
 from omnisurg.mesh.assets import TetMeshAsset, load_tet_asset
 from omnisurg.mesh.scene import SceneData, build_scene
 from omnisurg.runtime import Runtime
@@ -15,6 +15,7 @@ from omnisurg.runtime import Runtime
 __all__ = [
     "BoundsConfig",
     "HapticConfig",
+    "InputRig",
     "InputSource",
     "Runtime",
     "SceneConfig",

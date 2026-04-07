@@ -3,6 +3,7 @@ from omnisurg.physics.solver import Phase1Solver
 from omnisurg.physics.systems import (
     BoundsCollisionSystem,
     DistanceConstraintSystem,
+    TrianglePointConstraintSystem,
     VolumeConstraintSystem,
 )
 
@@ -11,5 +12,6 @@ __all__ = [
     "DistanceConstraintSystem",
     "Phase1Solver",
     "SimulationSystem",
+    "TrianglePointConstraintSystem",
     "VolumeConstraintSystem",
 ]

@@ -6,18 +6,21 @@ import warp as wp
 
 from omnisurg.config import HapticConfig, SceneConfig
 from omnisurg.input.haptic_proxy import HapticProxyState, create_haptic_proxy_state
-from omnisurg.mesh.assets import TetMeshAsset
-from omnisurg.mesh.types import Tetrahedron, compute_tet_volume
+from omnisurg.mesh.assets import MeshRange, TetMeshAsset
+from omnisurg.mesh.types import Tetrahedron, TriPointsConnector, compute_tet_volume
 
 
 @dataclass
 class SceneData:
-    """Everything produced by the Phase 1 scene builder."""
+    """Everything produced by the Phase 1 or Phase 2 scene builder."""
 
     model: newton.Model
     surface_tri_indices: wp.array
+    surface_meshes: dict[str, wp.array]
+    uvs: wp.array | None
     haptic_proxy: HapticProxyState
     tetrahedra_wp: wp.array
+    mesh_ranges: dict[str, MeshRange]
 
 
 def _is_pinned(pos: np.ndarray, pin_center: tuple | None, pin_radius: float) -> bool:
@@ -33,8 +36,6 @@ def build_scene(
     haptic: HapticConfig,
     device,
 ) -> SceneData:
-    """Build the single-asset Phase 1 Newton scene."""
-
     builder = newton.ModelBuilder(up_axis=newton.Axis.Y)
     translation = np.array(scene.translation, dtype=np.float32)
 
@@ -101,12 +102,29 @@ def build_scene(
     model.tetrahedra_wp = tetrahedra_wp
     model.tet_active = wp.ones(len(tetrahedra), dtype=wp.int32, device=device)
     model.particle_max_velocity = 10.0
+    model.tri_points_connectors = (
+        wp.array(list(asset.connectors), dtype=TriPointsConnector, device=device)
+        if asset.connectors
+        else wp.empty(0, dtype=TriPointsConnector, device=device)
+    )
 
     surface_tri_wp = wp.array(
         asset.surface_tri_indices.flatten().tolist(),
         dtype=wp.int32,
         device=device,
     )
+    surface_meshes = {}
+    for mesh_name, mesh_range in (asset.mesh_ranges or {}).items():
+        mesh_surface = asset.surface_tri_indices[
+            mesh_range.tri_start : mesh_range.tri_start + mesh_range.tri_count
+        ]
+        surface_meshes[mesh_name] = wp.array(
+            mesh_surface.flatten().tolist(),
+            dtype=wp.int32,
+            device=device,
+        )
+
+    uvs_wp = wp.array(asset.uvs, dtype=wp.vec2, device=device) if asset.uvs is not None else None
 
     max_tri_extent = 0.0
     translated_positions = asset.rest_positions + translation
@@ -129,6 +147,9 @@ def build_scene(
     return SceneData(
         model=model,
         surface_tri_indices=surface_tri_wp,
+        surface_meshes=surface_meshes,
+        uvs=uvs_wp,
         haptic_proxy=proxy,
         tetrahedra_wp=tetrahedra_wp,
+        mesh_ranges=asset.mesh_ranges or {},
     )

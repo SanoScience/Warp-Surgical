@@ -1,6 +1,6 @@
 import warp as wp
 
-from omnisurg.mesh.types import Tetrahedron
+from omnisurg.mesh.types import Tetrahedron, TriPointsConnector
 
 
 @wp.kernel
@@ -58,6 +58,45 @@ def solve_distance_constraints(
     wp.atomic_add(delta, j, dxj)
     wp.atomic_add(delta_counter, i, 1)
     wp.atomic_add(delta_counter, j, 1)
+
+
+@wp.kernel
+def apply_tri_points_constraints_jacobian(
+    positions: wp.array(dtype=wp.vec3f),
+    connectors: wp.array(dtype=TriPointsConnector),
+    delta_accumulator: wp.array(dtype=wp.vec3f),
+):
+    tid = wp.tid()
+    conn = connectors[tid]
+
+    tri_pos = (
+        positions[conn.tri_ids[0]] * conn.tri_bar[0]
+        + positions[conn.tri_ids[1]] * conn.tri_bar[1]
+        + positions[conn.tri_ids[2]] * conn.tri_bar[2]
+    )
+
+    direction = positions[conn.particle_id] - tri_pos
+    length = wp.length(direction)
+    if length < 1e-7:
+        return
+
+    stiffness = 0.1
+    inv_mass_point = 0.75
+    inv_mass_tri = 1.0 - inv_mass_point
+
+    c = length - conn.rest_dist * 0.1
+    denom = (
+        inv_mass_point
+        + inv_mass_tri * conn.tri_bar[0] * conn.tri_bar[0]
+        + inv_mass_tri * conn.tri_bar[1] * conn.tri_bar[1]
+        + inv_mass_tri * conn.tri_bar[2] * conn.tri_bar[2]
+    )
+    delta = (c / denom) * (direction / length) * stiffness
+
+    wp.atomic_add(delta_accumulator, conn.particle_id, -delta * inv_mass_point)
+    wp.atomic_add(delta_accumulator, conn.tri_ids[0], delta * conn.tri_bar[0] * inv_mass_tri)
+    wp.atomic_add(delta_accumulator, conn.tri_ids[1], delta * conn.tri_bar[1] * inv_mass_tri)
+    wp.atomic_add(delta_accumulator, conn.tri_ids[2], delta * conn.tri_bar[2] * inv_mass_tri)
 
 
 @wp.kernel

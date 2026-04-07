@@ -1,6 +1,9 @@
 from dataclasses import dataclass, field
 
 
+SCENE_PRESETS: tuple[str, ...] = ("single", "chole")
+
+
 @dataclass
 class SimulationConfig:
     substeps: int = 16
@@ -16,6 +19,7 @@ class SimulationConfig:
 
 @dataclass
 class SceneConfig:
+    scene_preset: str = "single"
     asset_name: str = "liver"
     mesh_dir: str = "meshes"
     translation: tuple = (0.0, -3.0, 0.0)
@@ -43,6 +47,7 @@ class ViewerConfig:
     backend: str = "gl"
     camera_pos: tuple = (0.2, 1.2, -1.0)
     vsync: bool = True
+    textures_enabled: bool = True
 
 
 @dataclass

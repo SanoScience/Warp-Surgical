@@ -3,6 +3,7 @@ import warp as wp
 from omnisurg.physics.base import SimulationSystem
 from omnisurg.physics.kernels import (
     apply_deltas_and_zero_accumulators,
+    apply_tri_points_constraints_jacobian,
     bounds_collision,
     solve_distance_constraints,
     solve_volume_constraints,
@@ -196,3 +197,35 @@ class VolumeConstraintSystem(SimulationSystem):
                 outputs=[particle_deltas],
                 device=model.device,
             )
+
+
+class TrianglePointConstraintSystem(SimulationSystem):
+    """Triangle-point connector constraints for multi-organ attachments."""
+
+    def __init__(self, priority: int = 70):
+        super().__init__(priority=priority)
+
+    def solve_constraints(
+        self,
+        model,
+        state_in,
+        state_out,
+        particle_q,
+        particle_qd,
+        particle_deltas,
+        body_q,
+        body_qd,
+        body_deltas,
+        dt,
+        iteration,
+    ):
+        if not hasattr(model, "tri_points_connectors") or len(model.tri_points_connectors) == 0:
+            return
+
+        wp.launch(
+            kernel=apply_tri_points_constraints_jacobian,
+            dim=len(model.tri_points_connectors),
+            inputs=[particle_q, model.tri_points_connectors],
+            outputs=[particle_deltas],
+            device=model.device,
+        )

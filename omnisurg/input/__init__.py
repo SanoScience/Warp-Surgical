@@ -6,13 +6,29 @@ from omnisurg.input.haptic_proxy import (
     scale_position,
     update_haptic_proxy,
 )
-from omnisurg.input.sources import InputSource, LiveHapticSource, ReplayInputSource
+from omnisurg.input.sources import (
+    BimanualOpenHapticsRig,
+    BimanualReplayRig,
+    ControllerSample,
+    InputRig,
+    InputSource,
+    LiveHapticSource,
+    LiveMiniMouSource,
+    MultiSourceRig,
+    ReplayInputSource,
+)
 
 __all__ = [
+    "BimanualOpenHapticsRig",
+    "BimanualReplayRig",
+    "ControllerSample",
     "HapticProxyState",
     "HapticSphereCollisionSystem",
+    "InputRig",
     "InputSource",
     "LiveHapticSource",
+    "LiveMiniMouSource",
+    "MultiSourceRig",
     "ReplayInputSource",
     "create_haptic_proxy_state",
     "create_vec3_staging_buffer",
