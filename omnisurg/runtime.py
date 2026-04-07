@@ -2,37 +2,19 @@ import time
 
 import warp as wp
 
-from simulation_systems import BoundsCollisionSystem, DistanceConstraintSystem, VolumeConstraintSystem
-
-from omnisurg.assets import load_tet_asset
-from omnisurg.config import (
-    BoundsConfig,
-    HapticConfig,
-    SceneConfig,
-    SimulationConfig,
-    ViewerConfig,
-)
-from omnisurg.haptic_collision import HapticSphereCollisionSystem
-from omnisurg.haptic_kinematic import (
-    HapticProxyState,
-    create_vec3_staging_buffer,
-    scale_position,
-    update_haptic_proxy,
-)
-from omnisurg.haptics import InputSource
-from omnisurg.render_bridge import RenderBridge
-from omnisurg.scene_builder import build_scene
-from omnisurg.solver import Phase1Solver
+from omnisurg.config import BoundsConfig, HapticConfig, SceneConfig, SimulationConfig, ViewerConfig
+from omnisurg.input.haptic_collision import HapticSphereCollisionSystem
+from omnisurg.input.haptic_proxy import HapticProxyState, create_vec3_staging_buffer, scale_position, update_haptic_proxy
+from omnisurg.input.sources import InputSource
+from omnisurg.mesh.assets import load_tet_asset
+from omnisurg.mesh.scene import build_scene
+from omnisurg.physics.solver import Phase1Solver
+from omnisurg.physics.systems import BoundsCollisionSystem, DistanceConstraintSystem, VolumeConstraintSystem
+from omnisurg.rendering.bridge import RenderBridge
 
 
 class Runtime:
-    """Phase 1 simulation runtime.
-
-    Strict separation:
-      - poll_input(): one host->device copy per frame
-      - step(): GPU kernel launches only, zero .numpy()
-      - render(): pre-allocated buffers only, zero wp.array()
-    """
+    """Phase 1 simulation runtime."""
 
     def __init__(
         self,
@@ -47,8 +29,8 @@ class Runtime:
         self.device = wp.get_device()
 
         asset = load_tet_asset(scene_config.asset_name, scene_config.mesh_dir)
-
         scene = build_scene(asset, scene_config, haptic_config, self.device)
+
         self.model = scene.model
         self.surface_indices = scene.surface_tri_indices
         self.proxy: HapticProxyState = scene.haptic_proxy
@@ -56,18 +38,10 @@ class Runtime:
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
 
-        self.solver = Phase1Solver(
-            self.model, iterations=sim_config.constraint_iterations,
-        )
+        self.solver = Phase1Solver(self.model, iterations=sim_config.constraint_iterations)
         self.solver.register_system(DistanceConstraintSystem(priority=50))
-        self.solver.register_system(
-            VolumeConstraintSystem(
-                stiffness=scene_config.volume_stiffness, priority=60,
-            ),
-        )
-        self.solver.register_system(
-            HapticSphereCollisionSystem(self.proxy, priority=80),
-        )
+        self.solver.register_system(VolumeConstraintSystem(stiffness=scene_config.volume_stiffness, priority=60))
+        self.solver.register_system(HapticSphereCollisionSystem(self.proxy, priority=80))
         self.solver.register_system(
             BoundsCollisionSystem(
                 bounds_min=wp.vec3(*bounds_config.bounds_min),
@@ -82,7 +56,7 @@ class Runtime:
         self._haptic_staging, self._haptic_staging_view = create_vec3_staging_buffer()
         self._haptic_render_pos = wp.zeros(1, dtype=wp.vec3, device=self.device)
 
-        self.use_cuda_graph = self.device.is_cuda
+        self.use_cuda_graph = self.device.is_cuda and viewer_config.backend != "headless"
         self.graph = None
         if self.use_cuda_graph:
             with wp.ScopedCapture() as capture:
@@ -92,11 +66,6 @@ class Runtime:
         self._frame_start = time.perf_counter()
 
     def poll_input(self, source: InputSource):
-        """Read one sample from the input source and copy to device.
-
-        Stores position in device units (raw + offset).  The position_scale
-        from HapticConfig converts to simulation space on the GPU side.
-        """
         sample = source.poll()
         if "position" not in sample:
             wp.copy(self.proxy.center_prev, self.proxy.center_target)
@@ -111,12 +80,10 @@ class Runtime:
         )
 
         wp.copy(self.proxy.center_prev, self.proxy.center_target)
-
         self._haptic_staging_view[0] = [pos[0], pos[1], pos[2]]
         wp.copy(self.proxy.center_target, self._haptic_staging)
 
     def _simulate_step(self):
-        """GPU kernel launches for one frame of substeps."""
         scale = self.haptic_config.position_scale
         for i in range(self.sim_config.substeps):
             self.state_0.clear_forces()
@@ -141,13 +108,10 @@ class Runtime:
                 device=self.device,
             )
 
-            self.solver.step(
-                self.state_0, self.state_1, None, None, self.sim_config.substep_dt,
-            )
+            self.solver.step(self.state_0, self.state_1, None, None, self.sim_config.substep_dt)
             self.state_0, self.state_1 = self.state_1, self.state_0
 
     def step(self):
-        """Advance simulation by one frame, using CUDA graph replay when available."""
         if self.use_cuda_graph:
             wp.capture_launch(self.graph)
         else:
@@ -155,15 +119,10 @@ class Runtime:
         self.sim_time += self.sim_config.frame_dt
 
     def render(self):
-        """Render phase: static surface + dynamic positions, pre-allocated buffers."""
         wp.launch(
             scale_position,
             dim=1,
-            inputs=[
-                self.proxy.center_current,
-                self._haptic_render_pos,
-                self.haptic_config.position_scale,
-            ],
+            inputs=[self.proxy.center_current, self._haptic_render_pos, self.haptic_config.position_scale],
             device=self.device,
         )
 
@@ -173,7 +132,6 @@ class Runtime:
         self.renderer.end_frame()
 
     def pace(self):
-        """Sleep for the remaining frame budget to hold the target FPS."""
         deadline = self._frame_start + self.sim_config.frame_dt
         now = time.perf_counter()
         remaining = deadline - now
