@@ -106,6 +106,7 @@ class GrasperPiece:
 class JawSphereChain:
     name: str
     local_points: wp.array
+    world_points_prev: wp.array
     world_points: wp.array
     base_radii: wp.array
     radii: wp.array
@@ -200,6 +201,7 @@ class KinematicGrasper:
 
     def update_collision_geometry(self):
         for chain in self.sphere_chains:
+            wp.copy(chain.world_points_prev, chain.world_points)
             wp.launch(
                 transform_grasper_spheres,
                 dim=len(chain.local_points),
@@ -364,6 +366,7 @@ def load_kinematic_grasper(
             JawSphereChain(
                 name=role,
                 local_points=wp.array(chain_template, dtype=wp.vec3f, device=device),
+                world_points_prev=wp.zeros(jaw_sphere_count, dtype=wp.vec3f, device=device),
                 world_points=wp.zeros(jaw_sphere_count, dtype=wp.vec3f, device=device),
                 base_radii=base_radii,
                 radii=wp.zeros(jaw_sphere_count, dtype=wp.float32, device=device),

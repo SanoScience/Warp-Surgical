@@ -31,6 +31,8 @@ GRASPER_ASSET_PATH = REPO_ROOT / "meshes" / "pgrasp.usdc"
 GRASPER_SCALE = 0.01
 GRASPER_JAW_SPHERE_COUNT = 24
 GRASPER_JAW_SPHERE_RADIUS = 0.018
+GRASPER_COLLISION_SWEEP_SAMPLES = 4
+GRASPER_COLLISION_MARGIN = 0.002
 PRIMARY_CONTROLLER_ID = "right"
 TEXTURE_CANDIDATES = {
     "liver": (
@@ -90,9 +92,12 @@ def collide_triangles_vs_spheres(
     velocities: wp.array(dtype=wp.vec3f),
     inv_masses: wp.array(dtype=wp.float32),
     tri_indices: wp.array(dtype=wp.int32, ndim=2),
+    sphere_centers_prev: wp.array(dtype=wp.vec3f),
     sphere_centers: wp.array(dtype=wp.vec3f),
     sphere_radii: wp.array(dtype=wp.float32),
     num_spheres: int,
+    sweep_samples: int,
+    radius_margin: wp.float32,
     restitution: wp.float32,
     dt: wp.float32,
     cull_radius: wp.float32,
@@ -101,15 +106,19 @@ def collide_triangles_vs_spheres(
 ):
     tid = wp.tid()
     tri_count = tri_indices.shape[0]
-    if tri_count == 0:
+    if tri_count == 0 or sweep_samples <= 0:
         return
 
-    sphere_idx = tid // tri_count
+    work_items_per_sphere = tri_count * sweep_samples
+    sphere_idx = tid // work_items_per_sphere
     if sphere_idx >= num_spheres:
         return
 
-    tri_idx = tid % tri_count
-    sphere_radius = sphere_radii[sphere_idx]
+    sphere_work_idx = tid % work_items_per_sphere
+    sample_idx = sphere_work_idx // tri_count
+    tri_idx = sphere_work_idx % tri_count
+
+    sphere_radius = sphere_radii[sphere_idx] + radius_margin
     if sphere_radius <= 0.0:
         return
 
@@ -128,7 +137,8 @@ def collide_triangles_vs_spheres(
     if weight <= 0.0:
         return
 
-    sphere_pos = sphere_centers[sphere_idx]
+    sample_factor = wp.float32(sample_idx + 1) / wp.float32(sweep_samples)
+    sphere_pos = wp.lerp(sphere_centers_prev[sphere_idx], sphere_centers[sphere_idx], sample_factor)
     if cull_radius > 0.0:
         centroid = (p1 + p2 + p3) / 3.0
         if wp.length(centroid - sphere_pos) > cull_radius:
@@ -178,12 +188,16 @@ class GrasperSphereCollisionSystem(SimulationSystem):
         self.proxy = proxy
         self._accumulator: wp.array | None = None
         self._count: wp.array | None = None
+        self.sweep_samples = GRASPER_COLLISION_SWEEP_SAMPLES
+        self.contact_margin = GRASPER_COLLISION_MARGIN
         self._chain_cull_radii: dict[int, float] = {}
         for grasper in self.graspers.values():
             if grasper is None:
                 continue
             for chain in grasper.sphere_chains:
-                self._chain_cull_radii[id(chain)] = float(chain.base_radii.numpy().max()) + float(self.proxy.max_tri_extent)
+                self._chain_cull_radii[id(chain)] = (
+                    float(chain.base_radii.numpy().max()) + float(self.proxy.max_tri_extent) + self.contact_margin
+                )
 
     def get_accumulators(self):
         if self._accumulator is None:
@@ -224,20 +238,23 @@ class GrasperSphereCollisionSystem(SimulationSystem):
 
             for chain in grasper.sphere_chains:
                 sphere_count = len(chain.world_points)
-                if sphere_count == 0:
+                if sphere_count == 0 or self.sweep_samples <= 0:
                     continue
 
                 wp.launch(
                     kernel=collide_triangles_vs_spheres,
-                    dim=model.tri_count * sphere_count,
+                    dim=model.tri_count * sphere_count * self.sweep_samples,
                     inputs=[
                         particle_q,
                         particle_qd,
                         model.particle_inv_mass,
                         model.tri_indices,
+                        chain.world_points_prev,
                         chain.world_points,
                         chain.radii,
                         sphere_count,
+                        self.sweep_samples,
+                        self.contact_margin,
                         0.0,
                         dt,
                         self._chain_cull_radii[id(chain)],
@@ -325,12 +342,14 @@ class Runtime:
         self.spring_stiffness = float(scene_config.spring_stiffness)
         self.spring_damping = float(scene_config.spring_dampen)
         self.particle_max_velocity = float(self.model.particle_max_velocity)
+        self.grasper_sweep_samples = GRASPER_COLLISION_SWEEP_SAMPLES
         self._pending_substeps = self.sim_substeps
         self._pending_constraint_iterations = self.iterations
         self._pending_volume_stiffness = self.volume_stiffness
         self._pending_spring_stiffness = self.spring_stiffness
         self._pending_spring_damping = self.spring_damping
         self._pending_particle_max_velocity = self.particle_max_velocity
+        self._pending_grasper_sweep_samples = self.grasper_sweep_samples
         self.sim_config.substeps = self.sim_substeps
         self.sim_config.constraint_iterations = self.iterations
         self.sim_config.substep_dt = self.sim_config.frame_dt / float(self.sim_substeps)
@@ -367,15 +386,14 @@ class Runtime:
             )
             for controller_id in self.controller_bindings
         }
-        self.solver.register_system(
-            GrasperSphereCollisionSystem(
-                graspers=self.graspers,
-                controller_states=self.controller_states,
-                controller_bindings=self.controller_bindings,
-                proxy=self.proxy,
-                priority=85,
-            )
+        self.grasper_collision_system = GrasperSphereCollisionSystem(
+            graspers=self.graspers,
+            controller_states=self.controller_states,
+            controller_bindings=self.controller_bindings,
+            proxy=self.proxy,
+            priority=85,
         )
+        self.solver.register_system(self.grasper_collision_system)
         self.sim_time = 0.0
 
         self._haptic_staging, self._haptic_staging_view = create_vec3_staging_buffer()
@@ -470,6 +488,7 @@ class Runtime:
             or _float_changed(self._pending_spring_stiffness, self.spring_stiffness)
             or _float_changed(self._pending_spring_damping, self.spring_damping)
             or _float_changed(self._pending_particle_max_velocity, self.particle_max_velocity)
+            or self._pending_grasper_sweep_samples != self.grasper_sweep_samples
         )
 
     def _pending_graph_rebuild_needed(self) -> bool:
@@ -478,6 +497,7 @@ class Runtime:
             or self._pending_constraint_iterations != self.iterations
             or _float_changed(self._pending_volume_stiffness, self.volume_stiffness)
             or _float_changed(self._pending_particle_max_velocity, self.particle_max_velocity)
+            or self._pending_grasper_sweep_samples != self.grasper_sweep_samples
         )
 
     def _apply_pending_solver_settings(self):
@@ -487,6 +507,7 @@ class Runtime:
         spring_stiffness = max(0.0, float(self._pending_spring_stiffness))
         spring_damping = max(0.0, float(self._pending_spring_damping))
         particle_max_velocity = max(0.1, float(self._pending_particle_max_velocity))
+        grasper_sweep_samples = max(1, int(self._pending_grasper_sweep_samples))
         rebuild_graph = False
 
         if substeps != self.sim_substeps:
@@ -522,6 +543,11 @@ class Runtime:
         if _float_changed(particle_max_velocity, self.particle_max_velocity):
             self.particle_max_velocity = particle_max_velocity
             self.model.particle_max_velocity = particle_max_velocity
+            rebuild_graph = True
+
+        if grasper_sweep_samples != self.grasper_sweep_samples:
+            self.grasper_sweep_samples = grasper_sweep_samples
+            self.grasper_collision_system.sweep_samples = grasper_sweep_samples
             rebuild_graph = True
 
         if rebuild_graph:
@@ -662,6 +688,13 @@ class Runtime:
         changed, particle_max_velocity = ui.slider_float("Particle Max Velocity", self._pending_particle_max_velocity, 0.1, 50.0, "%.2f")
         if changed:
             self._pending_particle_max_velocity = particle_max_velocity
+
+        ui.separator()
+        ui.text("Collision")
+        changed, grasper_sweep_samples = ui.slider_int("Jaw Sweep Samples", self._pending_grasper_sweep_samples, 1, 16)
+        if changed:
+            self._pending_grasper_sweep_samples = grasper_sweep_samples
+        ui.text(f"Jaw Contact Margin: {self.grasper_collision_system.contact_margin:.3f} m")
 
         preview_dt_ms = (self.sim_config.frame_dt / float(max(1, int(self._pending_substeps)))) * 1000.0
         ui.text(f"Substep dt: {preview_dt_ms:.3f} ms")

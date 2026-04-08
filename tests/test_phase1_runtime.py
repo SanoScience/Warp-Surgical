@@ -19,6 +19,7 @@ import warp as wp
 
 from omnisurg import BoundsConfig, HapticConfig, Runtime, SceneConfig, SimulationConfig, ViewerConfig
 import omnisurg.main as omnisurg_main
+import omnisurg.runtime as runtime_module
 from omnisurg.assets import load_scene_asset, load_tet_asset
 from omnisurg.haptics import BimanualReplayRig, ReplayInputSource
 from omnisurg.instruments.grasper import load_kinematic_grasper
@@ -515,7 +516,7 @@ class TestPhaseRuntime(unittest.TestCase):
                 self.assertLess(runtime.graspers["right"].jaw_angle, initial_angle)
                 left_chain = next(chain for chain in runtime.graspers["right"].sphere_chains if chain.jaw_sign > 0.0)
                 left_points = left_chain.world_points.numpy()
-                self.assertEqual(left_points.shape[0], 16)
+                self.assertEqual(left_points.shape[0], runtime_module.GRASPER_JAW_SPHERE_COUNT)
                 self.assertAlmostEqual(float(left_points[0][0]), 0.0, delta=0.25)
                 self.assertAlmostEqual(float(left_points[0][1]), 0.85, delta=0.35)
                 self.assertAlmostEqual(float(left_points[0][2]), -3.4, delta=0.7)
@@ -621,6 +622,52 @@ class TestPhaseRuntime(unittest.TestCase):
             if replay_path.exists():
                 replay_path.unlink()
 
+    def test_grasper_sweep_sampling_catches_crossing_contact(self):
+        with wp.ScopedDevice("cpu"):
+            positions = wp.array(
+                [
+                    [-0.5, -0.5, 0.0],
+                    [0.5, -0.5, 0.0],
+                    [0.0, 0.5, 0.0],
+                ],
+                dtype=wp.vec3f,
+            )
+            velocities = wp.zeros(3, dtype=wp.vec3f)
+            inv_masses = wp.array([1.0, 1.0, 1.0], dtype=wp.float32)
+            tri_indices = wp.array([[0, 1, 2]], dtype=wp.int32, ndim=2)
+            sphere_centers_prev = wp.array([[0.0, 0.0, -1.0]], dtype=wp.vec3f)
+            sphere_centers = wp.array([[0.0, 0.0, 1.0]], dtype=wp.vec3f)
+            sphere_radii = wp.array([0.1], dtype=wp.float32)
+
+            def run_sweep(sample_count: int):
+                delta_accumulator = wp.zeros(3, dtype=wp.vec3f)
+                delta_counter = wp.zeros(3, dtype=wp.int32)
+                wp.launch(
+                    kernel=runtime_module.collide_triangles_vs_spheres,
+                    dim=sample_count,
+                    inputs=[
+                        positions,
+                        velocities,
+                        inv_masses,
+                        tri_indices,
+                        sphere_centers_prev,
+                        sphere_centers,
+                        sphere_radii,
+                        1,
+                        sample_count,
+                        0.0,
+                        0.0,
+                        1.0 / 120.0,
+                        0.0,
+                    ],
+                    outputs=[delta_accumulator, delta_counter],
+                    device=wp.get_device(),
+                )
+                return int(delta_counter.numpy().sum())
+
+            self.assertEqual(run_sweep(1), 0)
+            self.assertGreater(run_sweep(runtime_module.GRASPER_COLLISION_SWEEP_SAMPLES), 0)
+
     def test_bimanual_graspers_follow_independent_controllers(self):
         right_trace = np.array(
             [
@@ -670,8 +717,8 @@ class TestPhaseRuntime(unittest.TestCase):
                 left_chain = next(chain for chain in runtime.graspers["left"].sphere_chains if chain.jaw_sign > 0.0)
                 right_points = right_chain.world_points.numpy()
                 left_points = left_chain.world_points.numpy()
-                self.assertEqual(right_points.shape[0], 16)
-                self.assertEqual(left_points.shape[0], 16)
+                self.assertEqual(right_points.shape[0], runtime_module.GRASPER_JAW_SPHERE_COUNT)
+                self.assertEqual(left_points.shape[0], runtime_module.GRASPER_JAW_SPHERE_COUNT)
                 self.assertGreater(float(left_points[0][0]) - float(right_points[0][0]), 0.75)
         finally:
             if rig is not None:
