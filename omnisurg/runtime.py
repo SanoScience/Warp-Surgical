@@ -14,7 +14,7 @@ from omnisurg.input.haptic_proxy import HapticProxyState, create_vec3_staging_bu
 from omnisurg.input.sources import InputRig, InputSource
 from omnisurg.mesh.assets import load_scene_asset
 from omnisurg.mesh.scene import build_scene
-from omnisurg.physics.base import SimulationSystem
+from omnisurg.physics.base import SimulationSystem, SolverStage
 from omnisurg.physics.kernels import apply_deltas_and_zero_accumulators
 from omnisurg.physics.solver import Phase1Solver
 from omnisurg.physics.systems import (
@@ -181,7 +181,7 @@ class GrasperSphereCollisionSystem(SimulationSystem):
         proxy: HapticProxyState,
         priority: int = 85,
     ):
-        super().__init__(priority=priority)
+        super().__init__(priority=priority, stage=SolverStage.PROJECTION)
         self.graspers = graspers
         self.controller_states = controller_states
         self.controller_bindings = controller_bindings
@@ -865,3 +865,4 @@ class Runtime:
 
     def close(self):
         self.renderer.close()
+

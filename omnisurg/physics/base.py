@@ -1,14 +1,21 @@
 from abc import ABC
+from enum import Enum
 
 import warp as wp
 from newton._src.sim import Model, State
 
 
+class SolverStage(Enum):
+    ELASTIC = "elastic"
+    PROJECTION = "projection"
+
+
 class SimulationSystem(ABC):
     """Base class for callback-based Phase 1 simulation systems."""
 
-    def __init__(self, priority: int = 0):
+    def __init__(self, priority: int = 0, stage: SolverStage = SolverStage.ELASTIC):
         self.priority = priority
+        self.stage = stage
         self.enabled = True
         self.deferred_apply = False
 

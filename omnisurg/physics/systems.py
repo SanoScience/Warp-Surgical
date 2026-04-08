@@ -1,6 +1,6 @@
 import warp as wp
 
-from omnisurg.physics.base import SimulationSystem
+from omnisurg.physics.base import SimulationSystem, SolverStage
 from omnisurg.physics.kernels import (
     apply_deltas_and_zero_accumulators,
     apply_tri_points_constraints_jacobian,
@@ -19,7 +19,7 @@ class BoundsCollisionSystem(SimulationSystem):
         friction: float = 0.0,
         priority: int = 100,
     ):
-        super().__init__(priority=priority)
+        super().__init__(priority=priority, stage=SolverStage.PROJECTION)
         self.bounds_min = bounds_min
         self.bounds_max = bounds_max
         self.restitution = restitution

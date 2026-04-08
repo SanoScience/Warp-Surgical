@@ -4,7 +4,7 @@ from newton._src.sim import Contacts, Control, Model, State
 from newton._src.solvers import SolverBase
 from newton._src.solvers.xpbd.kernels import apply_particle_deltas
 
-from omnisurg.physics.base import SimulationSystem
+from omnisurg.physics.base import SimulationSystem, SolverStage
 from omnisurg.physics.kernels import apply_deltas_and_zero_accumulators, apply_fused_3_accumulators
 
 
@@ -16,6 +16,8 @@ class Phase1Solver(SolverBase):
         self.iterations = iterations
         self._particle_delta_counter = 0
         self.systems: list[SimulationSystem] = []
+        self._elastic_systems: list[SimulationSystem] = []
+        self._projection_systems: list[SimulationSystem] = []
         self._fused_accumulators: list[tuple[wp.array, wp.array]] | None = None
 
         n = model.particle_count
@@ -27,16 +29,24 @@ class Phase1Solver(SolverBase):
         system.initialize(self.model)
         self.systems.append(system)
         self.systems.sort(key=lambda item: item.priority)
-        self._fused_accumulators = None
+        self._refresh_system_layout()
 
-    def _setup_fused_apply(self):
-        accumulators = []
+    def _refresh_system_layout(self):
+        self._elastic_systems = []
+        self._projection_systems = []
+        elastic_accumulators = []
+
         for system in self.systems:
             values = system.get_accumulators()
-            if values is not None:
-                system.deferred_apply = True
-                accumulators.append(values)
-        self._fused_accumulators = accumulators
+            system.deferred_apply = values is not None
+            if system.stage == SolverStage.PROJECTION:
+                self._projection_systems.append(system)
+            else:
+                self._elastic_systems.append(system)
+                if values is not None:
+                    elastic_accumulators.append(values)
+
+        self._fused_accumulators = elastic_accumulators
 
     @override
     def step(
@@ -48,7 +58,7 @@ class Phase1Solver(SolverBase):
         dt: float,
     ) -> State:
         if self._fused_accumulators is None:
-            self._setup_fused_apply()
+            self._refresh_system_layout()
 
         self._particle_delta_counter = 0
         model = self.model
@@ -71,7 +81,7 @@ class Phase1Solver(SolverBase):
         for iteration in range(self.iterations):
             self._particle_deltas.zero_()
 
-            for system in self.systems:
+            for system in self._elastic_systems:
                 if system.enabled:
                     system.solve_constraints(
                         model,
@@ -97,6 +107,16 @@ class Phase1Solver(SolverBase):
                 dt,
             )
 
+            particle_q, particle_qd = self._apply_projection_stage(
+                model,
+                state_in,
+                state_out,
+                particle_q,
+                particle_qd,
+                dt,
+                iteration,
+            )
+
         if particle_q.ptr != state_out.particle_q.ptr:
             state_out.particle_q.assign(particle_q)
             state_out.particle_qd.assign(particle_qd)
@@ -106,6 +126,57 @@ class Phase1Solver(SolverBase):
                 system.post_solve(model, state_out, dt)
 
         return state_out
+
+    def _apply_projection_stage(
+        self,
+        model: Model,
+        state_in: State,
+        state_out: State,
+        particle_q: wp.array,
+        particle_qd: wp.array,
+        dt: float,
+        iteration: int,
+    ):
+        for system in self._projection_systems:
+            if not system.enabled:
+                continue
+
+            self._particle_deltas.zero_()
+            system.solve_constraints(
+                model,
+                state_in,
+                state_out,
+                particle_q,
+                particle_qd,
+                self._particle_deltas,
+                None,
+                None,
+                None,
+                dt,
+                iteration,
+            )
+
+            values = system.get_accumulators()
+            if values is None:
+                continue
+
+            self._particle_deltas.zero_()
+            wp.launch(
+                apply_deltas_and_zero_accumulators,
+                dim=model.particle_count,
+                inputs=[values[0], values[1]],
+                outputs=[self._particle_deltas],
+                device=model.device,
+            )
+            particle_q, particle_qd = self.apply_particle_deltas(
+                model,
+                state_in,
+                state_out,
+                self._particle_deltas,
+                dt,
+            )
+
+        return particle_q, particle_qd
 
     def _apply_fused(self, model: Model):
         accumulators = self._fused_accumulators or []

@@ -1,7 +1,7 @@
 import warp as wp
 
 from omnisurg.input.haptic_proxy import HapticProxyState
-from omnisurg.physics.base import SimulationSystem
+from omnisurg.physics.base import SimulationSystem, SolverStage
 from omnisurg.physics.collision import collide_triangles_vs_sphere
 from omnisurg.physics.kernels import apply_deltas_and_zero_accumulators
 
@@ -10,7 +10,7 @@ class HapticSphereCollisionSystem(SimulationSystem):
     """Triangle-vs-sphere collision system for the Phase 1 haptic proxy."""
 
     def __init__(self, proxy: HapticProxyState, priority: int = 80):
-        super().__init__(priority=priority)
+        super().__init__(priority=priority, stage=SolverStage.PROJECTION)
         self.proxy = proxy
         self._cull_radius = proxy.radius + proxy.max_tri_extent
         self._accumulator: wp.array | None = None
@@ -69,3 +69,4 @@ class HapticSphereCollisionSystem(SimulationSystem):
                 outputs=[particle_deltas],
                 device=model.device,
             )
+
