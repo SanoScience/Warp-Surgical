@@ -39,6 +39,9 @@ class SurgSimCompatRenderer:
         if on_key_release is not None:
             self._renderer.renderer.register_key_release(on_key_release)
 
+    def register_ui_callback(self, callback, position: str = "side"):
+        self._renderer.register_ui_callback(callback, position=position)
+
     def render_mesh_warp(
         self,
         *,

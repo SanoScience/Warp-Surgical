@@ -190,3 +190,7 @@ class RenderBridge:
             viewer_renderer.register_key_press(on_key_press)
         if on_key_release is not None and hasattr(viewer_renderer, "register_key_release"):
             viewer_renderer.register_key_release(on_key_release)
+
+    def register_ui_callback(self, callback, position: str = "side"):
+        if hasattr(self._renderer, "register_ui_callback"):
+            self._renderer.register_ui_callback(callback, position=position)

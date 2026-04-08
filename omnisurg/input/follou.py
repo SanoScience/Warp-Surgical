@@ -101,12 +101,14 @@ class MiniMouController:
         position[0] *= -1.0
         rotation = _axis_angle_to_quaternion(self._controller.get_orientation())
         tool_pos = float(self._controller.get_tool_pos())
-        button = self._tool_position_to_button(tool_pos)
+        grip = self._tool_position_to_grip(tool_pos)
+        button = grip >= 0.5
 
         return {
             "position": position,
             "rotation": rotation,
             "button": button,
+            "grip": grip,
         }
 
     def close(self):
@@ -115,24 +117,25 @@ class MiniMouController:
         self._closed = True
         release_manager(self.root)
 
-    def _tool_position_to_button(self, tool_pos: float) -> bool:
+    def _tool_position_to_grip(self, tool_pos: float) -> float:
         if not math.isfinite(tool_pos):
-            return False
+            return 0.0
 
         if self._tool_min is None or self._tool_max is None:
             self._tool_min = tool_pos
             self._tool_max = tool_pos
-            return False
+            return 0.0
 
         self._tool_min = min(self._tool_min, tool_pos)
         self._tool_max = max(self._tool_max, tool_pos)
         span = self._tool_max - self._tool_min
         if span < 1.0e-4:
-            return False
+            return 0.0
 
         normalized = (tool_pos - self._tool_min) / span
+        normalized = min(1.0, max(0.0, normalized))
         # MiniMou tool position behaves like an opening signal, so lower values mean more closed.
-        return normalized < 0.5
+        return 1.0 - normalized
 
 
 def _axis_angle_to_quaternion(orientation) -> np.ndarray:

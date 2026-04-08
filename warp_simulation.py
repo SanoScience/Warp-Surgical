@@ -232,6 +232,10 @@ class WarpSim:
 
         self.jaw_colliders = []
         self.jaw_collider_offsets = {}
+        self.jaw_collider_profiles = {}
+        self.jaw_collider_sphere_count = 16
+        self.jaw_collider_sphere_radius = 0.018
+        self.jaw_collider_min_tip_extent = 0.25
 
         # Initialize model
         self._build_model()
@@ -545,7 +549,7 @@ class WarpSim:
         print(f"Successfully loaded instrument '{name}' with {len(mesh_pieces)} pieces, {total_vertices} total vertices and {total_triangles} total triangles")
 
         self.debug_instrument_transforms(len(self.instruments) - 1)
-        #self._setup_jaw_colliders(len(self.instruments) - 1, builder)
+        instruments.setup_jaw_colliders(self, len(self.instruments) - 1, builder)
 
 
         return len(self.instruments) - 1

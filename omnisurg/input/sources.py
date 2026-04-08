@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from pathlib import Path
@@ -14,6 +15,7 @@ class ControllerSample:
     position: np.ndarray | None = None
     rotation: np.ndarray | None = None
     button: bool = False
+    grip: float = 0.0
 
     @property
     def active(self) -> bool:
@@ -26,10 +28,15 @@ class ControllerSample:
 
         position = _as_array(sample.get("position"), expected_size=3)
         rotation = _as_array(sample.get("rotation"), expected_size=4)
+        button = bool(sample.get("button", False))
+        grip = _as_unit_interval(sample.get("grip"))
+        if grip is None:
+            grip = 1.0 if button else 0.0
         return cls(
             position=position,
             rotation=rotation,
-            button=bool(sample.get("button", False)),
+            button=button,
+            grip=grip,
         )
 
 
@@ -65,7 +72,7 @@ class MultiSourceRig(InputRig):
         frame: dict[str, ControllerSample] = {}
         for controller_id, source in self._sources.items():
             sample = ControllerSample.from_sample_dict(source.poll())
-            if sample.active or sample.button:
+            if sample.active or sample.button or sample.grip > 0.0:
                 frame[controller_id] = sample
         return frame
 
@@ -154,6 +161,8 @@ class ReplayInputSource(InputSource):
         }
         if sample.shape[0] >= 8:
             result["button"] = bool(sample[7] > 0.5)
+        if sample.shape[0] >= 9:
+            result["grip"] = float(np.clip(sample[8], 0.0, 1.0))
         return result
 
 
@@ -197,3 +206,18 @@ def _as_array(value, *, expected_size: int) -> np.ndarray | None:
     if array.size < expected_size:
         return None
     return array[:expected_size].copy()
+
+
+def _as_unit_interval(value) -> float | None:
+    if value is None:
+        return None
+
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return None
+
+    if not math.isfinite(numeric):
+        return None
+
+    return float(np.clip(numeric, 0.0, 1.0))

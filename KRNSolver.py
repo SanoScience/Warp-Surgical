@@ -83,6 +83,10 @@ class KRNSolver(SolverBase):
         self._particle_delta_counter = 0
         self._body_delta_counter = 0
 
+        self.external_sphere_centers = None
+        self.external_sphere_radii = None
+        self.external_sphere_count = 0
+
         # System registry for callback-based extensibility
         self.systems = []
 
@@ -647,6 +651,10 @@ class KRNSolver(SolverBase):
             self.external_sphere_centers = None
             self.external_sphere_radii = None
             self.external_sphere_count = 0
+            for system in self.systems:
+                setter = getattr(system, "set_external_sphere_colliders", None)
+                if setter is not None:
+                    setter(self.model, [], [])
             return
 
         centers_np = np.asarray(centers, dtype=np.float32)
@@ -654,6 +662,10 @@ class KRNSolver(SolverBase):
             self.external_sphere_centers = None
             self.external_sphere_radii = None
             self.external_sphere_count = 0
+            for system in self.systems:
+                setter = getattr(system, "set_external_sphere_colliders", None)
+                if setter is not None:
+                    setter(self.model, [], [])
             return
 
         centers_np = centers_np.reshape(-1, 3)
@@ -665,3 +677,8 @@ class KRNSolver(SolverBase):
         self.external_sphere_centers = wp.array(centers_np, dtype=wp.vec3f, device=self.model.device)
         self.external_sphere_radii = wp.array(radii_np, dtype=wp.float32, device=self.model.device)
         self.external_sphere_count = centers_np.shape[0]
+
+        for system in self.systems:
+            setter = getattr(system, "set_external_sphere_colliders", None)
+            if setter is not None:
+                setter(self.model, centers_np, radii_np)

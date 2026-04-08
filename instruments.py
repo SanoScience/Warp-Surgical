@@ -4,18 +4,50 @@ import newton
 import numpy as np
 
 
+DEFAULT_JAW_COLLIDER_SPHERE_COUNT = 16
+DEFAULT_JAW_COLLIDER_RADIUS = 0.018
+DEFAULT_JAW_COLLIDER_MIN_TIP_EXTENT = 0.25
+
+
+def _generate_default_jaw_collider_specs(self, piece):
+    """Build a sphere chain along the local jaw axis when no explicit profile exists."""
+    sphere_count = max(int(getattr(self, "jaw_collider_sphere_count", DEFAULT_JAW_COLLIDER_SPHERE_COUNT)), 1)
+    sphere_radius = float(getattr(self, "jaw_collider_sphere_radius", DEFAULT_JAW_COLLIDER_RADIUS))
+    min_tip_extent = float(getattr(self, "jaw_collider_min_tip_extent", DEFAULT_JAW_COLLIDER_MIN_TIP_EXTENT))
+
+    tip_extent = min_tip_extent
+    original_vertices = piece.get("original_vertices")
+    if original_vertices is not None:
+        vertices_np = original_vertices.numpy()
+        if vertices_np.size > 0:
+            tip_extent = max(float(np.max(vertices_np[:, 2])), min_tip_extent)
+
+    z_offsets = np.linspace(0.0, tip_extent, sphere_count, dtype=np.float32)
+    return [
+        {
+            "offset": (0.0, 0.0, float(z_offset)),
+            "radius": sphere_radius,
+        }
+        for z_offset in z_offsets
+    ]
+
+
 def get_jaw_collider_specs(self, piece):
     """Return collider sphere specifications for a jaw piece."""
     piece_name = piece['name'].lower()
+    jaw_collider_profiles = getattr(self, "jaw_collider_profiles", {}) or {}
 
-    for key, specs in self.jaw_collider_profiles.items():
+    for key, specs in jaw_collider_profiles.items():
         if key == "default":
             continue
         if key in piece_name:
             selected_specs = specs
             break
     else:
-        selected_specs = self.jaw_collider_profiles.get("default", [])
+        selected_specs = jaw_collider_profiles.get("default")
+
+    if not selected_specs:
+        selected_specs = _generate_default_jaw_collider_specs(self, piece)
 
     normalized_specs = []
     for raw_spec in selected_specs:

@@ -179,6 +179,7 @@ class TestPhaseRuntime(unittest.TestCase):
                     "position": [1.0, 2.0, 3.0],
                     "rotation": [0.0, 0.0, 0.0, 1.0],
                     "button": True,
+                    "grip": 0.25,
                 }
 
             def close(self):
@@ -191,11 +192,15 @@ class TestPhaseRuntime(unittest.TestCase):
             np.testing.assert_allclose(sample["position"], np.array([1.0, 2.0, 3.0], dtype=np.float32))
             np.testing.assert_allclose(sample["rotation"], np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32))
             self.assertTrue(sample["button"])
+            self.assertAlmostEqual(sample["grip"], 0.25)
             source.close()
             self.assertIsNone(source._ctrl)
 
-    def test_minimou_controller_flips_x_position_only(self):
+    def test_minimou_controller_flips_x_position_and_maps_grip(self):
         class FakeDevice:
+            def __init__(self):
+                self._tool_positions = iter((10.0, 30.0, 15.0))
+
             def perform_update(self):
                 pass
 
@@ -206,7 +211,7 @@ class TestPhaseRuntime(unittest.TestCase):
                 return (0.0, 0.0, 1.0, 0.0)
 
             def get_tool_pos(self):
-                return 0.0
+                return next(self._tool_positions)
 
             def close(self):
                 pass
@@ -226,6 +231,11 @@ class TestPhaseRuntime(unittest.TestCase):
                 np.testing.assert_allclose(sample["position"], np.array([-1.0, 2.0, 3.0], dtype=np.float32))
                 np.testing.assert_allclose(sample["rotation"], np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32))
                 self.assertFalse(sample["button"])
+                self.assertAlmostEqual(sample["grip"], 0.0)
+                controller.poll()
+                sample = controller.poll()
+                self.assertTrue(sample["button"])
+                self.assertAlmostEqual(sample["grip"], 0.75)
                 controller.close()
 
     def test_replay_button_support(self):
@@ -236,6 +246,18 @@ class TestPhaseRuntime(unittest.TestCase):
             sample = source.poll()
             self.assertTrue(sample["button"])
             self.assertEqual(sample["rotation"].shape[0], 4)
+        finally:
+            if replay_path.exists():
+                replay_path.unlink()
+
+    def test_replay_grip_support(self):
+        replay_path = TEST_TMP_DIR / "trace_grip.npy"
+        np.save(replay_path, np.array([[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.25]], dtype=np.float32))
+        try:
+            source = ReplayInputSource(str(replay_path))
+            sample = source.poll()
+            self.assertFalse(sample["button"])
+            self.assertAlmostEqual(sample["grip"], 0.25)
         finally:
             if replay_path.exists():
                 replay_path.unlink()
@@ -497,6 +519,49 @@ class TestPhaseRuntime(unittest.TestCase):
                 self.assertAlmostEqual(float(left_points[0][0]), 0.0, delta=0.25)
                 self.assertAlmostEqual(float(left_points[0][1]), 0.85, delta=0.35)
                 self.assertAlmostEqual(float(left_points[0][2]), -3.4, delta=0.7)
+        finally:
+            if source is not None:
+                source.close()
+            if runtime is not None:
+                runtime.close()
+            if replay_path.exists():
+                replay_path.unlink()
+
+    def test_grasper_tracks_partial_grip_signal(self):
+        trace = np.array(
+            [
+                [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.75],
+                [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.75],
+                [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.75],
+                [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.75],
+            ],
+            dtype=np.float32,
+        )
+
+        replay_path = TEST_TMP_DIR / "trace_grip_partial.npy"
+        np.save(replay_path, trace)
+
+        source = None
+        runtime = None
+        try:
+            with wp.ScopedDevice("cpu"):
+                runtime = Runtime(
+                    SimulationConfig(substeps=2, fps=30, constraint_iterations=1),
+                    SceneConfig(scene_preset="chole"),
+                    HapticConfig(),
+                    ViewerConfig(backend="headless"),
+                    BoundsConfig(),
+                )
+                source = ReplayInputSource(str(replay_path))
+                initial_angle = runtime.graspers["right"].jaw_angle
+
+                for _ in range(trace.shape[0]):
+                    runtime.poll_input(source)
+                    runtime.step()
+                    runtime.render()
+
+                self.assertLess(runtime.graspers["right"].jaw_angle, initial_angle)
+                self.assertGreater(runtime.graspers["right"].jaw_angle, runtime.graspers["right"].jaw_closed_angle)
         finally:
             if source is not None:
                 source.close()

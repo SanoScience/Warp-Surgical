@@ -7,13 +7,75 @@ import warp as wp
 
 
 @wp.kernel
-def transform_points_with_matrix(
-    world_matrix: wp.mat44f,
+def update_jaw_angle_state(
+    grip_command: wp.array(dtype=wp.float32),
+    jaw_angle: wp.array(dtype=wp.float32),
+    dt: float,
+    jaw_open_angle: float,
+    jaw_closed_angle: float,
+    jaw_response: float,
+):
+    if wp.tid() != 0:
+        return
+
+    grip = grip_command[0]
+    if grip < 0.0:
+        target_angle = jaw_open_angle
+    else:
+        closure = wp.min(wp.max(grip, 0.0), 1.0)
+        target_angle = jaw_open_angle + closure * (jaw_closed_angle - jaw_open_angle)
+
+    blend = wp.min(1.0, dt * jaw_response)
+    jaw_angle[0] = jaw_angle[0] + (target_angle - jaw_angle[0]) * blend
+
+
+@wp.func
+def _rotate_point_about_jaw_axis(local_point: wp.vec3f, jaw_sign: float, jaw_angle: float) -> wp.vec3f:
+    if jaw_sign == 0.0:
+        return local_point
+
+    jaw_rotation = wp.quat_from_axis_angle(wp.vec3f(1.0, 0.0, 0.0), jaw_sign * jaw_angle)
+    return wp.quat_rotate(jaw_rotation, local_point)
+
+
+@wp.kernel
+def transform_grasper_points(
+    root_position: wp.array(dtype=wp.vec3f),
+    root_rotation: wp.array(dtype=wp.quatf),
+    jaw_angle: wp.array(dtype=wp.float32),
+    bind_matrix: wp.array(dtype=wp.mat44f),
     local_points: wp.array(dtype=wp.vec3f),
     world_points: wp.array(dtype=wp.vec3f),
+    jaw_sign: float,
 ):
     tid = wp.tid()
-    world_points[tid] = wp.transform_point(world_matrix, local_points[tid])
+    local_point = _rotate_point_about_jaw_axis(local_points[tid], jaw_sign, jaw_angle[0])
+    bind_space_point = wp.transform_point(bind_matrix[0], local_point)
+    world_points[tid] = root_position[0] + wp.quat_rotate(root_rotation[0], bind_space_point)
+
+
+@wp.kernel
+def transform_grasper_spheres(
+    root_position: wp.array(dtype=wp.vec3f),
+    root_rotation: wp.array(dtype=wp.quatf),
+    grip_command: wp.array(dtype=wp.float32),
+    jaw_angle: wp.array(dtype=wp.float32),
+    bind_matrix: wp.array(dtype=wp.mat44f),
+    local_points: wp.array(dtype=wp.vec3f),
+    world_points: wp.array(dtype=wp.vec3f),
+    base_radii: wp.array(dtype=wp.float32),
+    active_radii: wp.array(dtype=wp.float32),
+    jaw_sign: float,
+):
+    tid = wp.tid()
+    local_point = _rotate_point_about_jaw_axis(local_points[tid], jaw_sign, jaw_angle[0])
+    bind_space_point = wp.transform_point(bind_matrix[0], local_point)
+    world_points[tid] = root_position[0] + wp.quat_rotate(root_rotation[0], bind_space_point)
+
+    if grip_command[0] < 0.0:
+        active_radii[tid] = 0.0
+    else:
+        active_radii[tid] = base_radii[tid]
 
 
 @dataclass
@@ -22,7 +84,7 @@ class GrasperPiece:
     local_points: wp.array
     world_points: wp.array
     indices: wp.array
-    bind_matrix: np.ndarray
+    bind_matrix: wp.array
     color: tuple[float, float, float]
     jaw_sign: float = 0.0
 
@@ -32,9 +94,10 @@ class JawSphereChain:
     name: str
     local_points: wp.array
     world_points: wp.array
+    base_radii: wp.array
     radii: wp.array
     colors: wp.array
-    bind_matrix: np.ndarray
+    bind_matrix: wp.array
     jaw_sign: float
 
 
@@ -55,7 +118,35 @@ class KinematicGrasper:
         self.jaw_closed_angle = jaw_closed_angle
         self.jaw_response = jaw_response
         self.jaw_angle = jaw_open_angle
-        self._model_rotation_fix = _axis_angle_to_quaternion((0.0, 1.0, 0.0), math.pi)
+
+        self.root_position = wp.zeros(1, dtype=wp.vec3f, device=device)
+        self.root_rotation = wp.array([[0.0, 0.0, 0.0, 1.0]], dtype=wp.quatf, device=device)
+        self.grip_command = wp.array([-1.0], dtype=wp.float32, device=device)
+        self.jaw_angle_buffer = wp.array([jaw_open_angle], dtype=wp.float32, device=device)
+
+        self._root_position_staging = wp.zeros(1, dtype=wp.vec3f, device="cpu")
+        self._root_position_view = self._root_position_staging.numpy()
+        self._root_rotation_staging = wp.zeros(1, dtype=wp.quatf, device="cpu")
+        self._root_rotation_view = self._root_rotation_staging.numpy()
+        self._grip_staging = wp.zeros(1, dtype=wp.float32, device="cpu")
+        self._grip_view = self._grip_staging.numpy()
+
+        self.set_root_pose(
+            np.zeros(3, dtype=np.float32),
+            np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32),
+        )
+
+    def set_root_pose(self, root_position: np.ndarray, haptic_rotation_xyzw: np.ndarray):
+        normalized_rotation = _normalize_quaternion(haptic_rotation_xyzw)
+        self._root_position_view[0] = np.asarray(root_position, dtype=np.float32)
+        self._root_rotation_view[0] = normalized_rotation
+        wp.copy(self.root_position, self._root_position_staging)
+        wp.copy(self.root_rotation, self._root_rotation_staging)
+
+    def set_grip_command(self, grasp_command: float | bool | None):
+        command = -1.0 if grasp_command is None else _coerce_unit_interval(grasp_command)
+        self._grip_view[0] = command
+        wp.copy(self.grip_command, self._grip_staging)
 
     def advance(self, dt: float, grasp_command: float | bool):
         closure = _coerce_unit_interval(grasp_command)
@@ -63,40 +154,55 @@ class KinematicGrasper:
         blend = min(1.0, dt * self.jaw_response)
         self.jaw_angle += (target_angle - self.jaw_angle) * blend
 
-    def update_geometry(self, root_position: np.ndarray, haptic_rotation_xyzw: np.ndarray):
-        root_rotation = _normalize_quaternion(haptic_rotation_xyzw)
-        root_rotation = _multiply_quaternions(root_rotation, self._model_rotation_fix)
-        root_matrix = _compose_matrix(root_position, root_rotation)
+        self.set_grip_command(grasp_command)
+        wp.launch(
+            update_jaw_angle_state,
+            dim=1,
+            inputs=[
+                self.grip_command,
+                self.jaw_angle_buffer,
+                dt,
+                self.jaw_open_angle,
+                self.jaw_closed_angle,
+                self.jaw_response,
+            ],
+            device=self.device,
+        )
 
-        for piece in self.pieces:
-            piece_matrix = root_matrix @ piece.bind_matrix
-            if piece.jaw_sign != 0.0:
-                jaw_matrix = _compose_matrix(
-                    np.zeros(3, dtype=np.float32),
-                    _axis_angle_to_quaternion((1.0, 0.0, 0.0), piece.jaw_sign * self.jaw_angle),
-                )
-                piece_matrix = piece_matrix @ jaw_matrix
-
+    def update_collision_geometry(self):
+        for chain in self.sphere_chains:
             wp.launch(
-                transform_points_with_matrix,
-                dim=len(piece.local_points),
-                inputs=[_mat44f_from_numpy(piece_matrix), piece.local_points],
-                outputs=[piece.world_points],
+                transform_grasper_spheres,
+                dim=len(chain.local_points),
+                inputs=[
+                    self.root_position,
+                    self.root_rotation,
+                    self.grip_command,
+                    self.jaw_angle_buffer,
+                    chain.bind_matrix,
+                    chain.local_points,
+                    chain.world_points,
+                    chain.base_radii,
+                    chain.radii,
+                    chain.jaw_sign,
+                ],
                 device=self.device,
             )
 
-        for chain in self.sphere_chains:
-            chain_matrix = root_matrix @ chain.bind_matrix
-            jaw_matrix = _compose_matrix(
-                np.zeros(3, dtype=np.float32),
-                _axis_angle_to_quaternion((1.0, 0.0, 0.0), chain.jaw_sign * self.jaw_angle),
-            )
-            chain_matrix = chain_matrix @ jaw_matrix
+    def update_render_geometry(self):
+        for piece in self.pieces:
             wp.launch(
-                transform_points_with_matrix,
-                dim=len(chain.local_points),
-                inputs=[_mat44f_from_numpy(chain_matrix), chain.local_points],
-                outputs=[chain.world_points],
+                transform_grasper_points,
+                dim=len(piece.local_points),
+                inputs=[
+                    self.root_position,
+                    self.root_rotation,
+                    self.jaw_angle_buffer,
+                    piece.bind_matrix,
+                    piece.local_points,
+                    piece.world_points,
+                    piece.jaw_sign,
+                ],
                 device=self.device,
             )
 
@@ -152,6 +258,11 @@ def load_kinematic_grasper(
     if not stage:
         return None
 
+    model_fix_matrix = _compose_matrix(
+        np.zeros(3, dtype=np.float32),
+        _axis_angle_to_quaternion((0.0, 1.0, 0.0), math.pi),
+    )
+
     pieces: list[GrasperPiece] = []
 
     def collect_meshes(prim, parent_world: np.ndarray):
@@ -181,13 +292,14 @@ def load_kinematic_grasper(
                     elif role == "jaw_right":
                         jaw_sign = -1.0
 
+                    corrected_bind = model_fix_matrix @ world_matrix
                     pieces.append(
                         GrasperPiece(
                             name=name,
                             local_points=wp.array(points, dtype=wp.vec3f, device=device),
                             world_points=wp.zeros(len(points), dtype=wp.vec3f, device=device),
                             indices=wp.array(indices, dtype=wp.int32, device=device),
-                            bind_matrix=world_matrix,
+                            bind_matrix=wp.array(np.expand_dims(corrected_bind, 0), dtype=wp.mat44f, device=device),
                             color=PIECE_COLORS[role],
                             jaw_sign=jaw_sign,
                         )
@@ -215,12 +327,14 @@ def load_kinematic_grasper(
     for piece in jaw_pieces:
         role = "jaw_left" if piece.jaw_sign > 0.0 else "jaw_right"
         colors = np.repeat(np.array([CHAIN_COLORS[role]], dtype=np.float32), jaw_sphere_count, axis=0)
+        base_radii = wp.full(jaw_sphere_count, jaw_sphere_radius, dtype=wp.float32, device=device)
         sphere_chains.append(
             JawSphereChain(
                 name=role,
                 local_points=wp.array(chain_template, dtype=wp.vec3f, device=device),
                 world_points=wp.zeros(jaw_sphere_count, dtype=wp.vec3f, device=device),
-                radii=wp.full(jaw_sphere_count, jaw_sphere_radius, dtype=wp.float32, device=device),
+                base_radii=base_radii,
+                radii=wp.zeros(jaw_sphere_count, dtype=wp.float32, device=device),
                 colors=wp.array(colors, dtype=wp.vec3f, device=device),
                 bind_matrix=piece.bind_matrix,
                 jaw_sign=piece.jaw_sign,
@@ -287,20 +401,6 @@ def _normalize_quaternion(quat_xyzw) -> np.ndarray:
     return quat / norm
 
 
-def _multiply_quaternions(q1_xyzw, q2_xyzw) -> np.ndarray:
-    x1, y1, z1, w1 = q1_xyzw
-    x2, y2, z2, w2 = q2_xyzw
-    return np.array(
-        [
-            w1 * x2 + x1 * w2 + y1 * z2 - z1 * y2,
-            w1 * y2 - x1 * z2 + y1 * w2 + z1 * x2,
-            w1 * z2 + x1 * y2 - y1 * x2 + z1 * w2,
-            w1 * w2 - x1 * x2 - y1 * y2 - z1 * z2,
-        ],
-        dtype=np.float32,
-    )
-
-
 def _quaternion_to_matrix(quat_xyzw) -> np.ndarray:
     x, y, z, w = _normalize_quaternion(quat_xyzw)
     xx = x * x
@@ -328,15 +428,6 @@ def _compose_matrix(translation_xyz, quat_xyzw) -> np.ndarray:
     matrix[:3, :3] = _quaternion_to_matrix(quat_xyzw)
     matrix[:3, 3] = np.array(translation_xyz, dtype=np.float32)
     return matrix
-
-
-def _mat44f_from_numpy(matrix: np.ndarray) -> wp.mat44f:
-    return wp.mat44f(
-        float(matrix[0, 0]), float(matrix[0, 1]), float(matrix[0, 2]), float(matrix[0, 3]),
-        float(matrix[1, 0]), float(matrix[1, 1]), float(matrix[1, 2]), float(matrix[1, 3]),
-        float(matrix[2, 0]), float(matrix[2, 1]), float(matrix[2, 2]), float(matrix[2, 3]),
-        float(matrix[3, 0]), float(matrix[3, 1]), float(matrix[3, 2]), float(matrix[3, 3]),
-    )
 
 
 def _coerce_unit_interval(value: float | bool) -> float:

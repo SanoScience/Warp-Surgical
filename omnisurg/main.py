@@ -1,6 +1,7 @@
 import argparse
 import sys
 
+import numpy as np
 import warp as wp
 
 
@@ -143,11 +144,53 @@ def _build_openhaptics_source(controller_id: str, requested_name: str):
     raise last_exc
 
 
+class _SampleTransformSource:
+    def __init__(self, source, *, position_transform=None, rotation_transform=None):
+        self._source = source
+        self._position_transform = position_transform
+        self._rotation_transform = rotation_transform
+
+    def __getattr__(self, name: str):
+        return getattr(self._source, name)
+
+    def poll(self):
+        sample = self._source.poll()
+        if not sample:
+            return sample
+
+        transformed = dict(sample)
+        position = transformed.get("position")
+        if position is not None and self._position_transform is not None:
+            transformed["position"] = self._position_transform(np.asarray(position, dtype=np.float32))
+
+        rotation = transformed.get("rotation")
+        if rotation is not None and self._rotation_transform is not None:
+            transformed["rotation"] = self._rotation_transform(np.asarray(rotation, dtype=np.float32))
+
+        return transformed
+
+    def close(self):
+        self._source.close()
+
+
+def _reflect_minimou_quaternion_x(rotation: np.ndarray) -> np.ndarray:
+    corrected = np.asarray(rotation, dtype=np.float32).copy()
+    if corrected.shape[0] >= 1:
+        corrected[0] *= -1.0
+    return corrected
+
+
 def _build_minimou_source(device_index: int, follou_root: str):
     from omnisurg.haptics import LiveMiniMouSource
 
     source = LiveMiniMouSource(root=follou_root, device_index=device_index)
-    return source, f"MiniMou[{device_index}]"
+    source = _SampleTransformSource(source, rotation_transform=_reflect_minimou_quaternion_x)
+    descriptor = f"MiniMou[{device_index}]"
+    controller = getattr(getattr(source, "_ctrl", None), "_controller", None)
+    device_id = getattr(controller, "device_id", None)
+    if device_id is not None:
+        descriptor = f"{descriptor}/id={device_id}"
+    return source, descriptor
 
 
 def _build_live_input_rig(args):
