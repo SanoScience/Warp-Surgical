@@ -570,6 +570,57 @@ class TestPhaseRuntime(unittest.TestCase):
             if replay_path.exists():
                 replay_path.unlink()
 
+    def test_grasper_root_position_interpolates_across_substeps(self):
+        trace = np.array(
+            [
+                [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+                [100.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+            ],
+            dtype=np.float32,
+        )
+
+        replay_path = TEST_TMP_DIR / "trace_grasper_interp.npy"
+        np.save(replay_path, trace)
+
+        source = None
+        runtime = None
+        try:
+            with wp.ScopedDevice("cpu"):
+                runtime = Runtime(
+                    SimulationConfig(substeps=4, fps=30, constraint_iterations=1),
+                    SceneConfig(scene_preset="chole"),
+                    HapticConfig(),
+                    ViewerConfig(backend="headless"),
+                    BoundsConfig(),
+                )
+                source = ReplayInputSource(str(replay_path))
+
+                runtime.poll_input(source)
+                runtime.step()
+
+                runtime.poll_input(source)
+                runtime.step()
+
+                grasper = runtime.graspers["right"]
+                self.assertIsNotNone(grasper)
+                np.testing.assert_allclose(
+                    grasper.root_position_target.numpy()[0],
+                    np.array([1.0, 1.0, -4.0], dtype=np.float32),
+                    atol=1.0e-4,
+                )
+                np.testing.assert_allclose(
+                    grasper.root_position.numpy()[0],
+                    np.array([0.75, 1.0, -4.0], dtype=np.float32),
+                    atol=1.0e-4,
+                )
+        finally:
+            if source is not None:
+                source.close()
+            if runtime is not None:
+                runtime.close()
+            if replay_path.exists():
+                replay_path.unlink()
+
     def test_bimanual_graspers_follow_independent_controllers(self):
         right_trace = np.array(
             [
@@ -635,3 +686,4 @@ class TestPhaseRuntime(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+

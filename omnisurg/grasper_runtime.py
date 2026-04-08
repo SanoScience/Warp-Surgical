@@ -29,6 +29,19 @@ def update_jaw_angle_state(
     jaw_angle[0] = jaw_angle[0] + (target_angle - jaw_angle[0]) * blend
 
 
+@wp.kernel
+def interpolate_grasper_position(
+    root_position_prev: wp.array(dtype=wp.vec3f),
+    root_position_target: wp.array(dtype=wp.vec3f),
+    root_position_current: wp.array(dtype=wp.vec3f),
+    factor: float,
+):
+    if wp.tid() != 0:
+        return
+
+    root_position_current[0] = wp.lerp(root_position_prev[0], root_position_target[0], factor)
+
+
 @wp.func
 def _rotate_point_about_jaw_axis(local_point: wp.vec3f, jaw_sign: float, jaw_angle: float) -> wp.vec3f:
     if jaw_sign == 0.0:
@@ -119,6 +132,8 @@ class KinematicGrasper:
         self.jaw_response = jaw_response
         self.jaw_angle = jaw_open_angle
 
+        self.root_position_prev = wp.zeros(1, dtype=wp.vec3f, device=device)
+        self.root_position_target = wp.zeros(1, dtype=wp.vec3f, device=device)
         self.root_position = wp.zeros(1, dtype=wp.vec3f, device=device)
         self.root_rotation = wp.array([[0.0, 0.0, 0.0, 1.0]], dtype=wp.quatf, device=device)
         self.grip_command = wp.array([-1.0], dtype=wp.float32, device=device)
@@ -140,8 +155,22 @@ class KinematicGrasper:
         normalized_rotation = _normalize_quaternion(haptic_rotation_xyzw)
         self._root_position_view[0] = np.asarray(root_position, dtype=np.float32)
         self._root_rotation_view[0] = normalized_rotation
-        wp.copy(self.root_position, self._root_position_staging)
+        wp.copy(self.root_position_prev, self.root_position_target)
+        wp.copy(self.root_position_target, self._root_position_staging)
         wp.copy(self.root_rotation, self._root_rotation_staging)
+
+    def update_substep_pose(self, factor: float):
+        wp.launch(
+            interpolate_grasper_position,
+            dim=1,
+            inputs=[
+                self.root_position_prev,
+                self.root_position_target,
+                self.root_position,
+                factor,
+            ],
+            device=self.device,
+        )
 
     def set_grip_command(self, grasp_command: float | bool | None):
         command = -1.0 if grasp_command is None else _coerce_unit_interval(grasp_command)

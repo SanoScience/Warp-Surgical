@@ -613,6 +613,11 @@ class Runtime:
                 device=self.device,
             )
 
+            for grasper in self.graspers.values():
+                if grasper is None:
+                    continue
+                grasper.update_substep_pose(factor)
+
             self.solver.step(self.state_0, self.state_1, None, None, self.sim_config.substep_dt)
             self.state_0, self.state_1 = self.state_1, self.state_0
 
