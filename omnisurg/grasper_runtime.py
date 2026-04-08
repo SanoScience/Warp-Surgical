@@ -206,7 +206,7 @@ class KinematicGrasper:
                 device=self.device,
             )
 
-    def render(self, renderer, prefix: str = "grasper"):
+    def render(self, renderer, prefix: str = "grasper", draw_collision_spheres: bool = False):
         for piece in self.pieces:
             renderer.draw_mesh(
                 f"{prefix}_{piece.name}",
@@ -214,6 +214,9 @@ class KinematicGrasper:
                 piece.indices,
                 color=piece.color,
             )
+
+        if not draw_collision_spheres:
+            return
 
         for chain in self.sphere_chains:
             renderer.draw_points(

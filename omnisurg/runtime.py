@@ -1,4 +1,5 @@
 import time
+from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -297,6 +298,10 @@ class Runtime:
         self.haptic_config = haptic_config
         self.device = wp.get_device()
         self.textures_enabled = viewer_config.textures_enabled
+        self.show_tissue = True
+        self.sky_enabled = bool(viewer_config.sky_enabled)
+        self.shadows_enabled = bool(viewer_config.shadows_enabled)
+        self.direct_render_enabled = bool(viewer_config.direct_render_enabled)
         self.controller_bindings = CONTROLLER_BINDINGS
         self.controller_states = self._create_controller_states()
 
@@ -375,6 +380,13 @@ class Runtime:
 
         self._haptic_staging, self._haptic_staging_view = create_vec3_staging_buffer()
         self._haptic_render_pos = wp.zeros(1, dtype=wp.vec3, device=self.device)
+        self._profile_samples = defaultdict(list)
+        self.profiling_enabled = True
+        self.profiling_synchronize = False
+        self.profiling_console_enabled = True
+        self.profile_window = 120
+        self.profile_report_interval = 1.0
+        self._last_profile_report_time = time.perf_counter()
 
         self.use_cuda_graph = self.device.is_cuda and viewer_config.backend != "headless"
         self.graph = None
@@ -406,6 +418,49 @@ class Runtime:
         with wp.ScopedCapture() as capture:
             self._simulate_step()
         self.graph = capture.graph
+
+    def _trim_profile_samples(self):
+        for values in self._profile_samples.values():
+            overflow = len(values) - self.profile_window
+            if overflow > 0:
+                del values[:overflow]
+
+    def _profile_last_ms(self, name: str) -> float | None:
+        values = self._profile_samples.get(name)
+        if not values:
+            return None
+        return float(values[-1])
+
+    def _profile_avg_ms(self, name: str) -> float | None:
+        values = self._profile_samples.get(name)
+        if not values:
+            return None
+        return float(sum(values) / len(values))
+
+    def _report_profile_stats(self):
+        if not self.profiling_enabled or not self.profiling_console_enabled:
+            return
+
+        now = time.perf_counter()
+        if now - self._last_profile_report_time < self.profile_report_interval:
+            return
+
+        solver_latest = self._profile_last_ms("solver_loop")
+        render_latest = self._profile_last_ms("render")
+        if solver_latest is None or render_latest is None:
+            return
+
+        solver_avg = self._profile_avg_ms("solver_loop")
+        render_avg = self._profile_avg_ms("render")
+        frame_latest = solver_latest + render_latest
+        frame_avg = (solver_avg or 0.0) + (render_avg or 0.0)
+        print(
+            "[profile] "
+            f"solver {solver_latest:.2f} ms latest / {solver_avg:.2f} ms avg | "
+            f"render {render_latest:.2f} ms latest / {render_avg:.2f} ms avg | "
+            f"frame {frame_latest:.2f} ms latest / {frame_avg:.2f} ms avg"
+        )
+        self._last_profile_report_time = now
 
     def _has_pending_solver_changes(self) -> bool:
         return (
@@ -611,6 +666,60 @@ class Runtime:
                 message += " CUDA graph will be rebuilt."
             ui.text(message)
 
+        ui.separator()
+        ui.text("Rendering")
+        changed, show_tissue = ui.checkbox("Show Tissue", self.show_tissue)
+        if changed:
+            self.show_tissue = show_tissue
+
+        changed, sky_enabled = ui.checkbox("Sky", self.sky_enabled)
+        if changed:
+            self.sky_enabled = sky_enabled
+            self.renderer.configure_render_quality(sky_enabled=self.sky_enabled)
+
+        changed, shadows_enabled = ui.checkbox("Shadows", self.shadows_enabled)
+        if changed:
+            self.shadows_enabled = shadows_enabled
+            self.renderer.configure_render_quality(
+                shadows_enabled=self.shadows_enabled,
+                direct_render_enabled=self.direct_render_enabled,
+            )
+
+        changed, direct_render_enabled = ui.checkbox("Direct Render", self.direct_render_enabled)
+        if changed:
+            self.direct_render_enabled = direct_render_enabled
+            self.renderer.configure_render_quality(direct_render_enabled=self.direct_render_enabled)
+
+        ui.separator()
+        ui.text("Profiling")
+        changed, profiling_enabled = ui.checkbox("Enable Timers", self.profiling_enabled)
+        if changed:
+            self.profiling_enabled = profiling_enabled
+
+        changed, profiling_synchronize = ui.checkbox("Sync GPU Timers", self.profiling_synchronize)
+        if changed:
+            self.profiling_synchronize = profiling_synchronize
+
+        changed, profiling_console_enabled = ui.checkbox("Console Output", self.profiling_console_enabled)
+        if changed:
+            self.profiling_console_enabled = profiling_console_enabled
+
+        changed, profile_report_interval = ui.slider_float("Console Interval", self.profile_report_interval, 0.1, 5.0, "%.1f s")
+        if changed:
+            self.profile_report_interval = profile_report_interval
+
+        ui.text(f"Window: {self.profile_window} frames")
+        if self.use_cuda_graph:
+            ui.text("Solver timer measures CUDA graph replay.")
+
+        for label, timer_name in (("Solver Loop", "solver_loop"), ("Render", "render")):
+            latest = self._profile_last_ms(timer_name)
+            if latest is None:
+                ui.text(f"{label}: waiting for samples")
+                continue
+            avg = self._profile_avg_ms(timer_name)
+            ui.text(f"{label}: {latest:.2f} ms latest / {avg:.2f} ms avg")
+
     def step(self):
         self._apply_pending_solver_settings()
         for controller_id, grasper in self.graspers.items():
@@ -618,69 +727,92 @@ class Runtime:
             if grasper is not None and state.active:
                 grasper.advance(self.sim_config.frame_dt, state.grip)
 
-        if self.use_cuda_graph:
-            wp.capture_launch(self.graph)
-        else:
-            self._simulate_step()
+        with wp.ScopedTimer(
+            "solver_loop",
+            active=self.profiling_enabled,
+            print=False,
+            dict=self._profile_samples,
+            synchronize=self.profiling_synchronize,
+        ):
+            if self.use_cuda_graph:
+                wp.capture_launch(self.graph)
+            else:
+                self._simulate_step()
 
+        self._trim_profile_samples()
         self.sim_time += self.sim_config.frame_dt
 
     def render(self):
-        wp.launch(
-            scale_position,
-            dim=1,
-            inputs=[self.proxy.center_current, self._haptic_render_pos, self.haptic_config.position_scale],
-            device=self.device,
-        )
-
-        for controller_id, binding in self.controller_bindings.items():
-            state = self.controller_states[controller_id]
-            grasper = self.graspers.get(controller_id)
-            if grasper is None or not state.active:
-                continue
-
-            grasper.update_render_geometry()
-
-        self.renderer.begin_frame(self.sim_time)
-        if self.surface_meshes:
-            for mesh_name, indices in self.surface_meshes.items():
-                texture = self.mesh_textures.get(mesh_name) if self.textures_enabled else None
-                self.renderer.draw_mesh(
-                    mesh_name,
-                    self.state_0.particle_q,
-                    indices,
-                    color=None if texture else MESH_COLORS.get(mesh_name, MESH_COLORS["tissue"]),
-                    uvs=self.uvs if texture else None,
-                    texture=texture,
-                )
-        else:
-            texture = self.mesh_textures.get("tissue") if self.textures_enabled else None
-            self.renderer.draw_mesh(
-                "tissue",
-                self.state_0.particle_q,
-                self.surface_indices,
-                color=MESH_COLORS["tissue"] if texture is None else None,
-                uvs=self.uvs if texture else None,
-                texture=texture,
+        with wp.ScopedTimer(
+            "render",
+            active=self.profiling_enabled,
+            print=False,
+            dict=self._profile_samples,
+            synchronize=self.profiling_synchronize,
+        ):
+            wp.launch(
+                scale_position,
+                dim=1,
+                inputs=[self.proxy.center_current, self._haptic_render_pos, self.haptic_config.position_scale],
+                device=self.device,
             )
 
-        for controller_id, grasper in self.graspers.items():
-            state = self.controller_states[controller_id]
-            if grasper is not None and state.active:
-                grasper.render(self.renderer, prefix=f"{controller_id}_grasper")
+            for controller_id, binding in self.controller_bindings.items():
+                state = self.controller_states[controller_id]
+                grasper = self.graspers.get(controller_id)
+                if grasper is None or not state.active:
+                    continue
 
-        if self.controller_states[PRIMARY_CONTROLLER_ID].active:
-            self.renderer.draw_haptic_sphere(self._haptic_render_pos)
-        for controller_id, color in CONTROLLER_ROOT_COLORS.items():
-            state = self.controller_states[controller_id]
-            if state.active and state.render_position is not None:
-                self.renderer.draw_points(
-                    f"{controller_id}_controller_root",
-                    state.render_position,
-                    0.025,
-                    color,
-                )
-        self.renderer.end_frame()
+                grasper.update_render_geometry()
+
+            self.renderer.begin_frame(self.sim_time)
+            if self.show_tissue:
+                if self.surface_meshes:
+                    for mesh_name, indices in self.surface_meshes.items():
+                        texture = self.mesh_textures.get(mesh_name) if self.textures_enabled else None
+                        self.renderer.draw_mesh(
+                            mesh_name,
+                            self.state_0.particle_q,
+                            indices,
+                            color=None if texture else MESH_COLORS.get(mesh_name, MESH_COLORS["tissue"]),
+                            uvs=self.uvs if texture else None,
+                            texture=texture,
+                        )
+                else:
+                    texture = self.mesh_textures.get("tissue") if self.textures_enabled else None
+                    self.renderer.draw_mesh(
+                        "tissue",
+                        self.state_0.particle_q,
+                        self.surface_indices,
+                        color=MESH_COLORS["tissue"] if texture is None else None,
+                        uvs=self.uvs if texture else None,
+                        texture=texture,
+                    )
+
+            for controller_id, grasper in self.graspers.items():
+                state = self.controller_states[controller_id]
+                if grasper is not None and state.active:
+                    grasper.render(
+                        self.renderer,
+                        prefix=f"{controller_id}_grasper",
+                        draw_collision_spheres=False,
+                    )
+
+            if self.controller_states[PRIMARY_CONTROLLER_ID].active:
+                self.renderer.draw_haptic_sphere(self._haptic_render_pos)
+            for controller_id, color in CONTROLLER_ROOT_COLORS.items():
+                state = self.controller_states[controller_id]
+                if state.active and state.render_position is not None:
+                    self.renderer.draw_points(
+                        f"{controller_id}_controller_root",
+                        state.render_position,
+                        0.025,
+                        color,
+                    )
+            self.renderer.end_frame()
+
+        self._trim_profile_samples()
+        self._report_profile_stats()
 
     def pace(self):
         deadline = self._frame_start + self.sim_config.frame_dt

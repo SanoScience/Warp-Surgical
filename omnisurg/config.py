@@ -48,6 +48,10 @@ class ViewerConfig:
     camera_pos: tuple = (0.2, 1.2, -1.0)
     vsync: bool = True
     textures_enabled: bool = True
+    sky_enabled: bool = True
+    shadows_enabled: bool = False
+    msaa_samples: int = 0
+    direct_render_enabled: bool = True
 
 
 @dataclass

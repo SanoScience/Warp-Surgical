@@ -8,6 +8,175 @@ from omnisurg.rendering.surgsim import SurgSimCompatRenderer
 from omnisurg.rendering.textures import enable_persistent_gl_textures
 
 
+_FAST_GL_PATCHED = False
+_ZERO_COPY_MESH_PATCHED = False
+_STATIC_INSTANCE_UPLOAD_PATCHED = False
+
+
+def enable_direct_gl_render():
+    global _FAST_GL_PATCHED
+    if _FAST_GL_PATCHED:
+        return
+
+    from newton._src.viewer.gl.opengl import RendererGL, check_gl_error
+
+    if getattr(RendererGL.render, "__omnisurg_patched__", False):
+        _FAST_GL_PATCHED = True
+        return
+
+    original_render = RendererGL.render
+
+    def patched_render(self, camera, objects, lines=None):
+        if not getattr(self, "_omnisurg_direct_render", False):
+            return original_render(self, camera, objects, lines)
+
+        gl = RendererGL.gl
+        self._make_current()
+
+        gl.glClearColor(*self.sky_upper, 1)
+        gl.glEnable(gl.GL_DEPTH_TEST)
+        gl.glDepthMask(True)
+        gl.glDepthRange(0.0, 1.0)
+
+        self.camera = camera
+
+        if self._sun_direction is None:
+            sun_dirs = {
+                0: np.array((0.8, 0.2, -0.3)),
+                1: np.array((0.2, 0.8, -0.3)),
+                2: np.array((0.2, -0.3, 0.8)),
+            }
+            direction = sun_dirs.get(camera.up_axis, sun_dirs[2])
+            self._sun_direction = direction / np.linalg.norm(direction)
+
+        self._view_matrix = self.camera.get_view_matrix()
+        self._projection_matrix = self.camera.get_projection_matrix()
+
+        if self._env_path is not None and self._env_texture is None:
+            try:
+                self.set_environment_map(self._env_path)
+            except Exception:
+                pass
+            self._env_path = None
+
+        gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, 0)
+        gl.glViewport(0, 0, self._screen_width, self._screen_height)
+        gl.glClear(gl.GL_COLOR_BUFFER_BIT | gl.GL_DEPTH_BUFFER_BIT)
+        gl.glBindVertexArray(0)
+
+        self._render_scene(objects)
+
+        if lines:
+            self._render_lines(lines)
+
+        check_gl_error()
+
+    patched_render.__omnisurg_patched__ = True
+    RendererGL.render = patched_render
+    _FAST_GL_PATCHED = True
+
+
+def enable_zero_copy_gl_mesh_updates():
+    global _ZERO_COPY_MESH_PATCHED
+    if _ZERO_COPY_MESH_PATCHED:
+        return
+
+    from newton._src.viewer.gl import opengl
+
+    if getattr(opengl.MeshGL.update, "__omnisurg_zero_copy_patched__", False):
+        _ZERO_COPY_MESH_PATCHED = True
+        return
+
+    original_update = opengl.MeshGL.update
+
+    def patched_update(self, points, indices, normals, uvs, texture=None):
+        if not (opengl.ENABLE_CUDA_INTEROP and self.device.is_cuda and self.vertex_cuda_buffer is not None):
+            return original_update(self, points, indices, normals, uvs, texture)
+
+        gl = opengl.RendererGL.gl
+
+        if len(points) != len(self.vertices):
+            raise RuntimeError("Number of points does not match")
+
+        self._points = points
+
+        if self.indices is None:
+            self.indices = wp.clone(indices).view(dtype=wp.uint32)
+            self.num_indices = int(len(self.indices))
+
+            host_indices = self.indices.numpy()
+            gl.glBindBuffer(gl.GL_ELEMENT_ARRAY_BUFFER, self.ebo)
+            gl.glBufferData(
+                gl.GL_ELEMENT_ARRAY_BUFFER, host_indices.nbytes, host_indices.ctypes.data, gl.GL_STATIC_DRAW
+            )
+
+        if points is not None and normals is None:
+            self.recompute_normals()
+            normals = self.normals
+
+        vbo_vertices = self.vertex_cuda_buffer.map(dtype=opengl.RenderVertex, shape=self.vertices.shape)
+        wp.launch(
+            opengl.fill_vertex_data,
+            dim=len(vbo_vertices),
+            inputs=[points, normals, uvs],
+            outputs=[vbo_vertices],
+            device=self.device,
+            record_tape=False,
+        )
+        self.vertex_cuda_buffer.unmap()
+        self.update_texture(texture)
+
+    patched_update.__omnisurg_zero_copy_patched__ = True
+    opengl.MeshGL.update = patched_update
+    _ZERO_COPY_MESH_PATCHED = True
+
+
+def enable_static_instance_uploads():
+    global _STATIC_INSTANCE_UPLOAD_PATCHED
+    if _STATIC_INSTANCE_UPLOAD_PATCHED:
+        return
+
+    from newton._src.viewer.gl import opengl
+
+    if getattr(opengl.MeshInstancerGL._update_vbo, "__omnisurg_static_upload_patched__", False):
+        _STATIC_INSTANCE_UPLOAD_PATCHED = True
+        return
+
+    def patched_update_vbo(self, xforms, colors, materials):
+        gl = opengl.RendererGL.gl
+
+        if opengl.ENABLE_CUDA_INTEROP and self.device.is_cuda:
+            vbo_transforms = self._instance_transform_cuda_buffer.map(dtype=wp.mat44, shape=(self.num_instances,))
+            wp.copy(vbo_transforms, xforms)
+            self._instance_transform_cuda_buffer.unmap()
+        else:
+            host_transforms = xforms.numpy()
+            gl.glBindBuffer(gl.GL_ARRAY_BUFFER, self.instance_transform_buffer)
+            gl.glBufferData(gl.GL_ARRAY_BUFFER, host_transforms.nbytes, host_transforms.ctypes.data, gl.GL_DYNAMIC_DRAW)
+
+        if colors is not None:
+            color_state = (id(colors), len(colors))
+            if getattr(self, "_omnisurg_color_state", None) != color_state:
+                host_colors = colors.numpy()
+                gl.glBindBuffer(gl.GL_ARRAY_BUFFER, self.instance_color_buffer)
+                gl.glBufferData(gl.GL_ARRAY_BUFFER, host_colors.nbytes, host_colors.ctypes.data, gl.GL_STATIC_DRAW)
+                self._omnisurg_color_state = color_state
+
+        if materials is not None:
+            material_state = (id(materials), len(materials))
+            if getattr(self, "_omnisurg_material_state", None) != material_state:
+                host_materials = materials.numpy()
+                gl.glBindBuffer(gl.GL_ARRAY_BUFFER, self.instance_material_buffer)
+                gl.glBufferData(
+                    gl.GL_ARRAY_BUFFER, host_materials.nbytes, host_materials.ctypes.data, gl.GL_STATIC_DRAW
+                )
+                self._omnisurg_material_state = material_state
+
+    patched_update_vbo.__omnisurg_static_upload_patched__ = True
+    opengl.MeshInstancerGL._update_vbo = patched_update_vbo
+    _STATIC_INSTANCE_UPLOAD_PATCHED = True
+
+
 class GPUBuffers:
     """Constant GPU arrays allocated once at startup."""
 
@@ -29,12 +198,16 @@ class RenderBridge:
         self.gpu = GPUBuffers(device)
         self._backend = viewer_config.backend
         self._mesh_created: set[str] = set()
+        self._mesh_instance_state: dict[str, tuple[bool, tuple[float, float, float] | None]] = {}
         self._instance_colors: dict[str, wp.array] = {}
         self._point_radii: dict[tuple[str, int, float], wp.array] = {}
         self._point_colors: dict[tuple[str, int, tuple[float, float, float]], wp.array] = {}
 
         if self._backend in {"gl", "surgsim"}:
             enable_persistent_gl_textures()
+            enable_direct_gl_render()
+            enable_zero_copy_gl_mesh_updates()
+            enable_static_instance_uploads()
 
         if self._backend == "headless":
             self._renderer = HeadlessRenderer()
@@ -52,6 +225,13 @@ class RenderBridge:
             self._renderer = newton.viewer.ViewerGL(vsync=viewer_config.vsync)
             self._renderer.set_model(model)
             self._renderer.set_camera(wp.vec3f(*viewer_config.camera_pos), 0, -90)
+
+        self.configure_render_quality(
+            sky_enabled=viewer_config.sky_enabled,
+            shadows_enabled=viewer_config.shadows_enabled,
+            msaa_samples=viewer_config.msaa_samples,
+            direct_render_enabled=viewer_config.direct_render_enabled,
+        )
 
     def _color_buffer(self, name: str, color: tuple[float, float, float] | None):
         if color is None:
@@ -89,6 +269,49 @@ class RenderBridge:
                 colors = self._point_colors[color_key]
 
         return radii, colors
+
+    def _viewer_renderer(self):
+        return getattr(self._renderer, "renderer", None)
+
+    def configure_render_quality(
+        self,
+        *,
+        sky_enabled: bool | None = None,
+        shadows_enabled: bool | None = None,
+        msaa_samples: int | None = None,
+        direct_render_enabled: bool | None = None,
+    ):
+        renderer = self._viewer_renderer()
+        if renderer is None:
+            return
+
+        if hasattr(renderer, "_make_current"):
+            renderer._make_current()
+
+        if sky_enabled is not None and hasattr(renderer, "draw_sky"):
+            renderer.draw_sky = bool(sky_enabled)
+
+        if shadows_enabled is not None and hasattr(renderer, "draw_shadows"):
+            renderer.draw_shadows = bool(shadows_enabled)
+            if not renderer.draw_shadows and not hasattr(renderer, "_light_space_matrix"):
+                renderer._light_space_matrix = np.eye(4, dtype=np.float32)
+
+        if msaa_samples is not None and hasattr(renderer, "msaa_samples"):
+            samples = max(0, int(msaa_samples))
+            renderer.msaa_samples = samples
+            gl = getattr(renderer, "gl", None)
+            if gl is not None:
+                if samples > 0:
+                    gl.glEnable(gl.GL_MULTISAMPLE)
+                else:
+                    gl.glDisable(gl.GL_MULTISAMPLE)
+
+        if direct_render_enabled is not None:
+            renderer._omnisurg_direct_render = (
+                bool(direct_render_enabled)
+                and not bool(getattr(renderer, "draw_shadows", False))
+                and int(getattr(renderer, "msaa_samples", 0)) == 0
+            )
 
     def begin_frame(self, time: float):
         self._renderer.begin_frame(time)
@@ -143,14 +366,20 @@ class RenderBridge:
             texture=mesh_texture,
             hidden=True,
         )
-        self._renderer.log_instances(
-            f"{name}_inst",
-            name,
-            self.gpu.identity_xform,
-            self.gpu.unit_scale,
-            instance_color,
-            materials=instance_material,
-        )
+
+        instance_name = f"{name}_inst"
+        instance_state = (textured, None if color is None else tuple(float(component) for component in color))
+        if self._mesh_instance_state.get(instance_name) != instance_state:
+            self._renderer.log_instances(
+                instance_name,
+                name,
+                self.gpu.identity_xform,
+                self.gpu.unit_scale,
+                instance_color,
+                materials=instance_material,
+            )
+            self._mesh_instance_state[instance_name] = instance_state
+
         self._mesh_created.add(name)
 
     def draw_points(
