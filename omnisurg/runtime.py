@@ -574,6 +574,8 @@ class Runtime:
         self.device = wp.get_device()
         self.textures_enabled = viewer_config.textures_enabled
         self.show_tissue = True
+        self.show_grasper_mesh = bool(scene_config.show_grasper_mesh)
+        self.enable_grasper_collisions = bool(scene_config.enable_grasper_collisions)
         self.sky_enabled = bool(viewer_config.sky_enabled)
         self.shadows_enabled = bool(viewer_config.shadows_enabled)
         self.direct_render_enabled = bool(viewer_config.direct_render_enabled)
@@ -715,8 +717,8 @@ class Runtime:
 
     def _apply_grasper_collision_mode(self, mode: str):
         self.grasper_collision_mode = _clamp_grasper_collision_mode(mode)
-        projection_enabled = self.grasper_collision_mode in ("projection", "hybrid")
-        truncation_enabled = self.grasper_collision_mode in ("truncation", "hybrid")
+        projection_enabled = self.enable_grasper_collisions and self.grasper_collision_mode in ("projection", "hybrid")
+        truncation_enabled = self.enable_grasper_collisions and self.grasper_collision_mode in ("truncation", "hybrid")
         self.grasper_collision_system.enabled = projection_enabled
         self.grasper_truncation_system.enabled = truncation_enabled
 
@@ -978,7 +980,8 @@ class Runtime:
                 if grasper is None:
                     continue
                 grasper.update_substep_pose(factor)
-                grasper.update_collision_geometry()
+                if self.enable_grasper_collisions:
+                    grasper.update_collision_geometry()
 
             self.solver.step(self.state_0, self.state_1, None, None, self.sim_config.substep_dt)
             self.state_0, self.state_1 = self.state_1, self.state_0
@@ -1027,52 +1030,56 @@ class Runtime:
 
         ui.separator()
         ui.text("Collision")
-        changed, collision_mode_index = ui.slider_int(
-            "Jaw Collision Mode",
-            _grasper_collision_mode_index(self._pending_grasper_collision_mode),
-            0,
-            len(GRASPER_COLLISION_MODES) - 1,
-        )
-        if changed:
-            self._pending_grasper_collision_mode = _grasper_collision_mode_from_index(collision_mode_index)
-        ui.text("0 Projection | 1 Truncation | 2 Hybrid")
-        ui.text(f"Current: {GRASPER_COLLISION_MODE_LABELS[_grasper_collision_mode_index(self._pending_grasper_collision_mode)]}")
+        if not self.enable_grasper_collisions:
+            ui.text("Jaw collisions disabled for this scene.")
+            ui.text("Using only the haptic proxy sphere.")
+        else:
+            changed, collision_mode_index = ui.slider_int(
+                "Jaw Collision Mode",
+                _grasper_collision_mode_index(self._pending_grasper_collision_mode),
+                0,
+                len(GRASPER_COLLISION_MODES) - 1,
+            )
+            if changed:
+                self._pending_grasper_collision_mode = _grasper_collision_mode_from_index(collision_mode_index)
+            ui.text("0 Projection | 1 Truncation | 2 Hybrid")
+            ui.text(f"Current: {GRASPER_COLLISION_MODE_LABELS[_grasper_collision_mode_index(self._pending_grasper_collision_mode)]}")
 
-        changed, grasper_motion_samples = ui.slider_int(
-            "Jaw Motion Samples",
-            self._pending_grasper_collision_motion_samples,
-            1,
-            16,
-        )
-        if changed:
-            self._pending_grasper_collision_motion_samples = grasper_motion_samples
+            changed, grasper_motion_samples = ui.slider_int(
+                "Jaw Motion Samples",
+                self._pending_grasper_collision_motion_samples,
+                1,
+                16,
+            )
+            if changed:
+                self._pending_grasper_collision_motion_samples = grasper_motion_samples
 
-        changed, grasper_collision_margin = ui.slider_float(
-            "Jaw Collision Margin",
-            self._pending_grasper_collision_margin,
-            0.0,
-            0.02,
-            "%.3f",
-        )
-        if changed:
-            self._pending_grasper_collision_margin = grasper_collision_margin
+            changed, grasper_collision_margin = ui.slider_float(
+                "Jaw Collision Margin",
+                self._pending_grasper_collision_margin,
+                0.0,
+                0.02,
+                "%.3f",
+            )
+            if changed:
+                self._pending_grasper_collision_margin = grasper_collision_margin
 
-        changed, grasper_truncation_safety = ui.slider_float(
-            "Jaw Truncation Safety",
-            self._pending_grasper_truncation_safety,
-            0.5,
-            1.0,
-            "%.2f",
-        )
-        if changed:
-            self._pending_grasper_truncation_safety = grasper_truncation_safety
+            changed, grasper_truncation_safety = ui.slider_float(
+                "Jaw Truncation Safety",
+                self._pending_grasper_truncation_safety,
+                0.5,
+                1.0,
+                "%.2f",
+            )
+            if changed:
+                self._pending_grasper_truncation_safety = grasper_truncation_safety
 
-        changed, truncate_prediction = ui.checkbox(
-            "Truncate Prediction Step",
-            self._pending_grasper_truncate_prediction,
-        )
-        if changed:
-            self._pending_grasper_truncate_prediction = truncate_prediction
+            changed, truncate_prediction = ui.checkbox(
+                "Truncate Prediction Step",
+                self._pending_grasper_truncate_prediction,
+            )
+            if changed:
+                self._pending_grasper_truncate_prediction = truncate_prediction
 
         preview_dt_ms = (self.sim_config.frame_dt / float(max(1, int(self._pending_substeps)))) * 1000.0
         ui.text(f"Substep dt: {preview_dt_ms:.3f} ms")
@@ -1176,7 +1183,7 @@ class Runtime:
             for controller_id, binding in self.controller_bindings.items():
                 state = self.controller_states[controller_id]
                 grasper = self.graspers.get(controller_id)
-                if grasper is None or not state.active:
+                if not self.show_grasper_mesh or grasper is None or not state.active:
                     continue
 
                 grasper.update_render_geometry()
@@ -1205,14 +1212,15 @@ class Runtime:
                         texture=texture,
                     )
 
-            for controller_id, grasper in self.graspers.items():
-                state = self.controller_states[controller_id]
-                if grasper is not None and state.active:
-                    grasper.render(
-                        self.renderer,
-                        prefix=f"{controller_id}_grasper",
-                        draw_collision_spheres=False,
-                    )
+            if self.show_grasper_mesh:
+                for controller_id, grasper in self.graspers.items():
+                    state = self.controller_states[controller_id]
+                    if grasper is not None and state.active:
+                        grasper.render(
+                            self.renderer,
+                            prefix=f"{controller_id}_grasper",
+                            draw_collision_spheres=False,
+                        )
 
             if self.controller_states[PRIMARY_CONTROLLER_ID].active:
                 self.renderer.draw_haptic_sphere(self._haptic_render_pos)

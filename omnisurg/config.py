@@ -45,6 +45,8 @@ class SceneConfig:
     pin_center: tuple | None = DEFAULT_PIN_CENTER
     pin_radius: float = DEFAULT_PIN_RADIUS
     pinned_vertex_ids: tuple[int, ...] = ()
+    show_grasper_mesh: bool = True
+    enable_grasper_collisions: bool = True
 
     def __post_init__(self):
         if (
@@ -56,6 +58,8 @@ class SceneConfig:
         ):
             # Synthetic cloth patches use exact corner pins instead of the default liver pin sphere.
             self.pin_center = None
+            self.show_grasper_mesh = False
+            self.enable_grasper_collisions = False
 
 
 @dataclass

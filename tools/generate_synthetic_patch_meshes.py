@@ -10,7 +10,7 @@ MESH_ROOT = REPO_ROOT / "meshes"
 PATCH_BOUNDS = {
     "x_min": -0.75,
     "x_max": 0.75,
-    "y": 3.40,
+    "y": 3.70,
     "z_min": -4.80,
     "z_max": -3.20,
 }

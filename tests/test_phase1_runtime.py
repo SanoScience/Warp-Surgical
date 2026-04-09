@@ -336,7 +336,7 @@ class TestPhaseRuntime(unittest.TestCase):
                 self.assertGreater(float(np.ptp(asset.rest_positions[:, 2])), 0.0)
 
                 translated_y = asset.rest_positions[:, 1] + float(scene_config.translation[1])
-                self.assertGreater(float(np.min(translated_y)), 0.0)
+                self.assertGreater(float(np.min(translated_y)), 0.5)
 
     def test_synthetic_patch_assets_wind_upward(self):
         for asset_name in ("cloth_regular_low", "cloth_irregular_mid"):
@@ -355,6 +355,8 @@ class TestPhaseRuntime(unittest.TestCase):
             with self.subTest(asset=asset_name):
                 scene_config = SceneConfig(asset_name=asset_name)
                 self.assertIsNone(scene_config.pin_center)
+                self.assertFalse(scene_config.show_grasper_mesh)
+                self.assertFalse(scene_config.enable_grasper_collisions)
 
                 with wp.ScopedDevice("cpu"):
                     asset = load_tet_asset(asset_name)
@@ -412,6 +414,27 @@ class TestPhaseRuntime(unittest.TestCase):
                 self.assertEqual(len(scene.model.tri_points_connectors), 0)
                 self.assertIn(asset_name, scene.surface_meshes)
                 self.assertEqual(scene.surface_meshes[asset_name].shape[0], expected["tris"] * 3)
+
+    def test_runtime_synthetic_patch_uses_haptic_proxy_only(self):
+        runtime = None
+        try:
+            with wp.ScopedDevice("cpu"):
+                runtime = Runtime(
+                    SimulationConfig(substeps=1, fps=20, constraint_iterations=1),
+                    SceneConfig(asset_name="cloth_regular_low"),
+                    HapticConfig(),
+                    ViewerConfig(backend="headless", textures_enabled=False),
+                    BoundsConfig(),
+                )
+
+                self.assertFalse(runtime.show_grasper_mesh)
+                self.assertFalse(runtime.enable_grasper_collisions)
+                self.assertTrue(runtime.haptic_collision_system.enabled)
+                self.assertFalse(runtime.grasper_collision_system.enabled)
+                self.assertFalse(runtime.grasper_truncation_system.enabled)
+        finally:
+            if runtime is not None:
+                runtime.close()
 
     def test_grasper_asset_loading(self):
         with wp.ScopedDevice("cpu"):
