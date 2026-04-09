@@ -1,4 +1,5 @@
 import warp as wp
+from newton._src.geometry import ParticleFlags
 
 from omnisurg.mesh.types import Tetrahedron, TriPointsConnector
 
@@ -97,6 +98,44 @@ def apply_tri_points_constraints_jacobian(
     wp.atomic_add(delta_accumulator, conn.tri_ids[0], delta * conn.tri_bar[0] * inv_mass_tri)
     wp.atomic_add(delta_accumulator, conn.tri_ids[1], delta * conn.tri_bar[1] * inv_mass_tri)
     wp.atomic_add(delta_accumulator, conn.tri_ids[2], delta * conn.tri_bar[2] * inv_mass_tri)
+
+
+@wp.kernel
+def compute_position_deltas(
+    positions_prev: wp.array(dtype=wp.vec3f),
+    positions_current: wp.array(dtype=wp.vec3f),
+    deltas_out: wp.array(dtype=wp.vec3f),
+):
+    tid = wp.tid()
+    deltas_out[tid] = positions_current[tid] - positions_prev[tid]
+
+
+@wp.kernel
+def apply_displacements_from_base(
+    x_orig: wp.array(dtype=wp.vec3f),
+    particle_flags: wp.array(dtype=wp.int32),
+    displacement: wp.array(dtype=wp.vec3f),
+    dt: float,
+    v_max: float,
+    x_out: wp.array(dtype=wp.vec3f),
+    v_out: wp.array(dtype=wp.vec3f),
+):
+    tid = wp.tid()
+    if (particle_flags[tid] & ParticleFlags.ACTIVE) == 0:
+        return
+
+    x0 = x_orig[tid]
+    d = displacement[tid]
+
+    x_new = x0 + d
+    v_new = d / dt
+
+    v_new_mag = wp.length(v_new)
+    if v_new_mag > v_max:
+        v_new *= v_max / v_new_mag
+
+    x_out[tid] = x_new
+    v_out[tid] = v_new
 
 
 @wp.kernel

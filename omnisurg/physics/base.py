@@ -7,6 +7,7 @@ from newton._src.sim import Model, State
 
 class SolverStage(Enum):
     ELASTIC = "elastic"
+    TRUNCATION = "truncation"
     PROJECTION = "projection"
 
 
@@ -39,6 +40,30 @@ class SimulationSystem(ABC):
         body_q: wp.array,
         body_qd: wp.array,
         body_deltas: wp.array,
+        dt: float,
+        iteration: int,
+    ):
+        pass
+
+    def truncate_prediction(
+        self,
+        model: Model,
+        state_in: State,
+        state_out: State,
+        base_positions: wp.array,
+        displacements: wp.array,
+        dt: float,
+    ):
+        pass
+
+    def truncate_deltas(
+        self,
+        model: Model,
+        state_in: State,
+        state_out: State,
+        particle_q: wp.array,
+        particle_qd: wp.array,
+        particle_deltas: wp.array,
         dt: float,
         iteration: int,
     ):

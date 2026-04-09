@@ -5,6 +5,7 @@ from pathlib import Path
 
 import numpy as np
 import warp as wp
+from newton._src.geometry import ParticleFlags
 from newton._src.geometry.kernels import triangle_closest_point
 
 from omnisurg.config import BoundsConfig, HapticConfig, SceneConfig, SimulationConfig, ViewerConfig
@@ -31,8 +32,12 @@ GRASPER_ASSET_PATH = REPO_ROOT / "meshes" / "pgrasp.usdc"
 GRASPER_SCALE = 0.01
 GRASPER_JAW_SPHERE_COUNT = 24
 GRASPER_JAW_SPHERE_RADIUS = 0.018
-GRASPER_COLLISION_SWEEP_SAMPLES = 4
+GRASPER_COLLISION_MOTION_SAMPLES = 4
+GRASPER_COLLISION_SWEEP_SAMPLES = GRASPER_COLLISION_MOTION_SAMPLES
 GRASPER_COLLISION_MARGIN = 0.002
+GRASPER_COLLISION_TRUNCATION_SAFETY = 0.90
+GRASPER_COLLISION_MODES = ("projection", "truncation", "hybrid")
+GRASPER_COLLISION_MODE_LABELS = ("Projection", "Truncation", "Hybrid")
 PRIMARY_CONTROLLER_ID = "right"
 TEXTURE_CANDIDATES = {
     "liver": (
@@ -80,10 +85,35 @@ class ControllerRuntimeState:
 
 
 @wp.func
-def _triangle_normal(v0: wp.vec3f, v1: wp.vec3f, v2: wp.vec3f) -> wp.vec3f:
-    edge1 = v1 - v0
-    edge2 = v2 - v0
-    return wp.normalize(wp.cross(edge1, edge2))
+def _double_sided_fallback_dir(
+    v0: wp.vec3f,
+    v1: wp.vec3f,
+    v2: wp.vec3f,
+    contact_point: wp.vec3f,
+    reference_dir: wp.vec3f,
+) -> wp.vec3f:
+    if wp.length_sq(reference_dir) > 1.0e-12:
+        return wp.normalize(reference_dir)
+
+    centroid = (v0 + v1 + v2) / 3.0
+    centroid_dir = centroid - contact_point
+    if wp.length_sq(centroid_dir) > 1.0e-12:
+        return wp.normalize(centroid_dir)
+
+    d0 = v0 - contact_point
+    d1 = v1 - contact_point
+    d2 = v2 - contact_point
+
+    best = d0
+    if wp.length_sq(d1) > wp.length_sq(best):
+        best = d1
+    if wp.length_sq(d2) > wp.length_sq(best):
+        best = d2
+
+    if wp.length_sq(best) > 1.0e-12:
+        return wp.normalize(best)
+
+    return wp.vec3f(1.0, 0.0, 0.0)
 
 
 @wp.kernel
@@ -154,7 +184,13 @@ def collide_triangles_vs_spheres(
     if dist > 1e-8:
         correction_dir = to_sphere / dist
     else:
-        correction_dir = _triangle_normal(p1, p2, p3)
+        correction_dir = _double_sided_fallback_dir(
+            p1,
+            p2,
+            p3,
+            sphere_pos,
+            sphere_centers_prev[sphere_idx] - sphere_centers[sphere_idx],
+        )
 
     total_correction = correction_dir * penetration
     d1 = total_correction * (w1 / weight)
@@ -169,6 +205,98 @@ def collide_triangles_vs_spheres(
     wp.atomic_add(delta_counter, t3, 1)
 
 
+@wp.kernel
+def compute_vertex_sphere_truncation_factors(
+    particle_flags: wp.array(dtype=wp.int32),
+    base_positions: wp.array(dtype=wp.vec3f),
+    surface_vertex_ids: wp.array(dtype=wp.int32),
+    displacement_in: wp.array(dtype=wp.vec3f),
+    sphere_centers_prev: wp.array(dtype=wp.vec3f),
+    sphere_centers: wp.array(dtype=wp.vec3f),
+    sphere_radii: wp.array(dtype=wp.float32),
+    num_spheres: int,
+    motion_samples: int,
+    radius_margin: wp.float32,
+    safety: wp.float32,
+    truncation_t_out: wp.array(dtype=wp.float32),
+):
+    tid = wp.tid()
+    surface_vertex_count = surface_vertex_ids.shape[0]
+    if surface_vertex_count == 0 or num_spheres <= 0 or motion_samples <= 0:
+        return
+
+    work_items_per_vertex = num_spheres * motion_samples
+    vertex_idx = tid // work_items_per_vertex
+    if vertex_idx >= surface_vertex_count:
+        return
+
+    local_idx = tid % work_items_per_vertex
+    sphere_idx = local_idx // motion_samples
+    sample_idx = local_idx % motion_samples
+    vertex_id = surface_vertex_ids[vertex_idx]
+
+    if (particle_flags[vertex_id] & ParticleFlags.ACTIVE) == 0:
+        return
+
+    displacement = displacement_in[vertex_id]
+    if wp.length_sq(displacement) <= 1.0e-12:
+        return
+
+    sphere_radius = sphere_radii[sphere_idx] + radius_margin
+    if sphere_radius <= 0.0:
+        return
+
+    sample_factor = wp.float32(sample_idx + 1) / wp.float32(motion_samples)
+    sphere_center = wp.lerp(sphere_centers_prev[sphere_idx], sphere_centers[sphere_idx], sample_factor)
+
+    x0 = base_positions[vertex_id]
+    x1 = x0 + displacement
+
+    normal = x1 - sphere_center
+    if wp.length_sq(normal) <= 1.0e-12:
+        normal = x0 - sphere_center
+    if wp.length_sq(normal) <= 1.0e-12:
+        normal = -displacement
+    if wp.length_sq(normal) <= 1.0e-12:
+        return
+
+    n = wp.normalize(normal)
+    plane_point = sphere_center + n * sphere_radius
+
+    s0 = wp.dot(n, x0 - plane_point)
+    s1 = wp.dot(n, x1 - plane_point)
+    if s1 >= 0.0:
+        return
+
+    t = wp.float32(1.0)
+    if s0 > 0.0:
+        denom = s0 - s1
+        if denom <= 1.0e-8:
+            return
+        crossing_t = s0 / denom
+        t = wp.clamp(wp.min(crossing_t * safety, crossing_t - 1.0e-3), 0.0, 1.0)
+    elif s1 < s0:
+        t = 0.0
+    else:
+        return
+
+    wp.atomic_min(truncation_t_out, vertex_id, t)
+
+
+@wp.kernel
+def apply_surface_vertex_truncation(
+    surface_vertex_ids: wp.array(dtype=wp.int32),
+    truncation_t: wp.array(dtype=wp.float32),
+    displacements: wp.array(dtype=wp.vec3f),
+):
+    tid = wp.tid()
+    if tid >= surface_vertex_ids.shape[0]:
+        return
+
+    vertex_id = surface_vertex_ids[tid]
+    displacements[vertex_id] = displacements[vertex_id] * truncation_t[vertex_id]
+
+
 class GrasperSphereCollisionSystem(SimulationSystem):
     """Resolve tissue collisions against every sphere in the rendered grasper jaws."""
 
@@ -176,21 +304,23 @@ class GrasperSphereCollisionSystem(SimulationSystem):
         self,
         *,
         graspers: dict,
-        controller_states: dict,
-        controller_bindings: dict,
         proxy: HapticProxyState,
+        motion_samples: int = GRASPER_COLLISION_MOTION_SAMPLES,
+        contact_margin: float = GRASPER_COLLISION_MARGIN,
         priority: int = 85,
     ):
         super().__init__(priority=priority, stage=SolverStage.PROJECTION)
         self.graspers = graspers
-        self.controller_states = controller_states
-        self.controller_bindings = controller_bindings
         self.proxy = proxy
         self._accumulator: wp.array | None = None
         self._count: wp.array | None = None
-        self.sweep_samples = GRASPER_COLLISION_SWEEP_SAMPLES
-        self.contact_margin = GRASPER_COLLISION_MARGIN
+        self.motion_samples = motion_samples
+        self.contact_margin = contact_margin
         self._chain_cull_radii: dict[int, float] = {}
+        self._rebuild_chain_cull_radii()
+
+    def _rebuild_chain_cull_radii(self):
+        self._chain_cull_radii = {}
         for grasper in self.graspers.values():
             if grasper is None:
                 continue
@@ -207,12 +337,6 @@ class GrasperSphereCollisionSystem(SimulationSystem):
     def initialize(self, model):
         self._accumulator = wp.zeros(model.particle_count, dtype=wp.vec3f, device=model.device)
         self._count = wp.zeros(model.particle_count, dtype=wp.int32, device=model.device)
-
-    def pre_integrate(self, model, state, dt: float):
-        for controller_id in self.controller_bindings:
-            grasper = self.graspers.get(controller_id)
-            if grasper is not None:
-                grasper.update_collision_geometry()
 
     def solve_constraints(
         self,
@@ -231,19 +355,18 @@ class GrasperSphereCollisionSystem(SimulationSystem):
         if model.tri_count == 0:
             return
 
-        for controller_id in self.controller_bindings:
-            grasper = self.graspers.get(controller_id)
+        for grasper in self.graspers.values():
             if grasper is None:
                 continue
 
             for chain in grasper.sphere_chains:
                 sphere_count = len(chain.world_points)
-                if sphere_count == 0 or self.sweep_samples <= 0:
+                if sphere_count == 0 or self.motion_samples <= 0:
                     continue
 
                 wp.launch(
                     kernel=collide_triangles_vs_spheres,
-                    dim=model.tri_count * sphere_count * self.sweep_samples,
+                    dim=model.tri_count * sphere_count * self.motion_samples,
                     inputs=[
                         particle_q,
                         particle_qd,
@@ -253,7 +376,7 @@ class GrasperSphereCollisionSystem(SimulationSystem):
                         chain.world_points,
                         chain.radii,
                         sphere_count,
-                        self.sweep_samples,
+                        self.motion_samples,
                         self.contact_margin,
                         0.0,
                         dt,
@@ -271,6 +394,128 @@ class GrasperSphereCollisionSystem(SimulationSystem):
                 outputs=[particle_deltas],
                 device=model.device,
             )
+
+
+class GrasperSphereTruncationSystem(SimulationSystem):
+    """Truncate tissue motion against the rendered grasper jaw spheres before commit."""
+
+    def __init__(
+        self,
+        *,
+        graspers: dict,
+        surface_vertex_ids: wp.array,
+        motion_samples: int = GRASPER_COLLISION_MOTION_SAMPLES,
+        contact_margin: float = GRASPER_COLLISION_MARGIN,
+        safety: float = GRASPER_COLLISION_TRUNCATION_SAFETY,
+        truncate_prediction: bool = True,
+        priority: int = 85,
+    ):
+        super().__init__(priority=priority, stage=SolverStage.TRUNCATION)
+        self.graspers = graspers
+        self.surface_vertex_ids = surface_vertex_ids
+        self.motion_samples = motion_samples
+        self.contact_margin = contact_margin
+        self.safety = safety
+        self.truncate_prediction_enabled = truncate_prediction
+        self._truncation_t: wp.array | None = None
+
+    def initialize(self, model):
+        self._truncation_t = wp.zeros(model.particle_count, dtype=wp.float32, device=model.device)
+
+    def truncate_prediction(
+        self,
+        model,
+        state_in,
+        state_out,
+        base_positions,
+        displacements,
+        dt,
+    ):
+        if not self.truncate_prediction_enabled or model.tri_count == 0 or self._truncation_t is None:
+            return
+
+        self._apply_truncation(
+            model,
+            base_positions=base_positions,
+            displacements=displacements,
+            use_motion_samples=True,
+        )
+
+    def truncate_deltas(
+        self,
+        model,
+        state_in,
+        state_out,
+        particle_q,
+        particle_qd,
+        particle_deltas,
+        dt,
+        iteration,
+    ):
+        if model.tri_count == 0 or self._truncation_t is None:
+            return
+
+        self._apply_truncation(
+            model,
+            base_positions=particle_q,
+            displacements=particle_deltas,
+            use_motion_samples=False,
+        )
+
+    def _apply_truncation(
+        self,
+        model,
+        *,
+        base_positions: wp.array,
+        displacements: wp.array,
+        use_motion_samples: bool,
+    ):
+        if self._truncation_t is None:
+            return
+
+        self._truncation_t.fill_(1.0)
+        sample_count = self.motion_samples if use_motion_samples else 1
+        if sample_count <= 0 or len(self.surface_vertex_ids) == 0:
+            return
+
+        for grasper in self.graspers.values():
+            if grasper is None:
+                continue
+
+            for chain in grasper.sphere_chains:
+                sphere_count = len(chain.world_points)
+                if sphere_count == 0:
+                    continue
+
+                centers_prev = chain.world_points_prev if use_motion_samples else chain.world_points
+                centers = chain.world_points
+                wp.launch(
+                    kernel=compute_vertex_sphere_truncation_factors,
+                    dim=len(self.surface_vertex_ids) * sphere_count * sample_count,
+                    inputs=[
+                        model.particle_flags,
+                        base_positions,
+                        self.surface_vertex_ids,
+                        displacements,
+                        centers_prev,
+                        centers,
+                        chain.radii,
+                        sphere_count,
+                        sample_count,
+                        self.contact_margin,
+                        self.safety,
+                    ],
+                    outputs=[self._truncation_t],
+                    device=model.device,
+                )
+
+        wp.launch(
+            kernel=apply_surface_vertex_truncation,
+            dim=len(self.surface_vertex_ids),
+            inputs=[self.surface_vertex_ids, self._truncation_t],
+            outputs=[displacements],
+            device=model.device,
+        )
 
 
 CONTROLLER_BINDINGS = {
@@ -297,6 +542,19 @@ def _resolve_mesh_textures(mesh_names) -> dict[str, str]:
 
 def _float_changed(current: float, target: float, eps: float = 1.0e-6) -> bool:
     return abs(float(current) - float(target)) > eps
+
+
+def _clamp_grasper_collision_mode(mode: str) -> str:
+    return mode if mode in GRASPER_COLLISION_MODES else GRASPER_COLLISION_MODES[0]
+
+
+def _grasper_collision_mode_index(mode: str) -> int:
+    return GRASPER_COLLISION_MODES.index(_clamp_grasper_collision_mode(mode))
+
+
+def _grasper_collision_mode_from_index(index: int) -> str:
+    clamped = int(np.clip(index, 0, len(GRASPER_COLLISION_MODES) - 1))
+    return GRASPER_COLLISION_MODES[clamped]
 
 
 class Runtime:
@@ -332,6 +590,8 @@ class Runtime:
         self.uvs = scene.uvs
         self.mesh_textures = _resolve_mesh_textures(self.surface_meshes.keys())
         self.proxy: HapticProxyState = scene.haptic_proxy
+        surface_vertex_ids_np = np.unique(self.model.tri_indices.numpy().reshape(-1)).astype(np.int32, copy=False)
+        self.surface_vertex_ids = wp.array(surface_vertex_ids_np, dtype=wp.int32, device=self.device)
 
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
@@ -342,16 +602,29 @@ class Runtime:
         self.spring_stiffness = float(scene_config.spring_stiffness)
         self.spring_damping = float(scene_config.spring_dampen)
         self.particle_max_velocity = float(self.model.particle_max_velocity)
-        self.grasper_sweep_samples = GRASPER_COLLISION_SWEEP_SAMPLES
+        self.grasper_collision_mode = _clamp_grasper_collision_mode(sim_config.grasper_collision_mode)
+        self.grasper_collision_motion_samples = max(1, int(sim_config.grasper_collision_motion_samples))
+        self.grasper_collision_margin = max(0.0, float(sim_config.grasper_collision_margin))
+        self.grasper_truncation_safety = float(np.clip(sim_config.grasper_truncation_safety, 0.5, 1.0))
+        self.grasper_truncate_prediction = bool(sim_config.grasper_truncate_prediction)
         self._pending_substeps = self.sim_substeps
         self._pending_constraint_iterations = self.iterations
         self._pending_volume_stiffness = self.volume_stiffness
         self._pending_spring_stiffness = self.spring_stiffness
         self._pending_spring_damping = self.spring_damping
         self._pending_particle_max_velocity = self.particle_max_velocity
-        self._pending_grasper_sweep_samples = self.grasper_sweep_samples
+        self._pending_grasper_collision_mode = self.grasper_collision_mode
+        self._pending_grasper_collision_motion_samples = self.grasper_collision_motion_samples
+        self._pending_grasper_collision_margin = self.grasper_collision_margin
+        self._pending_grasper_truncation_safety = self.grasper_truncation_safety
+        self._pending_grasper_truncate_prediction = self.grasper_truncate_prediction
         self.sim_config.substeps = self.sim_substeps
         self.sim_config.constraint_iterations = self.iterations
+        self.sim_config.grasper_collision_mode = self.grasper_collision_mode
+        self.sim_config.grasper_collision_motion_samples = self.grasper_collision_motion_samples
+        self.sim_config.grasper_collision_margin = self.grasper_collision_margin
+        self.sim_config.grasper_truncation_safety = self.grasper_truncation_safety
+        self.sim_config.grasper_truncate_prediction = self.grasper_truncate_prediction
         self.sim_config.substep_dt = self.sim_config.frame_dt / float(self.sim_substeps)
 
         self.solver = Phase1Solver(self.model, iterations=self.iterations)
@@ -388,12 +661,24 @@ class Runtime:
         }
         self.grasper_collision_system = GrasperSphereCollisionSystem(
             graspers=self.graspers,
-            controller_states=self.controller_states,
-            controller_bindings=self.controller_bindings,
             proxy=self.proxy,
+            motion_samples=self.grasper_collision_motion_samples,
+            contact_margin=self.grasper_collision_margin,
             priority=85,
         )
+        self.grasper_truncation_system = GrasperSphereTruncationSystem(
+            graspers=self.graspers,
+            surface_vertex_ids=self.surface_vertex_ids,
+            motion_samples=self.grasper_collision_motion_samples,
+            contact_margin=self.grasper_collision_margin,
+            safety=self.grasper_truncation_safety,
+            truncate_prediction=self.grasper_truncate_prediction,
+            priority=85,
+        )
+        self.solver.register_system(self.grasper_truncation_system)
         self.solver.register_system(self.grasper_collision_system)
+        self._apply_grasper_collision_mode(self.grasper_collision_mode)
+        self._sync_grasper_collision_settings()
         self.sim_time = 0.0
 
         self._haptic_staging, self._haptic_staging_view = create_vec3_staging_buffer()
@@ -427,6 +712,22 @@ class Runtime:
                 staging_view=staging_view,
             )
         return states
+
+    def _apply_grasper_collision_mode(self, mode: str):
+        self.grasper_collision_mode = _clamp_grasper_collision_mode(mode)
+        projection_enabled = self.grasper_collision_mode in ("projection", "hybrid")
+        truncation_enabled = self.grasper_collision_mode in ("truncation", "hybrid")
+        self.grasper_collision_system.enabled = projection_enabled
+        self.grasper_truncation_system.enabled = truncation_enabled
+
+    def _sync_grasper_collision_settings(self):
+        self.grasper_collision_system.motion_samples = self.grasper_collision_motion_samples
+        self.grasper_collision_system.contact_margin = self.grasper_collision_margin
+        self.grasper_collision_system._rebuild_chain_cull_radii()
+        self.grasper_truncation_system.motion_samples = self.grasper_collision_motion_samples
+        self.grasper_truncation_system.contact_margin = self.grasper_collision_margin
+        self.grasper_truncation_system.safety = self.grasper_truncation_safety
+        self.grasper_truncation_system.truncate_prediction_enabled = self.grasper_truncate_prediction
 
     def _capture_graph(self):
         self.graph = None
@@ -488,7 +789,11 @@ class Runtime:
             or _float_changed(self._pending_spring_stiffness, self.spring_stiffness)
             or _float_changed(self._pending_spring_damping, self.spring_damping)
             or _float_changed(self._pending_particle_max_velocity, self.particle_max_velocity)
-            or self._pending_grasper_sweep_samples != self.grasper_sweep_samples
+            or self._pending_grasper_collision_mode != self.grasper_collision_mode
+            or self._pending_grasper_collision_motion_samples != self.grasper_collision_motion_samples
+            or _float_changed(self._pending_grasper_collision_margin, self.grasper_collision_margin)
+            or _float_changed(self._pending_grasper_truncation_safety, self.grasper_truncation_safety)
+            or self._pending_grasper_truncate_prediction != self.grasper_truncate_prediction
         )
 
     def _pending_graph_rebuild_needed(self) -> bool:
@@ -497,7 +802,11 @@ class Runtime:
             or self._pending_constraint_iterations != self.iterations
             or _float_changed(self._pending_volume_stiffness, self.volume_stiffness)
             or _float_changed(self._pending_particle_max_velocity, self.particle_max_velocity)
-            or self._pending_grasper_sweep_samples != self.grasper_sweep_samples
+            or self._pending_grasper_collision_mode != self.grasper_collision_mode
+            or self._pending_grasper_collision_motion_samples != self.grasper_collision_motion_samples
+            or _float_changed(self._pending_grasper_collision_margin, self.grasper_collision_margin)
+            or _float_changed(self._pending_grasper_truncation_safety, self.grasper_truncation_safety)
+            or self._pending_grasper_truncate_prediction != self.grasper_truncate_prediction
         )
 
     def _apply_pending_solver_settings(self):
@@ -507,7 +816,11 @@ class Runtime:
         spring_stiffness = max(0.0, float(self._pending_spring_stiffness))
         spring_damping = max(0.0, float(self._pending_spring_damping))
         particle_max_velocity = max(0.1, float(self._pending_particle_max_velocity))
-        grasper_sweep_samples = max(1, int(self._pending_grasper_sweep_samples))
+        grasper_collision_mode = _clamp_grasper_collision_mode(self._pending_grasper_collision_mode)
+        grasper_collision_motion_samples = max(1, int(self._pending_grasper_collision_motion_samples))
+        grasper_collision_margin = max(0.0, float(self._pending_grasper_collision_margin))
+        grasper_truncation_safety = float(np.clip(self._pending_grasper_truncation_safety, 0.5, 1.0))
+        grasper_truncate_prediction = bool(self._pending_grasper_truncate_prediction)
         rebuild_graph = False
 
         if substeps != self.sim_substeps:
@@ -545,10 +858,32 @@ class Runtime:
             self.model.particle_max_velocity = particle_max_velocity
             rebuild_graph = True
 
-        if grasper_sweep_samples != self.grasper_sweep_samples:
-            self.grasper_sweep_samples = grasper_sweep_samples
-            self.grasper_collision_system.sweep_samples = grasper_sweep_samples
+        if grasper_collision_mode != self.grasper_collision_mode:
+            self._apply_grasper_collision_mode(grasper_collision_mode)
+            self.sim_config.grasper_collision_mode = self.grasper_collision_mode
             rebuild_graph = True
+
+        if grasper_collision_motion_samples != self.grasper_collision_motion_samples:
+            self.grasper_collision_motion_samples = grasper_collision_motion_samples
+            self.sim_config.grasper_collision_motion_samples = grasper_collision_motion_samples
+            rebuild_graph = True
+
+        if _float_changed(grasper_collision_margin, self.grasper_collision_margin):
+            self.grasper_collision_margin = grasper_collision_margin
+            self.sim_config.grasper_collision_margin = grasper_collision_margin
+            rebuild_graph = True
+
+        if _float_changed(grasper_truncation_safety, self.grasper_truncation_safety):
+            self.grasper_truncation_safety = grasper_truncation_safety
+            self.sim_config.grasper_truncation_safety = grasper_truncation_safety
+            rebuild_graph = True
+
+        if grasper_truncate_prediction != self.grasper_truncate_prediction:
+            self.grasper_truncate_prediction = grasper_truncate_prediction
+            self.sim_config.grasper_truncate_prediction = grasper_truncate_prediction
+            rebuild_graph = True
+
+        self._sync_grasper_collision_settings()
 
         if rebuild_graph:
             self._capture_graph()
@@ -643,6 +978,7 @@ class Runtime:
                 if grasper is None:
                     continue
                 grasper.update_substep_pose(factor)
+                grasper.update_collision_geometry()
 
             self.solver.step(self.state_0, self.state_1, None, None, self.sim_config.substep_dt)
             self.state_0, self.state_1 = self.state_1, self.state_0
@@ -691,10 +1027,52 @@ class Runtime:
 
         ui.separator()
         ui.text("Collision")
-        changed, grasper_sweep_samples = ui.slider_int("Jaw Sweep Samples", self._pending_grasper_sweep_samples, 1, 16)
+        changed, collision_mode_index = ui.slider_int(
+            "Jaw Collision Mode",
+            _grasper_collision_mode_index(self._pending_grasper_collision_mode),
+            0,
+            len(GRASPER_COLLISION_MODES) - 1,
+        )
         if changed:
-            self._pending_grasper_sweep_samples = grasper_sweep_samples
-        ui.text(f"Jaw Contact Margin: {self.grasper_collision_system.contact_margin:.3f} m")
+            self._pending_grasper_collision_mode = _grasper_collision_mode_from_index(collision_mode_index)
+        ui.text("0 Projection | 1 Truncation | 2 Hybrid")
+        ui.text(f"Current: {GRASPER_COLLISION_MODE_LABELS[_grasper_collision_mode_index(self._pending_grasper_collision_mode)]}")
+
+        changed, grasper_motion_samples = ui.slider_int(
+            "Jaw Motion Samples",
+            self._pending_grasper_collision_motion_samples,
+            1,
+            16,
+        )
+        if changed:
+            self._pending_grasper_collision_motion_samples = grasper_motion_samples
+
+        changed, grasper_collision_margin = ui.slider_float(
+            "Jaw Collision Margin",
+            self._pending_grasper_collision_margin,
+            0.0,
+            0.02,
+            "%.3f",
+        )
+        if changed:
+            self._pending_grasper_collision_margin = grasper_collision_margin
+
+        changed, grasper_truncation_safety = ui.slider_float(
+            "Jaw Truncation Safety",
+            self._pending_grasper_truncation_safety,
+            0.5,
+            1.0,
+            "%.2f",
+        )
+        if changed:
+            self._pending_grasper_truncation_safety = grasper_truncation_safety
+
+        changed, truncate_prediction = ui.checkbox(
+            "Truncate Prediction Step",
+            self._pending_grasper_truncate_prediction,
+        )
+        if changed:
+            self._pending_grasper_truncate_prediction = truncate_prediction
 
         preview_dt_ms = (self.sim_config.frame_dt / float(max(1, int(self._pending_substeps)))) * 1000.0
         ui.text(f"Substep dt: {preview_dt_ms:.3f} ms")

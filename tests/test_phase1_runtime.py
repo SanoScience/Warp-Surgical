@@ -19,6 +19,7 @@ import warp as wp
 
 from omnisurg import BoundsConfig, HapticConfig, Runtime, SceneConfig, SimulationConfig, ViewerConfig
 import omnisurg.main as omnisurg_main
+import omnisurg.physics.collision as collision_module
 import omnisurg.runtime as runtime_module
 from omnisurg.assets import load_scene_asset, load_tet_asset
 from omnisurg.haptics import BimanualReplayRig, ReplayInputSource
@@ -622,6 +623,171 @@ class TestPhaseRuntime(unittest.TestCase):
             if replay_path.exists():
                 replay_path.unlink()
 
+    def test_grasper_truncation_kernel_behavior(self):
+        with wp.ScopedDevice("cpu"):
+            particle_flags = wp.array([int(runtime_module.ParticleFlags.ACTIVE)], dtype=wp.int32)
+            surface_vertex_ids = wp.array([0], dtype=wp.int32)
+            sphere_radii = wp.array([1.0], dtype=wp.float32)
+
+            def run_kernel(base_position, displacement, *, safety=0.9, prev_center=None, curr_center=None, motion_samples=1):
+                base_positions = wp.array([base_position], dtype=wp.vec3f)
+                displacement_in = wp.array([displacement], dtype=wp.vec3f)
+                sphere_centers_prev = wp.array([prev_center or [0.0, 0.0, 0.0]], dtype=wp.vec3f)
+                sphere_centers = wp.array([curr_center or [0.0, 0.0, 0.0]], dtype=wp.vec3f)
+                truncation_t = wp.array([1.0], dtype=wp.float32)
+                wp.launch(
+                    kernel=runtime_module.compute_vertex_sphere_truncation_factors,
+                    dim=motion_samples,
+                    inputs=[
+                        particle_flags,
+                        base_positions,
+                        surface_vertex_ids,
+                        displacement_in,
+                        sphere_centers_prev,
+                        sphere_centers,
+                        sphere_radii,
+                        1,
+                        motion_samples,
+                        0.0,
+                        safety,
+                    ],
+                    outputs=[truncation_t],
+                    device=wp.get_device(),
+                )
+                return float(truncation_t.numpy()[0])
+
+            t_cross = run_kernel([2.0, 0.0, 0.0], [-2.0, 0.0, 0.0], safety=0.9)
+            t_cross_low_safety = run_kernel([2.0, 0.0, 0.0], [-2.0, 0.0, 0.0], safety=0.5)
+            t_away = run_kernel([1.1, 0.0, 0.0], [1.0, 0.0, 0.0], safety=0.9)
+
+            self.assertGreater(t_cross, 0.0)
+            self.assertLess(t_cross, 1.0)
+            self.assertLess(t_cross_low_safety, t_cross)
+            self.assertAlmostEqual(t_away, 1.0, places=6)
+
+    def test_grasper_prediction_truncation_shortens_swept_displacement(self):
+        with wp.ScopedDevice("cpu"):
+            active_flag = wp.array([int(runtime_module.ParticleFlags.ACTIVE)], dtype=wp.int32)
+            model = SimpleNamespace(
+                particle_count=1,
+                tri_count=1,
+                particle_flags=active_flag,
+                device=wp.get_device(),
+            )
+            surface_vertex_ids = wp.array([0], dtype=wp.int32)
+
+            def build_system(motion_samples: int):
+                chain = SimpleNamespace(
+                    world_points_prev=wp.array([[-1.0, 0.0, 0.0]], dtype=wp.vec3f),
+                    world_points=wp.array([[1.0, 0.0, 0.0]], dtype=wp.vec3f),
+                    radii=wp.array([0.05], dtype=wp.float32),
+                )
+                system = runtime_module.GrasperSphereTruncationSystem(
+                    graspers={"right": SimpleNamespace(sphere_chains=[chain])},
+                    surface_vertex_ids=surface_vertex_ids,
+                    motion_samples=motion_samples,
+                    contact_margin=0.0,
+                    safety=0.9,
+                    truncate_prediction=True,
+                )
+                system.initialize(model)
+                return system
+
+            base_positions = wp.array([[1.0, 0.0, 0.0]], dtype=wp.vec3f)
+            no_sweep_displacement = wp.array([[-0.98, 0.0, 0.0]], dtype=wp.vec3f)
+            sweep_displacement = wp.array([[-0.98, 0.0, 0.0]], dtype=wp.vec3f)
+
+            build_system(1).truncate_prediction(model, None, None, base_positions, no_sweep_displacement, 1.0 / 120.0)
+            build_system(4).truncate_prediction(model, None, None, base_positions, sweep_displacement, 1.0 / 120.0)
+
+            self.assertAlmostEqual(float(no_sweep_displacement.numpy()[0][0]), -0.98, places=5)
+            self.assertGreater(float(sweep_displacement.numpy()[0][0]), -0.98)
+
+    def test_grasper_iteration_truncation_reduces_elastic_delta(self):
+        with wp.ScopedDevice("cpu"):
+            active_flag = wp.array([int(runtime_module.ParticleFlags.ACTIVE)], dtype=wp.int32)
+            model = SimpleNamespace(
+                particle_count=1,
+                tri_count=1,
+                particle_flags=active_flag,
+                device=wp.get_device(),
+            )
+            chain = SimpleNamespace(
+                world_points_prev=wp.array([[0.0, 0.0, 0.0]], dtype=wp.vec3f),
+                world_points=wp.array([[0.0, 0.0, 0.0]], dtype=wp.vec3f),
+                radii=wp.array([1.0], dtype=wp.float32),
+            )
+            system = runtime_module.GrasperSphereTruncationSystem(
+                graspers={"right": SimpleNamespace(sphere_chains=[chain])},
+                surface_vertex_ids=wp.array([0], dtype=wp.int32),
+                motion_samples=4,
+                contact_margin=0.0,
+                safety=0.9,
+                truncate_prediction=True,
+            )
+            system.initialize(model)
+
+            particle_q = wp.array([[2.0, 0.0, 0.0]], dtype=wp.vec3f)
+            particle_qd = wp.zeros(1, dtype=wp.vec3f)
+            particle_deltas = wp.array([[-2.0, 0.0, 0.0]], dtype=wp.vec3f)
+
+            system.truncate_deltas(model, None, None, particle_q, particle_qd, particle_deltas, 1.0 / 120.0, 0)
+
+            self.assertGreater(float(particle_deltas.numpy()[0][0]), -2.0)
+
+    def test_runtime_grasper_collision_mode_wiring_and_pending_settings(self):
+        runtime = None
+        try:
+            with wp.ScopedDevice("cpu"):
+                runtime = Runtime(
+                    SimulationConfig(substeps=1, fps=20, constraint_iterations=1),
+                    SceneConfig(scene_preset="chole"),
+                    HapticConfig(),
+                    ViewerConfig(backend="headless"),
+                    BoundsConfig(),
+                )
+
+                self.assertEqual(runtime.grasper_collision_mode, "projection")
+                self.assertTrue(runtime.grasper_collision_system.enabled)
+                self.assertFalse(runtime.grasper_truncation_system.enabled)
+
+                runtime._pending_grasper_collision_mode = "hybrid"
+                runtime._pending_grasper_collision_motion_samples = 6
+                runtime._pending_grasper_collision_margin = 0.005
+                runtime._pending_grasper_truncation_safety = 0.75
+                runtime._pending_grasper_truncate_prediction = False
+
+                self.assertTrue(runtime._has_pending_solver_changes())
+                self.assertTrue(runtime._pending_graph_rebuild_needed())
+
+                runtime._apply_pending_solver_settings()
+
+                self.assertEqual(runtime.grasper_collision_mode, "hybrid")
+                self.assertEqual(runtime.sim_config.grasper_collision_mode, "hybrid")
+                self.assertEqual(runtime.grasper_collision_motion_samples, 6)
+                self.assertAlmostEqual(runtime.grasper_collision_margin, 0.005)
+                self.assertAlmostEqual(runtime.grasper_truncation_safety, 0.75)
+                self.assertFalse(runtime.grasper_truncate_prediction)
+                self.assertTrue(runtime.grasper_collision_system.enabled)
+                self.assertTrue(runtime.grasper_truncation_system.enabled)
+                self.assertEqual(runtime.grasper_collision_system.motion_samples, 6)
+                self.assertAlmostEqual(runtime.grasper_collision_system.contact_margin, 0.005)
+                self.assertEqual(runtime.grasper_truncation_system.motion_samples, 6)
+                self.assertAlmostEqual(runtime.grasper_truncation_system.contact_margin, 0.005)
+                self.assertAlmostEqual(runtime.grasper_truncation_system.safety, 0.75)
+                self.assertFalse(runtime.grasper_truncation_system.truncate_prediction_enabled)
+                self.assertFalse(runtime._has_pending_solver_changes())
+
+                runtime._pending_grasper_collision_mode = "truncation"
+                runtime._apply_pending_solver_settings()
+
+                self.assertEqual(runtime.grasper_collision_mode, "truncation")
+                self.assertFalse(runtime.grasper_collision_system.enabled)
+                self.assertTrue(runtime.grasper_truncation_system.enabled)
+        finally:
+            if runtime is not None:
+                runtime.close()
+
     def test_grasper_sweep_sampling_catches_crossing_contact(self):
         with wp.ScopedDevice("cpu"):
             positions = wp.array(
@@ -667,6 +833,102 @@ class TestPhaseRuntime(unittest.TestCase):
 
             self.assertEqual(run_sweep(1), 0)
             self.assertGreater(run_sweep(runtime_module.GRASPER_COLLISION_SWEEP_SAMPLES), 0)
+
+    def test_grasper_collision_fallback_is_winding_invariant(self):
+        with wp.ScopedDevice("cpu"):
+            positions = wp.array(
+                [
+                    [-1.0, -1.0, 0.0],
+                    [1.0, -1.0, 0.0],
+                    [0.0, 1.0, 0.0],
+                ],
+                dtype=wp.vec3f,
+            )
+            velocities = wp.zeros(3, dtype=wp.vec3f)
+            inv_masses = wp.array([1.0, 1.0, 1.0], dtype=wp.float32)
+            sphere_centers_prev = wp.array([[0.0, 0.0, 1.0]], dtype=wp.vec3f)
+            sphere_centers = wp.array([[0.0, 0.0, 0.0]], dtype=wp.vec3f)
+            sphere_radii = wp.array([0.1], dtype=wp.float32)
+
+            def collide(tri):
+                delta_accumulator = wp.zeros(3, dtype=wp.vec3f)
+                delta_counter = wp.zeros(3, dtype=wp.int32)
+                wp.launch(
+                    kernel=runtime_module.collide_triangles_vs_spheres,
+                    dim=1,
+                    inputs=[
+                        positions,
+                        velocities,
+                        inv_masses,
+                        wp.array([tri], dtype=wp.int32, ndim=2),
+                        sphere_centers_prev,
+                        sphere_centers,
+                        sphere_radii,
+                        1,
+                        1,
+                        0.0,
+                        0.0,
+                        1.0 / 120.0,
+                        0.0,
+                    ],
+                    outputs=[delta_accumulator, delta_counter],
+                    device=wp.get_device(),
+                )
+                return delta_accumulator.numpy(), delta_counter.numpy()
+
+            delta_a, count_a = collide([0, 1, 2])
+            delta_b, count_b = collide([0, 2, 1])
+            np.testing.assert_allclose(delta_a, delta_b, atol=1.0e-6)
+            np.testing.assert_array_equal(count_a, count_b)
+
+    def test_haptic_collision_fallback_is_winding_invariant(self):
+        with wp.ScopedDevice("cpu"):
+            positions = wp.array(
+                [
+                    [-1.0, -1.0, 0.0],
+                    [1.0, -1.0, 0.0],
+                    [0.0, 1.0, 0.0],
+                ],
+                dtype=wp.vec3f,
+            )
+            velocities = wp.array(
+                [
+                    [0.0, 0.0, -1.0],
+                    [0.0, 0.0, -1.0],
+                    [0.0, 0.0, -1.0],
+                ],
+                dtype=wp.vec3f,
+            )
+            inv_masses = wp.array([1.0, 1.0, 1.0], dtype=wp.float32)
+            sphere_center = wp.array([[0.0, 0.0, 0.0]], dtype=wp.vec3f)
+
+            def collide(tri):
+                delta_accumulator = wp.zeros(3, dtype=wp.vec3f)
+                delta_counter = wp.zeros(3, dtype=wp.int32)
+                wp.launch(
+                    kernel=collision_module.collide_triangles_vs_sphere,
+                    dim=1,
+                    inputs=[
+                        positions,
+                        velocities,
+                        inv_masses,
+                        wp.array([tri], dtype=wp.int32, ndim=2),
+                        sphere_center,
+                        0.1,
+                        1.0,
+                        0.0,
+                        1.0 / 120.0,
+                        0.0,
+                    ],
+                    outputs=[delta_accumulator, delta_counter],
+                    device=wp.get_device(),
+                )
+                return delta_accumulator.numpy(), delta_counter.numpy()
+
+            delta_a, count_a = collide([0, 1, 2])
+            delta_b, count_b = collide([0, 2, 1])
+            np.testing.assert_allclose(delta_a, delta_b, atol=1.0e-6)
+            np.testing.assert_array_equal(count_a, count_b)
 
     def test_bimanual_graspers_follow_independent_controllers(self):
         right_trace = np.array(

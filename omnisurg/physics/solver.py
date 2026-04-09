@@ -5,7 +5,12 @@ from newton._src.solvers import SolverBase
 from newton._src.solvers.xpbd.kernels import apply_particle_deltas
 
 from omnisurg.physics.base import SimulationSystem, SolverStage
-from omnisurg.physics.kernels import apply_deltas_and_zero_accumulators, apply_fused_3_accumulators
+from omnisurg.physics.kernels import (
+    apply_deltas_and_zero_accumulators,
+    apply_displacements_from_base,
+    apply_fused_3_accumulators,
+    compute_position_deltas,
+)
 
 
 class Phase1Solver(SolverBase):
@@ -17,6 +22,7 @@ class Phase1Solver(SolverBase):
         self._particle_delta_counter = 0
         self.systems: list[SimulationSystem] = []
         self._elastic_systems: list[SimulationSystem] = []
+        self._truncation_systems: list[SimulationSystem] = []
         self._projection_systems: list[SimulationSystem] = []
         self._fused_accumulators: list[tuple[wp.array, wp.array]] | None = None
 
@@ -24,6 +30,7 @@ class Phase1Solver(SolverBase):
         if n:
             self._particle_q_init = wp.zeros(n, dtype=wp.vec3f, device=model.device)
             self._particle_deltas = wp.zeros(n, dtype=wp.vec3f, device=model.device)
+            self._prediction_displacements = wp.zeros(n, dtype=wp.vec3f, device=model.device)
 
     def register_system(self, system: SimulationSystem):
         system.initialize(self.model)
@@ -33,6 +40,7 @@ class Phase1Solver(SolverBase):
 
     def _refresh_system_layout(self):
         self._elastic_systems = []
+        self._truncation_systems = []
         self._projection_systems = []
         elastic_accumulators = []
 
@@ -41,6 +49,8 @@ class Phase1Solver(SolverBase):
             system.deferred_apply = values is not None
             if system.stage == SolverStage.PROJECTION:
                 self._projection_systems.append(system)
+            elif system.stage == SolverStage.TRUNCATION:
+                self._truncation_systems.append(system)
             else:
                 self._elastic_systems.append(system)
                 if values is not None:
@@ -74,6 +84,7 @@ class Phase1Solver(SolverBase):
         self._particle_deltas.zero_()
 
         self.integrate_particles(model, state_in, state_out, dt)
+        self._apply_prediction_truncation(model, state_in, state_out, dt)
 
         particle_q = state_out.particle_q
         particle_qd = state_out.particle_qd
@@ -98,6 +109,15 @@ class Phase1Solver(SolverBase):
                     )
 
             self._apply_fused(model)
+            self._apply_truncation_stage(
+                model,
+                state_in,
+                state_out,
+                particle_q,
+                particle_qd,
+                dt,
+                iteration,
+            )
 
             particle_q, particle_qd = self.apply_particle_deltas(
                 model,
@@ -178,6 +198,63 @@ class Phase1Solver(SolverBase):
 
         return particle_q, particle_qd
 
+    def _apply_prediction_truncation(
+        self,
+        model: Model,
+        state_in: State,
+        state_out: State,
+        dt: float,
+    ):
+        if not self._truncation_systems or not any(system.enabled for system in self._truncation_systems):
+            return
+
+        wp.launch(
+            kernel=compute_position_deltas,
+            dim=model.particle_count,
+            inputs=[self._particle_q_init, state_out.particle_q],
+            outputs=[self._prediction_displacements],
+            device=model.device,
+        )
+
+        for system in self._truncation_systems:
+            if system.enabled:
+                system.truncate_prediction(
+                    model,
+                    state_in,
+                    state_out,
+                    self._particle_q_init,
+                    self._prediction_displacements,
+                    dt,
+                )
+
+        self._rewrite_particle_state_from_base(model, state_out, self._prediction_displacements, dt)
+
+    def _apply_truncation_stage(
+        self,
+        model: Model,
+        state_in: State,
+        state_out: State,
+        particle_q: wp.array,
+        particle_qd: wp.array,
+        dt: float,
+        iteration: int,
+    ):
+        if not self._truncation_systems or not any(system.enabled for system in self._truncation_systems):
+            return
+
+        for system in self._truncation_systems:
+            if system.enabled:
+                system.truncate_deltas(
+                    model,
+                    state_in,
+                    state_out,
+                    particle_q,
+                    particle_qd,
+                    self._particle_deltas,
+                    dt,
+                    iteration,
+                )
+
     def _apply_fused(self, model: Model):
         accumulators = self._fused_accumulators or []
         if len(accumulators) == 3:
@@ -240,3 +317,24 @@ class Phase1Solver(SolverBase):
         )
 
         return new_particle_q, new_particle_qd
+
+    def _rewrite_particle_state_from_base(
+        self,
+        model: Model,
+        state_out: State,
+        displacements: wp.array,
+        dt: float,
+    ):
+        wp.launch(
+            kernel=apply_displacements_from_base,
+            dim=model.particle_count,
+            inputs=[
+                self._particle_q_init,
+                model.particle_flags,
+                displacements,
+                dt,
+                model.particle_max_velocity,
+            ],
+            outputs=[state_out.particle_q, state_out.particle_qd],
+            device=model.device,
+        )

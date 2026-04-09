@@ -9,6 +9,11 @@ class SimulationConfig:
     substeps: int = 16
     fps: int = 120
     constraint_iterations: int = 1
+    grasper_collision_mode: str = "projection"
+    grasper_collision_motion_samples: int = 4
+    grasper_collision_margin: float = 0.002
+    grasper_truncation_safety: float = 0.90
+    grasper_truncate_prediction: bool = True
     frame_dt: float = field(init=False)
     substep_dt: float = field(init=False)
 

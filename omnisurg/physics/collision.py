@@ -3,10 +3,35 @@ from newton._src.geometry.kernels import triangle_closest_point
 
 
 @wp.func
-def triangle_normal(v0: wp.vec3f, v1: wp.vec3f, v2: wp.vec3f) -> wp.vec3f:
-    edge1 = v1 - v0
-    edge2 = v2 - v0
-    return wp.normalize(wp.cross(edge1, edge2))
+def double_sided_fallback_dir(
+    v0: wp.vec3f,
+    v1: wp.vec3f,
+    v2: wp.vec3f,
+    contact_point: wp.vec3f,
+    reference_dir: wp.vec3f,
+) -> wp.vec3f:
+    if wp.length_sq(reference_dir) > 1.0e-12:
+        return wp.normalize(reference_dir)
+
+    centroid = (v0 + v1 + v2) / 3.0
+    centroid_dir = centroid - contact_point
+    if wp.length_sq(centroid_dir) > 1.0e-12:
+        return wp.normalize(centroid_dir)
+
+    d0 = v0 - contact_point
+    d1 = v1 - contact_point
+    d2 = v2 - contact_point
+
+    best = d0
+    if wp.length_sq(d1) > wp.length_sq(best):
+        best = d1
+    if wp.length_sq(d2) > wp.length_sq(best):
+        best = d2
+
+    if wp.length_sq(best) > 1.0e-12:
+        return wp.normalize(best)
+
+    return wp.vec3f(1.0, 0.0, 0.0)
 
 
 @wp.kernel
@@ -60,7 +85,13 @@ def collide_triangles_vs_sphere(
     if dist > 1e-8:
         correction_dir = to_sphere / dist
     else:
-        correction_dir = triangle_normal(p1, p2, p3)
+        correction_dir = double_sided_fallback_dir(
+            p1,
+            p2,
+            p3,
+            sphere_pos,
+            -((velocities[t1] + velocities[t2] + velocities[t3]) / 3.0),
+        )
 
     total_correction = correction_dir * penetration
     d1 = total_correction * (w1 / weight)
