@@ -12,5 +12,7 @@ wheels/
 # Local runtime/test artifacts
 .warp_cache/
 .tmp_tests/
+*.nsys-rep
+*.sqlite
 
 docs/

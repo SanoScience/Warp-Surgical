@@ -30,6 +30,16 @@ from omnisurg.input.sources import LiveMiniMouSource
 from omnisurg.scene_builder import build_scene
 
 
+SYNTHETIC_PATCH_ASSETS = {
+    "cloth_regular_low": {"vertices": 49, "edges": 120, "tris": 72},
+    "cloth_regular_mid": {"vertices": 169, "edges": 456, "tris": 288},
+    "cloth_regular_high": {"vertices": 625, "edges": 1776, "tris": 1152},
+    "cloth_irregular_low": {"vertices": 49, "edges": 120, "tris": 72},
+    "cloth_irregular_mid": {"vertices": 169, "edges": 456, "tris": 288},
+    "cloth_irregular_high": {"vertices": 625, "edges": 1776, "tris": 1152},
+}
+
+
 def _live_args(**overrides):
     values = {
         "right_input_backend": "openhaptics",
@@ -304,6 +314,56 @@ class TestPhaseRuntime(unittest.TestCase):
         self.assertEqual(asset.mesh_ranges["gallbladder"].vertex_start, 4674)
         self.assertEqual(asset.uvs.shape, (5612, 2))
 
+    def test_synthetic_patch_asset_loading(self):
+        for asset_name, expected in SYNTHETIC_PATCH_ASSETS.items():
+            with self.subTest(asset=asset_name):
+                asset = load_tet_asset(asset_name)
+                self.assertEqual(int(asset.rest_positions.shape[0]), expected["vertices"])
+                self.assertEqual(int(asset.edge_indices.shape[0]), expected["edges"])
+                self.assertEqual(int(asset.surface_tri_indices.shape[0]), expected["tris"])
+                self.assertEqual(int(asset.tet_indices.shape[0]), 0)
+                self.assertIsNotNone(asset.uvs)
+                self.assertEqual(asset.uvs.shape[0], expected["vertices"])
+
+    def test_synthetic_patch_assets_are_horizontal_and_above_ground(self):
+        for asset_name in ("cloth_regular_low", "cloth_irregular_mid"):
+            with self.subTest(asset=asset_name):
+                asset = load_tet_asset(asset_name)
+                scene_config = SceneConfig(asset_name=asset_name)
+
+                self.assertLess(float(np.ptp(asset.rest_positions[:, 1])), 1.0e-6)
+                self.assertGreater(float(np.ptp(asset.rest_positions[:, 0])), 0.0)
+                self.assertGreater(float(np.ptp(asset.rest_positions[:, 2])), 0.0)
+
+                translated_y = asset.rest_positions[:, 1] + float(scene_config.translation[1])
+                self.assertGreater(float(np.min(translated_y)), 0.0)
+
+    def test_synthetic_patch_assets_wind_upward(self):
+        for asset_name in ("cloth_regular_low", "cloth_irregular_mid"):
+            with self.subTest(asset=asset_name):
+                asset = load_tet_asset(asset_name)
+                tri = asset.surface_tri_indices[0]
+                p0 = asset.rest_positions[tri[0]]
+                p1 = asset.rest_positions[tri[1]]
+                p2 = asset.rest_positions[tri[2]]
+                normal = np.cross(p1 - p0, p2 - p0)
+                self.assertGreater(float(normal[1]), 0.0)
+
+    def test_synthetic_patch_scene_pins_only_four_corners(self):
+        expected_corner_ids = {0, 6, 42, 48}
+        for asset_name in ("cloth_regular_low", "cloth_irregular_low"):
+            with self.subTest(asset=asset_name):
+                scene_config = SceneConfig(asset_name=asset_name)
+                self.assertIsNone(scene_config.pin_center)
+
+                with wp.ScopedDevice("cpu"):
+                    asset = load_tet_asset(asset_name)
+                    scene = build_scene(asset, scene_config, HapticConfig(), wp.get_device())
+
+                inv_masses = scene.model.particle_inv_mass.numpy()
+                pinned_ids = {idx for idx, inv_mass in enumerate(inv_masses) if float(inv_mass) == 0.0}
+                self.assertEqual(pinned_ids, expected_corner_ids)
+
     def test_scene_construction_single_asset(self):
         with wp.ScopedDevice("cpu"):
             asset = load_tet_asset("liver")
@@ -334,6 +394,24 @@ class TestPhaseRuntime(unittest.TestCase):
         self.assertEqual(scene.mesh_ranges["gallbladder"].tet_count, 3068)
         self.assertIsNotNone(scene.uvs)
         self.assertEqual(scene.uvs.shape[0], 5612)
+
+    def test_scene_construction_synthetic_patch_assets(self):
+        for asset_name, expected in (
+            ("cloth_regular_low", SYNTHETIC_PATCH_ASSETS["cloth_regular_low"]),
+            ("cloth_irregular_mid", SYNTHETIC_PATCH_ASSETS["cloth_irregular_mid"]),
+        ):
+            with self.subTest(asset=asset_name):
+                with wp.ScopedDevice("cpu"):
+                    asset = load_tet_asset(asset_name)
+                    scene = build_scene(asset, SceneConfig(asset_name=asset_name), HapticConfig(), wp.get_device())
+
+                self.assertEqual(scene.model.particle_count, expected["vertices"])
+                self.assertEqual(scene.model.spring_count, expected["edges"])
+                self.assertEqual(scene.model.tri_count, expected["tris"])
+                self.assertEqual(scene.tetrahedra_wp.shape[0], 0)
+                self.assertEqual(len(scene.model.tri_points_connectors), 0)
+                self.assertIn(asset_name, scene.surface_meshes)
+                self.assertEqual(scene.surface_meshes[asset_name].shape[0], expected["tris"] * 3)
 
     def test_grasper_asset_loading(self):
         with wp.ScopedDevice("cpu"):
@@ -438,6 +516,30 @@ class TestPhaseRuntime(unittest.TestCase):
                 runtime.close()
             if replay_path.exists():
                 replay_path.unlink()
+
+    def test_headless_runtime_smoke_synthetic_patch_assets(self):
+        for asset_name in ("cloth_regular_low", "cloth_irregular_low"):
+            runtime = None
+            try:
+                with self.subTest(asset=asset_name):
+                    with wp.ScopedDevice("cpu"):
+                        runtime = Runtime(
+                            SimulationConfig(substeps=2, fps=30, constraint_iterations=1),
+                            SceneConfig(asset_name=asset_name),
+                            HapticConfig(),
+                            ViewerConfig(backend="headless", textures_enabled=False),
+                            BoundsConfig(),
+                        )
+
+                        runtime.step()
+                        runtime.render()
+
+                        self.assertTrue(runtime.is_running())
+                        self.assertEqual(runtime.model.particle_count, SYNTHETIC_PATCH_ASSETS[asset_name]["vertices"])
+                        self.assertFalse(runtime.mesh_textures)
+            finally:
+                if runtime is not None:
+                    runtime.close()
 
     def test_headless_replay_runtime_smoke_multi_organ(self):
         trace = np.array(

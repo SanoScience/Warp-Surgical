@@ -2,6 +2,12 @@ from dataclasses import dataclass, field
 
 
 SCENE_PRESETS: tuple[str, ...] = ("single", "chole")
+DEFAULT_PIN_CENTER = (0.5, 1.5, -5.0)
+DEFAULT_PIN_RADIUS = 1.0
+
+
+def is_synthetic_patch_asset_name(asset_name: str) -> bool:
+    return asset_name.startswith("cloth_regular_") or asset_name.startswith("cloth_irregular_")
 
 
 @dataclass
@@ -36,8 +42,20 @@ class SceneConfig:
     tet_stiffness_lambda: float = 1e4
     tet_dampen: float = 0.2
     volume_stiffness: float = 0.1
-    pin_center: tuple | None = (0.5, 1.5, -5.0)
-    pin_radius: float = 1.0
+    pin_center: tuple | None = DEFAULT_PIN_CENTER
+    pin_radius: float = DEFAULT_PIN_RADIUS
+    pinned_vertex_ids: tuple[int, ...] = ()
+
+    def __post_init__(self):
+        if (
+            self.scene_preset == "single"
+            and is_synthetic_patch_asset_name(self.asset_name)
+            and self.pin_center == DEFAULT_PIN_CENTER
+            and self.pin_radius == DEFAULT_PIN_RADIUS
+            and not self.pinned_vertex_ids
+        ):
+            # Synthetic cloth patches use exact corner pins instead of the default liver pin sphere.
+            self.pin_center = None
 
 
 @dataclass

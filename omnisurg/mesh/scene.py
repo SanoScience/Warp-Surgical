@@ -4,7 +4,7 @@ import newton
 import numpy as np
 import warp as wp
 
-from omnisurg.config import HapticConfig, SceneConfig
+from omnisurg.config import HapticConfig, SceneConfig, is_synthetic_patch_asset_name
 from omnisurg.input.haptic_proxy import HapticProxyState, create_haptic_proxy_state
 from omnisurg.mesh.assets import MeshRange, TetMeshAsset
 from omnisurg.mesh.types import Tetrahedron, TriPointsConnector, compute_tet_volume
@@ -30,6 +30,33 @@ def _is_pinned(pos: np.ndarray, pin_center: tuple | None, pin_radius: float) -> 
     return float(np.linalg.norm(pos - center)) < pin_radius
 
 
+def _default_pinned_vertex_ids(asset: TetMeshAsset, scene: SceneConfig) -> tuple[int, ...]:
+    if scene.pinned_vertex_ids:
+        return tuple(int(vertex_id) for vertex_id in scene.pinned_vertex_ids)
+    if not is_synthetic_patch_asset_name(asset.name):
+        return ()
+    if asset.rest_positions.shape[0] == 0:
+        return ()
+
+    positions = asset.rest_positions
+    x_coords = positions[:, 0]
+    z_coords = positions[:, 2]
+    corner_targets = (
+        (float(np.min(x_coords)), float(np.min(z_coords))),
+        (float(np.min(x_coords)), float(np.max(z_coords))),
+        (float(np.max(x_coords)), float(np.min(z_coords))),
+        (float(np.max(x_coords)), float(np.max(z_coords))),
+    )
+
+    corner_ids: set[int] = set()
+    for target_x, target_z in corner_targets:
+        dx = x_coords - target_x
+        dz = z_coords - target_z
+        corner_ids.add(int(np.argmin(dx * dx + dz * dz)))
+
+    return tuple(sorted(corner_ids))
+
+
 def build_scene(
     asset: TetMeshAsset,
     scene: SceneConfig,
@@ -38,10 +65,11 @@ def build_scene(
 ) -> SceneData:
     builder = newton.ModelBuilder(up_axis=newton.Axis.Y)
     translation = np.array(scene.translation, dtype=np.float32)
+    pinned_vertex_ids = set(_default_pinned_vertex_ids(asset, scene))
 
     for i in range(len(asset.rest_positions)):
         translated = asset.rest_positions[i] + translation
-        pinned = _is_pinned(translated, scene.pin_center, scene.pin_radius)
+        pinned = i in pinned_vertex_ids or _is_pinned(translated, scene.pin_center, scene.pin_radius)
         mass = 0.0 if pinned else scene.particle_mass
         builder.add_particle(
             wp.vec3(float(translated[0]), float(translated[1]), float(translated[2])),
