@@ -10,7 +10,7 @@ from newton._src.geometry.kernels import triangle_closest_point
 
 from omnisurg.config import BoundsConfig, HapticConfig, SceneConfig, SimulationConfig, ViewerConfig
 from omnisurg.grasper_runtime import load_kinematic_grasper
-from omnisurg.input.haptic_collision import HapticSphereCollisionSystem
+from omnisurg.input.haptic_collision import HapticSphereCollisionSystem, HapticSphereTruncationSystem
 from omnisurg.input.haptic_proxy import HapticProxyState, create_vec3_staging_buffer, scale_position, update_haptic_proxy
 from omnisurg.input.sources import InputRig, InputSource
 from omnisurg.mesh.assets import load_scene_asset
@@ -38,6 +38,7 @@ GRASPER_COLLISION_MARGIN = 0.002
 GRASPER_COLLISION_TRUNCATION_SAFETY = 0.90
 GRASPER_COLLISION_MODES = ("projection", "truncation", "hybrid")
 GRASPER_COLLISION_MODE_LABELS = ("Projection", "Truncation", "Hybrid")
+HAPTIC_VISUAL_RADIUS_BASELINE = 0.025
 PRIMARY_CONTROLLER_ID = "right"
 TEXTURE_CANDIDATES = {
     "liver": (
@@ -592,6 +593,7 @@ class Runtime:
         self.uvs = scene.uvs
         self.mesh_textures = _resolve_mesh_textures(self.surface_meshes.keys())
         self.proxy: HapticProxyState = scene.haptic_proxy
+        self.haptic_visual_radius = 0.5 * (HAPTIC_VISUAL_RADIUS_BASELINE + float(self.proxy.radius))
         surface_vertex_ids_np = np.unique(self.model.tri_indices.numpy().reshape(-1)).astype(np.int32, copy=False)
         self.surface_vertex_ids = wp.array(surface_vertex_ids_np, dtype=wp.int32, device=self.device)
 
@@ -615,6 +617,7 @@ class Runtime:
         self._pending_spring_stiffness = self.spring_stiffness
         self._pending_spring_damping = self.spring_damping
         self._pending_particle_max_velocity = self.particle_max_velocity
+        self._pending_enable_grasper_collisions = self.enable_grasper_collisions
         self._pending_grasper_collision_mode = self.grasper_collision_mode
         self._pending_grasper_collision_motion_samples = self.grasper_collision_motion_samples
         self._pending_grasper_collision_margin = self.grasper_collision_margin
@@ -633,6 +636,15 @@ class Runtime:
         self.distance_system = DistanceConstraintSystem(priority=50)
         self.volume_system = VolumeConstraintSystem(stiffness=self.volume_stiffness, priority=60)
         self.haptic_collision_system = HapticSphereCollisionSystem(self.proxy, priority=80)
+        self.haptic_truncation_system = HapticSphereTruncationSystem(
+            self.proxy,
+            surface_vertex_ids=self.surface_vertex_ids,
+            motion_samples=self.grasper_collision_motion_samples,
+            contact_margin=self.grasper_collision_margin,
+            safety=self.grasper_truncation_safety,
+            truncate_prediction=self.grasper_truncate_prediction,
+            priority=80,
+        )
         self.bounds_system = BoundsCollisionSystem(
             bounds_min=wp.vec3(*bounds_config.bounds_min),
             bounds_max=wp.vec3(*bounds_config.bounds_max),
@@ -646,6 +658,7 @@ class Runtime:
         else:
             self.triangle_point_system = None
         self.solver.register_system(self.haptic_collision_system)
+        self.solver.register_system(self.haptic_truncation_system)
         self.solver.register_system(self.bounds_system)
 
         self.renderer = RenderBridge(viewer_config, self.model, self.device)
@@ -717,12 +730,18 @@ class Runtime:
 
     def _apply_grasper_collision_mode(self, mode: str):
         self.grasper_collision_mode = _clamp_grasper_collision_mode(mode)
-        projection_enabled = self.enable_grasper_collisions and self.grasper_collision_mode in ("projection", "hybrid")
-        truncation_enabled = self.enable_grasper_collisions and self.grasper_collision_mode in ("truncation", "hybrid")
-        self.grasper_collision_system.enabled = projection_enabled
-        self.grasper_truncation_system.enabled = truncation_enabled
+        projection_enabled = self.grasper_collision_mode in ("projection", "hybrid")
+        truncation_enabled = self.grasper_collision_mode in ("truncation", "hybrid")
+        self.haptic_collision_system.enabled = projection_enabled
+        self.haptic_truncation_system.enabled = truncation_enabled
+        self.grasper_collision_system.enabled = self.enable_grasper_collisions and projection_enabled
+        self.grasper_truncation_system.enabled = self.enable_grasper_collisions and truncation_enabled
 
     def _sync_grasper_collision_settings(self):
+        self.haptic_truncation_system.motion_samples = self.grasper_collision_motion_samples
+        self.haptic_truncation_system.contact_margin = self.grasper_collision_margin
+        self.haptic_truncation_system.safety = self.grasper_truncation_safety
+        self.haptic_truncation_system.truncate_prediction_enabled = self.grasper_truncate_prediction
         self.grasper_collision_system.motion_samples = self.grasper_collision_motion_samples
         self.grasper_collision_system.contact_margin = self.grasper_collision_margin
         self.grasper_collision_system._rebuild_chain_cull_radii()
@@ -791,6 +810,7 @@ class Runtime:
             or _float_changed(self._pending_spring_stiffness, self.spring_stiffness)
             or _float_changed(self._pending_spring_damping, self.spring_damping)
             or _float_changed(self._pending_particle_max_velocity, self.particle_max_velocity)
+            or self._pending_enable_grasper_collisions != self.enable_grasper_collisions
             or self._pending_grasper_collision_mode != self.grasper_collision_mode
             or self._pending_grasper_collision_motion_samples != self.grasper_collision_motion_samples
             or _float_changed(self._pending_grasper_collision_margin, self.grasper_collision_margin)
@@ -804,6 +824,7 @@ class Runtime:
             or self._pending_constraint_iterations != self.iterations
             or _float_changed(self._pending_volume_stiffness, self.volume_stiffness)
             or _float_changed(self._pending_particle_max_velocity, self.particle_max_velocity)
+            or self._pending_enable_grasper_collisions != self.enable_grasper_collisions
             or self._pending_grasper_collision_mode != self.grasper_collision_mode
             or self._pending_grasper_collision_motion_samples != self.grasper_collision_motion_samples
             or _float_changed(self._pending_grasper_collision_margin, self.grasper_collision_margin)
@@ -818,6 +839,7 @@ class Runtime:
         spring_stiffness = max(0.0, float(self._pending_spring_stiffness))
         spring_damping = max(0.0, float(self._pending_spring_damping))
         particle_max_velocity = max(0.1, float(self._pending_particle_max_velocity))
+        enable_grasper_collisions = bool(self._pending_enable_grasper_collisions)
         grasper_collision_mode = _clamp_grasper_collision_mode(self._pending_grasper_collision_mode)
         grasper_collision_motion_samples = max(1, int(self._pending_grasper_collision_motion_samples))
         grasper_collision_margin = max(0.0, float(self._pending_grasper_collision_margin))
@@ -858,6 +880,12 @@ class Runtime:
         if _float_changed(particle_max_velocity, self.particle_max_velocity):
             self.particle_max_velocity = particle_max_velocity
             self.model.particle_max_velocity = particle_max_velocity
+            rebuild_graph = True
+
+        if enable_grasper_collisions != self.enable_grasper_collisions:
+            self.enable_grasper_collisions = enable_grasper_collisions
+            self.scene_config.enable_grasper_collisions = enable_grasper_collisions
+            self._apply_grasper_collision_mode(self.grasper_collision_mode)
             rebuild_graph = True
 
         if grasper_collision_mode != self.grasper_collision_mode:
@@ -965,6 +993,7 @@ class Runtime:
                     self.proxy.center_prev,
                     self.proxy.center_target,
                     self.proxy.center_current,
+                    self.proxy.center_scaled_prev,
                     self.proxy.center_scaled,
                     self.state_0.body_q,
                     self.state_0.body_qd,
@@ -1030,56 +1059,58 @@ class Runtime:
 
         ui.separator()
         ui.text("Collision")
-        if not self.enable_grasper_collisions:
-            ui.text("Jaw collisions disabled for this scene.")
+        changed, enable_grasper_collisions = ui.checkbox("Enable Jaw Collisions", self._pending_enable_grasper_collisions)
+        if changed:
+            self._pending_enable_grasper_collisions = enable_grasper_collisions
+        if not self._pending_enable_grasper_collisions:
             ui.text("Using only the haptic proxy sphere.")
-        else:
-            changed, collision_mode_index = ui.slider_int(
-                "Jaw Collision Mode",
-                _grasper_collision_mode_index(self._pending_grasper_collision_mode),
-                0,
-                len(GRASPER_COLLISION_MODES) - 1,
-            )
-            if changed:
-                self._pending_grasper_collision_mode = _grasper_collision_mode_from_index(collision_mode_index)
-            ui.text("0 Projection | 1 Truncation | 2 Hybrid")
-            ui.text(f"Current: {GRASPER_COLLISION_MODE_LABELS[_grasper_collision_mode_index(self._pending_grasper_collision_mode)]}")
 
-            changed, grasper_motion_samples = ui.slider_int(
-                "Jaw Motion Samples",
-                self._pending_grasper_collision_motion_samples,
-                1,
-                16,
-            )
-            if changed:
-                self._pending_grasper_collision_motion_samples = grasper_motion_samples
+        changed, collision_mode_index = ui.slider_int(
+            "Sphere Collision Mode",
+            _grasper_collision_mode_index(self._pending_grasper_collision_mode),
+            0,
+            len(GRASPER_COLLISION_MODES) - 1,
+        )
+        if changed:
+            self._pending_grasper_collision_mode = _grasper_collision_mode_from_index(collision_mode_index)
+        ui.text("0 Projection | 1 Truncation | 2 Hybrid")
+        ui.text(f"Current: {GRASPER_COLLISION_MODE_LABELS[_grasper_collision_mode_index(self._pending_grasper_collision_mode)]}")
 
-            changed, grasper_collision_margin = ui.slider_float(
-                "Jaw Collision Margin",
-                self._pending_grasper_collision_margin,
-                0.0,
-                0.02,
-                "%.3f",
-            )
-            if changed:
-                self._pending_grasper_collision_margin = grasper_collision_margin
+        changed, grasper_motion_samples = ui.slider_int(
+            "Sphere Motion Samples",
+            self._pending_grasper_collision_motion_samples,
+            1,
+            16,
+        )
+        if changed:
+            self._pending_grasper_collision_motion_samples = grasper_motion_samples
 
-            changed, grasper_truncation_safety = ui.slider_float(
-                "Jaw Truncation Safety",
-                self._pending_grasper_truncation_safety,
-                0.5,
-                1.0,
-                "%.2f",
-            )
-            if changed:
-                self._pending_grasper_truncation_safety = grasper_truncation_safety
+        changed, grasper_collision_margin = ui.slider_float(
+            "Sphere Collision Margin",
+            self._pending_grasper_collision_margin,
+            0.0,
+            0.02,
+            "%.3f",
+        )
+        if changed:
+            self._pending_grasper_collision_margin = grasper_collision_margin
 
-            changed, truncate_prediction = ui.checkbox(
-                "Truncate Prediction Step",
-                self._pending_grasper_truncate_prediction,
-            )
-            if changed:
-                self._pending_grasper_truncate_prediction = truncate_prediction
+        changed, grasper_truncation_safety = ui.slider_float(
+            "Sphere Truncation Safety",
+            self._pending_grasper_truncation_safety,
+            0.5,
+            1.0,
+            "%.2f",
+        )
+        if changed:
+            self._pending_grasper_truncation_safety = grasper_truncation_safety
+
+        changed, truncate_prediction = ui.checkbox(
+            "Truncate Prediction Step",
+            self._pending_grasper_truncate_prediction,
+        )
+        if changed:
+            self._pending_grasper_truncate_prediction = truncate_prediction
 
         preview_dt_ms = (self.sim_config.frame_dt / float(max(1, int(self._pending_substeps)))) * 1000.0
         ui.text(f"Substep dt: {preview_dt_ms:.3f} ms")
@@ -1223,7 +1254,7 @@ class Runtime:
                         )
 
             if self.controller_states[PRIMARY_CONTROLLER_ID].active:
-                self.renderer.draw_haptic_sphere(self._haptic_render_pos)
+                self.renderer.draw_haptic_sphere(self._haptic_render_pos, radius=self.haptic_visual_radius)
             for controller_id, color in CONTROLLER_ROOT_COLORS.items():
                 state = self.controller_states[controller_id]
                 if state.active and state.render_position is not None:

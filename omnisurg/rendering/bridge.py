@@ -395,15 +395,22 @@ class RenderBridge:
         radii, colors = self._normalize_point_inputs(name, points, radii, colors)
         self._renderer.log_points(name, points, radii, colors)
 
-    def draw_haptic_sphere(self, position: wp.array):
+    def draw_haptic_sphere(self, position: wp.array, radius: float | None = None):
         if self._backend == "headless":
             return
 
+        haptic_radius = self.gpu.haptic_radius if radius is None else radius
+        haptic_radius, haptic_color = self._normalize_point_inputs(
+            "haptic_sphere",
+            position,
+            haptic_radius,
+            self.gpu.haptic_color,
+        )
         self._renderer.log_points(
             "haptic_sphere",
             position,
-            self.gpu.haptic_radius,
-            self.gpu.haptic_color,
+            haptic_radius,
+            haptic_color,
         )
 
     def set_input_callbacks(self, on_key_press=None, on_key_release=None):

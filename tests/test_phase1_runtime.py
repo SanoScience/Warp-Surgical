@@ -19,6 +19,7 @@ import warp as wp
 
 from omnisurg import BoundsConfig, HapticConfig, Runtime, SceneConfig, SimulationConfig, ViewerConfig
 import omnisurg.main as omnisurg_main
+import omnisurg.input.haptic_collision as haptic_collision_module
 import omnisurg.physics.collision as collision_module
 import omnisurg.runtime as runtime_module
 from omnisurg.assets import load_scene_asset, load_tet_asset
@@ -430,8 +431,32 @@ class TestPhaseRuntime(unittest.TestCase):
                 self.assertFalse(runtime.show_grasper_mesh)
                 self.assertFalse(runtime.enable_grasper_collisions)
                 self.assertTrue(runtime.haptic_collision_system.enabled)
+                self.assertFalse(runtime.haptic_truncation_system.enabled)
                 self.assertFalse(runtime.grasper_collision_system.enabled)
                 self.assertFalse(runtime.grasper_truncation_system.enabled)
+                self.assertAlmostEqual(runtime.haptic_visual_radius, 0.0625)
+
+                runtime._pending_grasper_collision_mode = "truncation"
+                self.assertTrue(runtime._has_pending_solver_changes())
+                self.assertTrue(runtime._pending_graph_rebuild_needed())
+
+                runtime._apply_pending_solver_settings()
+
+                self.assertFalse(runtime.enable_grasper_collisions)
+                self.assertFalse(runtime.haptic_collision_system.enabled)
+                self.assertTrue(runtime.haptic_truncation_system.enabled)
+                self.assertFalse(runtime.grasper_collision_system.enabled)
+                self.assertFalse(runtime.grasper_truncation_system.enabled)
+
+                runtime._pending_enable_grasper_collisions = True
+                runtime._pending_grasper_collision_mode = "hybrid"
+                runtime._apply_pending_solver_settings()
+
+                self.assertTrue(runtime.enable_grasper_collisions)
+                self.assertTrue(runtime.haptic_collision_system.enabled)
+                self.assertTrue(runtime.haptic_truncation_system.enabled)
+                self.assertTrue(runtime.grasper_collision_system.enabled)
+                self.assertTrue(runtime.grasper_truncation_system.enabled)
         finally:
             if runtime is not None:
                 runtime.close()
@@ -494,6 +519,38 @@ class TestPhaseRuntime(unittest.TestCase):
             _name, _points, radii, colors = bridge._renderer.calls[0]
             np.testing.assert_allclose(radii.numpy(), np.array([0.025], dtype=np.float32))
             np.testing.assert_allclose(colors.numpy(), np.array([[0.18, 0.78, 1.0]], dtype=np.float32))
+
+    def test_render_bridge_haptic_sphere_accepts_scalar_radius(self):
+        class FakeRenderer:
+            def __init__(self):
+                self.calls = []
+
+            def log_points(self, name, points, radii, colors):
+                self.calls.append((name, points, radii, colors))
+
+        with wp.ScopedDevice("cpu"):
+            bridge = RenderBridge.__new__(RenderBridge)
+            bridge._backend = "gl"
+            bridge._renderer = FakeRenderer()
+            bridge.gpu = type(
+                "GpuStub",
+                (),
+                {
+                    "device": wp.get_device(),
+                    "haptic_radius": wp.array([0.025], dtype=wp.float32, device=wp.get_device()),
+                    "haptic_color": wp.array([[0.8, 0.2, 0.2]], dtype=wp.vec3f, device=wp.get_device()),
+                },
+            )()
+            bridge._point_radii = {}
+            bridge._point_colors = {}
+            points = wp.zeros(1, dtype=wp.vec3, device=wp.get_device())
+
+            bridge.draw_haptic_sphere(points, radius=0.0625)
+
+            self.assertEqual(len(bridge._renderer.calls), 1)
+            _name, _points, radii, colors = bridge._renderer.calls[0]
+            np.testing.assert_allclose(radii.numpy(), np.array([0.0625], dtype=np.float32))
+            np.testing.assert_allclose(colors.numpy(), np.array([[0.8, 0.2, 0.2]], dtype=np.float32))
 
     def test_headless_replay_runtime_smoke_single_asset(self):
         trace = np.array(
@@ -860,6 +917,38 @@ class TestPhaseRuntime(unittest.TestCase):
 
             self.assertGreater(float(particle_deltas.numpy()[0][0]), -2.0)
 
+    def test_haptic_iteration_truncation_reduces_elastic_delta(self):
+        with wp.ScopedDevice("cpu"):
+            active_flag = wp.array([int(runtime_module.ParticleFlags.ACTIVE)], dtype=wp.int32)
+            model = SimpleNamespace(
+                particle_count=1,
+                tri_count=1,
+                particle_flags=active_flag,
+                device=wp.get_device(),
+            )
+            proxy = SimpleNamespace(
+                center_scaled_prev=wp.array([[0.0, 0.0, 0.0]], dtype=wp.vec3f),
+                center_scaled=wp.array([[0.0, 0.0, 0.0]], dtype=wp.vec3f),
+                radius=1.0,
+            )
+            system = haptic_collision_module.HapticSphereTruncationSystem(
+                proxy,
+                surface_vertex_ids=wp.array([0], dtype=wp.int32),
+                motion_samples=4,
+                contact_margin=0.0,
+                safety=0.9,
+                truncate_prediction=True,
+            )
+            system.initialize(model)
+
+            particle_q = wp.array([[2.0, 0.0, 0.0]], dtype=wp.vec3f)
+            particle_qd = wp.zeros(1, dtype=wp.vec3f)
+            particle_deltas = wp.array([[-2.0, 0.0, 0.0]], dtype=wp.vec3f)
+
+            system.truncate_deltas(model, None, None, particle_q, particle_qd, particle_deltas, 1.0 / 120.0, 0)
+
+            self.assertGreater(float(particle_deltas.numpy()[0][0]), -2.0)
+
     def test_runtime_grasper_collision_mode_wiring_and_pending_settings(self):
         runtime = None
         try:
@@ -873,6 +962,8 @@ class TestPhaseRuntime(unittest.TestCase):
                 )
 
                 self.assertEqual(runtime.grasper_collision_mode, "projection")
+                self.assertTrue(runtime.haptic_collision_system.enabled)
+                self.assertFalse(runtime.haptic_truncation_system.enabled)
                 self.assertTrue(runtime.grasper_collision_system.enabled)
                 self.assertFalse(runtime.grasper_truncation_system.enabled)
 
@@ -893,6 +984,12 @@ class TestPhaseRuntime(unittest.TestCase):
                 self.assertAlmostEqual(runtime.grasper_collision_margin, 0.005)
                 self.assertAlmostEqual(runtime.grasper_truncation_safety, 0.75)
                 self.assertFalse(runtime.grasper_truncate_prediction)
+                self.assertTrue(runtime.haptic_collision_system.enabled)
+                self.assertTrue(runtime.haptic_truncation_system.enabled)
+                self.assertEqual(runtime.haptic_truncation_system.motion_samples, 6)
+                self.assertAlmostEqual(runtime.haptic_truncation_system.contact_margin, 0.005)
+                self.assertAlmostEqual(runtime.haptic_truncation_system.safety, 0.75)
+                self.assertFalse(runtime.haptic_truncation_system.truncate_prediction_enabled)
                 self.assertTrue(runtime.grasper_collision_system.enabled)
                 self.assertTrue(runtime.grasper_truncation_system.enabled)
                 self.assertEqual(runtime.grasper_collision_system.motion_samples, 6)
@@ -907,6 +1004,8 @@ class TestPhaseRuntime(unittest.TestCase):
                 runtime._apply_pending_solver_settings()
 
                 self.assertEqual(runtime.grasper_collision_mode, "truncation")
+                self.assertFalse(runtime.haptic_collision_system.enabled)
+                self.assertTrue(runtime.haptic_truncation_system.enabled)
                 self.assertFalse(runtime.grasper_collision_system.enabled)
                 self.assertTrue(runtime.grasper_truncation_system.enabled)
         finally:

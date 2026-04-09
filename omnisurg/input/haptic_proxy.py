@@ -10,6 +10,7 @@ class HapticProxyState:
     center_prev: wp.array
     center_target: wp.array
     center_current: wp.array
+    center_scaled_prev: wp.array
     center_scaled: wp.array
     body_id: int
     radius: float
@@ -35,6 +36,7 @@ def create_haptic_proxy_state(
         center_prev=wp.array([raw], dtype=wp.vec3f, device=device),
         center_target=wp.array([raw], dtype=wp.vec3f, device=device),
         center_current=wp.array([raw], dtype=wp.vec3f, device=device),
+        center_scaled_prev=wp.array([scaled], dtype=wp.vec3f, device=device),
         center_scaled=wp.array([scaled], dtype=wp.vec3f, device=device),
         body_id=body_id,
         radius=radius,
@@ -52,6 +54,7 @@ def update_haptic_proxy(
     center_prev: wp.array(dtype=wp.vec3f),
     center_target: wp.array(dtype=wp.vec3f),
     center_current: wp.array(dtype=wp.vec3f),
+    center_scaled_prev: wp.array(dtype=wp.vec3f),
     center_scaled: wp.array(dtype=wp.vec3f),
     body_q: wp.array(dtype=wp.transformf),
     body_qd: wp.array(dtype=wp.spatial_vectorf),
@@ -66,6 +69,7 @@ def update_haptic_proxy(
     current = wp.lerp(center_prev[0], center_target[0], factor)
     center_current[0] = current
 
+    center_scaled_prev[0] = center_scaled[0]
     scaled = current * position_scale
     center_scaled[0] = scaled
 

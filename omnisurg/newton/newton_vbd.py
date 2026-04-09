@@ -157,6 +157,7 @@ class SoftBodySim:
                     self.proxy.center_prev,
                     self.proxy.center_target,
                     self.proxy.center_current,
+                    self.proxy.center_scaled_prev,
                     self.proxy.center_scaled,
                     self.state_0.body_q,
                     self.state_0.body_qd,
