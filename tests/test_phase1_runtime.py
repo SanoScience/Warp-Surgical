@@ -1,4 +1,5 @@
 import os
+import shutil
 import subprocess
 import sys
 import unittest
@@ -18,6 +19,7 @@ os.environ["WARP_CACHE_PATH"] = str(WARP_CACHE_DIR)
 import warp as wp
 
 from omnisurg import BoundsConfig, HapticConfig, Runtime, SceneConfig, SimulationConfig, ViewerConfig
+import omnisurg.haptic_feedback as haptic_feedback_module
 import omnisurg.main as omnisurg_main
 import omnisurg.input.haptic_collision as haptic_collision_module
 import omnisurg.physics.collision as collision_module
@@ -25,6 +27,7 @@ import omnisurg.runtime as runtime_module
 from omnisurg.assets import load_scene_asset, load_tet_asset
 from omnisurg.haptics import BimanualReplayRig, ReplayInputSource
 from omnisurg.instruments.grasper import load_kinematic_grasper
+from omnisurg.input.sources import MultiSourceRig
 from omnisurg.rendering.bridge import RenderBridge
 from omnisurg.input.follou import MiniMouController
 from omnisurg.input.sources import LiveMiniMouSource
@@ -53,6 +56,27 @@ def _live_args(**overrides):
     }
     values.update(overrides)
     return SimpleNamespace(**values)
+
+
+def _make_haptic_runtime_stub(preset_dir: Path):
+    runtime = runtime_module.Runtime.__new__(runtime_module.Runtime)
+    runtime.controller_states = {
+        runtime_module.PRIMARY_CONTROLLER_ID: SimpleNamespace(
+            sample_present=True,
+            scaled_position=np.zeros(3, dtype=np.float32),
+        )
+    }
+    runtime.sim_config = SimpleNamespace(frame_dt=0.1)
+    with mock.patch.object(runtime_module, "HAPTIC_PRESET_DIR", preset_dir):
+        runtime_module.Runtime._initialize_haptic_feedback(runtime)
+    return runtime
+
+
+def _prepare_test_subdir(name: str) -> Path:
+    path = TEST_TMP_DIR / name
+    shutil.rmtree(path, ignore_errors=True)
+    path.mkdir(parents=True, exist_ok=True)
+    return path
 
 
 class TestPhaseRuntime(unittest.TestCase):
@@ -1153,6 +1177,267 @@ class TestPhaseRuntime(unittest.TestCase):
             delta_b, count_b = collide([0, 2, 1])
             np.testing.assert_allclose(delta_a, delta_b, atol=1.0e-6)
             np.testing.assert_array_equal(count_a, count_b)
+
+    def test_haptic_collision_system_accumulates_opposite_reaction(self):
+        with wp.ScopedDevice("cpu"):
+            proxy = SimpleNamespace(
+                center_scaled=wp.array([[0.0, 0.0, 0.0]], dtype=wp.vec3f),
+                radius=0.1,
+                max_tri_extent=2.0,
+            )
+            system = haptic_collision_module.HapticSphereCollisionSystem(proxy)
+            model = SimpleNamespace(
+                particle_count=3,
+                tri_count=1,
+                particle_inv_mass=wp.array([1.0, 1.0, 1.0], dtype=wp.float32),
+                tri_indices=wp.array([[0, 1, 2]], dtype=wp.int32, ndim=2),
+                device=wp.get_device(),
+            )
+            system.initialize(model)
+
+            particle_q = wp.array(
+                [
+                    [-1.0, -1.0, 0.0],
+                    [1.0, -1.0, 0.0],
+                    [0.0, 1.0, 0.0],
+                ],
+                dtype=wp.vec3f,
+            )
+            particle_qd = wp.array(
+                [
+                    [0.0, 0.0, -1.0],
+                    [0.0, 0.0, -1.0],
+                    [0.0, 0.0, -1.0],
+                ],
+                dtype=wp.vec3f,
+            )
+            particle_deltas = wp.zeros(3, dtype=wp.vec3f)
+
+            system.clear_reaction()
+            system.solve_constraints(
+                model,
+                None,
+                None,
+                particle_q,
+                particle_qd,
+                particle_deltas,
+                None,
+                None,
+                None,
+                1.0 / 120.0,
+                0,
+            )
+
+            reaction, count = system.get_reaction_average()
+            particle_delta_sum = particle_deltas.numpy().sum(axis=0)
+
+            self.assertEqual(count, 1)
+            np.testing.assert_allclose(reaction, -particle_delta_sum, atol=1.0e-6)
+
+    def test_haptic_collision_system_reaction_is_zero_without_contact(self):
+        with wp.ScopedDevice("cpu"):
+            proxy = SimpleNamespace(
+                center_scaled=wp.array([[0.0, 0.0, 2.0]], dtype=wp.vec3f),
+                radius=0.1,
+                max_tri_extent=2.0,
+            )
+            system = haptic_collision_module.HapticSphereCollisionSystem(proxy)
+            model = SimpleNamespace(
+                particle_count=3,
+                tri_count=1,
+                particle_inv_mass=wp.array([1.0, 1.0, 1.0], dtype=wp.float32),
+                tri_indices=wp.array([[0, 1, 2]], dtype=wp.int32, ndim=2),
+                device=wp.get_device(),
+            )
+            system.initialize(model)
+
+            particle_q = wp.array(
+                [
+                    [-1.0, -1.0, 0.0],
+                    [1.0, -1.0, 0.0],
+                    [0.0, 1.0, 0.0],
+                ],
+                dtype=wp.vec3f,
+            )
+            particle_qd = wp.zeros(3, dtype=wp.vec3f)
+            particle_deltas = wp.zeros(3, dtype=wp.vec3f)
+
+            system.clear_reaction()
+            system.solve_constraints(
+                model,
+                None,
+                None,
+                particle_q,
+                particle_qd,
+                particle_deltas,
+                None,
+                None,
+                None,
+                1.0 / 120.0,
+                0,
+            )
+
+            reaction, count = system.get_reaction_average()
+
+            self.assertEqual(count, 0)
+            np.testing.assert_allclose(reaction, np.zeros(3, dtype=np.float32), atol=1.0e-6)
+
+    def test_multi_source_rig_forwards_force_commands_and_ignores_unsupported_sources(self):
+        class FakeSource:
+            def __init__(self, force_capable: bool):
+                self.force_capable = force_capable
+                self.forces = []
+
+            def poll(self):
+                return {}
+
+            def set_force(self, force_xyz):
+                self.forces.append(np.asarray(force_xyz, dtype=np.float32).copy())
+
+            def supports_force_feedback(self):
+                return self.force_capable
+
+            def close(self):
+                pass
+
+        right = FakeSource(force_capable=True)
+        left = FakeSource(force_capable=False)
+        rig = MultiSourceRig({"right": right, "left": left})
+
+        rig.set_force_commands({"right": np.array([0.01, 0.0, 0.0], dtype=np.float32)})
+
+        self.assertTrue(rig.supports_force_feedback())
+        self.assertTrue(rig.supports_force_feedback("right"))
+        self.assertFalse(rig.supports_force_feedback("left"))
+        np.testing.assert_allclose(right.forces[0], np.array([0.01, 0.0, 0.0], dtype=np.float32), atol=1.0e-6)
+        np.testing.assert_allclose(left.forces[0], np.zeros(3, dtype=np.float32), atol=1.0e-6)
+
+    def test_main_force_dispatch_helpers_forward_and_zero_commands(self):
+        class FakeRig:
+            def __init__(self):
+                self.commands = []
+
+            def set_force_commands(self, force_commands):
+                copied = {
+                    controller_id: np.asarray(force, dtype=np.float32).copy()
+                    for controller_id, force in force_commands.items()
+                }
+                self.commands.append(copied)
+
+        rig = FakeRig()
+        omnisurg_main._dispatch_haptic_force_commands(
+            rig,
+            {"right": np.array([0.02, 0.0, 0.0], dtype=np.float32)},
+        )
+        omnisurg_main._zero_haptic_force_commands(rig)
+
+        np.testing.assert_allclose(rig.commands[0]["right"], np.array([0.02, 0.0, 0.0], dtype=np.float32), atol=1.0e-6)
+        np.testing.assert_allclose(rig.commands[1]["right"], np.zeros(3, dtype=np.float32), atol=1.0e-6)
+        np.testing.assert_allclose(rig.commands[1]["left"], np.zeros(3, dtype=np.float32), atol=1.0e-6)
+
+    def test_runtime_haptic_force_feedback_zeroes_without_contact_or_when_disabled(self):
+        runtime = _make_haptic_runtime_stub(_prepare_test_subdir("haptic_force_zero"))
+        runtime._haptic_feedback_available = True
+
+        runtime_module.Runtime._update_haptic_force_feedback(runtime, np.array([1.0, 0.0, 0.0], dtype=np.float32), 0)
+        np.testing.assert_allclose(runtime.haptic_feedback_diagnostics.final_force, np.zeros(3, dtype=np.float32), atol=1.0e-6)
+
+        runtime.haptic_feedback_settings.enabled = False
+        runtime_module.Runtime._update_haptic_force_feedback(runtime, np.array([1.0, 0.0, 0.0], dtype=np.float32), 1)
+        np.testing.assert_allclose(runtime.haptic_feedback_diagnostics.final_force, np.zeros(3, dtype=np.float32), atol=1.0e-6)
+
+    def test_runtime_haptic_force_feedback_filter_pipeline_order(self):
+        runtime = _make_haptic_runtime_stub(_prepare_test_subdir("haptic_force_filter"))
+        runtime._haptic_feedback_available = True
+        runtime.controller_states[runtime_module.PRIMARY_CONTROLLER_ID].scaled_position = np.zeros(3, dtype=np.float32)
+        runtime.haptic_feedback_settings = haptic_feedback_module.HapticFeedbackSettings(
+            enabled=True,
+            reaction_scale=1.0,
+            proxy_follow=1.0,
+            max_proxy_offset=1.0,
+            spring_k=1.0,
+            damper_b=0.0,
+            deadband=0.05,
+            lowpass_alpha=0.5,
+            max_force=0.1,
+            slew_rate_limit=0.6,
+        )
+
+        runtime_module.Runtime._update_haptic_force_feedback(runtime, np.array([1.0, 0.0, 0.0], dtype=np.float32), 1)
+
+        np.testing.assert_allclose(runtime.haptic_feedback_diagnostics.raw_force, np.array([1.0, 0.0, 0.0], dtype=np.float32), atol=1.0e-6)
+        np.testing.assert_allclose(runtime.haptic_feedback_diagnostics.filtered_force, np.array([0.5, 0.0, 0.0], dtype=np.float32), atol=1.0e-6)
+        np.testing.assert_allclose(runtime.haptic_feedback_diagnostics.final_force, np.array([0.06, 0.0, 0.0], dtype=np.float32), atol=1.0e-6)
+        self.assertTrue(runtime.haptic_feedback_diagnostics.clamp_active)
+        self.assertTrue(runtime.haptic_feedback_diagnostics.slew_active)
+        np.testing.assert_allclose(runtime.get_haptic_force_commands()["right"], np.array([0.06, 0.0, 0.0], dtype=np.float32), atol=1.0e-6)
+
+    def test_haptic_preset_round_trip_and_scan(self):
+        preset_dir = _prepare_test_subdir("haptic_preset_roundtrip")
+        preset_path = preset_dir / "custom.json"
+        settings = haptic_feedback_module.HapticFeedbackSettings(
+            reaction_scale=1.5,
+            proxy_follow=0.4,
+            spring_k=4.0,
+            damper_b=0.12,
+        )
+
+        haptic_feedback_module.save_haptic_preset(preset_path, "Custom Tune", settings)
+        presets, errors = haptic_feedback_module.scan_haptic_presets(preset_dir)
+        loaded = haptic_feedback_module.load_haptic_preset(preset_path)
+
+        self.assertEqual(errors, [])
+        self.assertEqual(len(presets), 1)
+        self.assertEqual(loaded.name, "Custom Tune")
+        self.assertTrue(haptic_feedback_module.settings_almost_equal(loaded.settings, settings))
+
+    def test_runtime_haptic_preset_dirty_flag_and_invalid_json_handling(self):
+        preset_dir = _prepare_test_subdir("haptic_preset_invalid_json")
+        runtime = _make_haptic_runtime_stub(preset_dir)
+        preset_path = preset_dir / "loaded.json"
+        haptic_feedback_module.save_haptic_preset(
+            preset_path,
+            "Loaded Tune",
+            haptic_feedback_module.HapticFeedbackSettings(spring_k=5.0),
+        )
+
+        runtime._refresh_haptic_presets(show_status=False)
+        self.assertTrue(runtime._load_haptic_preset_path(preset_path, show_status=False))
+        self.assertFalse(runtime.haptic_feedback_diagnostics.dirty)
+
+        runtime.haptic_feedback_settings.spring_k += 0.5
+        runtime._sync_haptic_feedback_metadata()
+        self.assertTrue(runtime.haptic_feedback_diagnostics.dirty)
+
+        invalid_path = preset_dir / "broken.json"
+        invalid_path.write_text("{not valid json", encoding="utf-8")
+        previous_settings = haptic_feedback_module.copy_feedback_settings(runtime.haptic_feedback_settings)
+
+        self.assertFalse(runtime._load_haptic_preset_path(invalid_path, show_status=False))
+        self.assertTrue(haptic_feedback_module.settings_almost_equal(runtime.haptic_feedback_settings, previous_settings))
+        self.assertTrue(runtime.haptic_feedback_diagnostics.status_is_error)
+        self.assertIn("not valid JSON", runtime.haptic_feedback_diagnostics.status_message)
+
+    def test_runtime_haptic_preset_methods_smoke_without_viewer(self):
+        preset_dir = _prepare_test_subdir("haptic_preset_smoke")
+        runtime = _make_haptic_runtime_stub(preset_dir)
+
+        runtime.haptic_feedback_settings.reaction_scale = 1.25
+        runtime.haptic_feedback_settings.spring_k = 4.5
+        runtime._sync_haptic_feedback_metadata()
+
+        self.assertTrue(runtime._save_haptic_preset_as_new("Smoke Tune"))
+        self.assertGreaterEqual(len(runtime._haptic_presets), 1)
+        self.assertEqual(runtime.haptic_feedback_diagnostics.current_preset_name, "Smoke Tune")
+        self.assertFalse(runtime.haptic_feedback_diagnostics.dirty)
+
+        runtime.haptic_feedback_settings.spring_k = 6.0
+        runtime._sync_haptic_feedback_metadata()
+        self.assertTrue(runtime.haptic_feedback_diagnostics.dirty)
+
+        self.assertTrue(runtime._save_haptic_selected_preset())
+        self.assertFalse(runtime.haptic_feedback_diagnostics.dirty)
+        self.assertFalse(runtime.haptic_feedback_diagnostics.status_is_error)
 
     def test_bimanual_graspers_follow_independent_controllers(self):
         right_trace = np.array(

@@ -1,0 +1,14 @@
+{
+  "damper_b": 0.10869999974966049,
+  "deadband": 0.002199999988079071,
+  "enabled": true,
+  "lowpass_alpha": 0.3009999990463257,
+  "max_force": 3.3333001136779785,
+  "max_proxy_offset": 0.21570000052452087,
+  "name": "Default",
+  "proxy_follow": 0.4970000088214874,
+  "reaction_scale": 97.82499694824219,
+  "schema_version": 1,
+  "slew_rate_limit": 532.6090087890625,
+  "spring_k": 14.492799758911133
+}

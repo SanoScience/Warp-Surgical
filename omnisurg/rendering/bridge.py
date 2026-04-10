@@ -11,6 +11,8 @@ from omnisurg.rendering.textures import enable_persistent_gl_textures
 _FAST_GL_PATCHED = False
 _ZERO_COPY_MESH_PATCHED = False
 _STATIC_INSTANCE_UPLOAD_PATCHED = False
+_SIDE_PANEL_WIDTH_PATCHED = False
+_SIDE_PANEL_WIDTH_SCALE = 1.5
 
 
 def enable_direct_gl_render():
@@ -177,6 +179,43 @@ def enable_static_instance_uploads():
     _STATIC_INSTANCE_UPLOAD_PATCHED = True
 
 
+def enable_wider_gl_side_panel():
+    global _SIDE_PANEL_WIDTH_PATCHED
+    if _SIDE_PANEL_WIDTH_PATCHED:
+        return
+
+    from newton._src.viewer.viewer_gl import ViewerGL
+
+    if getattr(ViewerGL._render_left_panel, "__omnisurg_side_panel_width_patched__", False):
+        _SIDE_PANEL_WIDTH_PATCHED = True
+        return
+
+    original_render_left_panel = ViewerGL._render_left_panel
+
+    def patched_render_left_panel(self):
+        ui = getattr(self, "ui", None)
+        imgui = getattr(ui, "imgui", None)
+        if imgui is None:
+            return original_render_left_panel(self)
+
+        original_set_next_window_size = imgui.set_next_window_size
+
+        def patched_set_next_window_size(size, *args, **kwargs):
+            if getattr(size, "x", None) == 300:
+                size = imgui.ImVec2(size.x * _SIDE_PANEL_WIDTH_SCALE, size.y)
+            return original_set_next_window_size(size, *args, **kwargs)
+
+        imgui.set_next_window_size = patched_set_next_window_size
+        try:
+            return original_render_left_panel(self)
+        finally:
+            imgui.set_next_window_size = original_set_next_window_size
+
+    patched_render_left_panel.__omnisurg_side_panel_width_patched__ = True
+    ViewerGL._render_left_panel = patched_render_left_panel
+    _SIDE_PANEL_WIDTH_PATCHED = True
+
+
 class GPUBuffers:
     """Constant GPU arrays allocated once at startup."""
 
@@ -208,6 +247,7 @@ class RenderBridge:
             enable_direct_gl_render()
             enable_zero_copy_gl_mesh_updates()
             enable_static_instance_uploads()
+            enable_wider_gl_side_panel()
 
         if self._backend == "headless":
             self._renderer = HeadlessRenderer()

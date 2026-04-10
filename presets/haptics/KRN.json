@@ -1,0 +1,14 @@
+{
+  "damper_b": 0.007600000128149986,
+  "deadband": 0.018799999728798866,
+  "enabled": true,
+  "lowpass_alpha": 1.0,
+  "max_force": 3.3333001136779785,
+  "max_proxy_offset": 0.02,
+  "name": "KRN",
+  "proxy_follow": 0.35,
+  "reaction_scale": 278.9849853515625,
+  "schema_version": 1,
+  "slew_rate_limit": 0.0,
+  "spring_k": 86.3333969116211
+}

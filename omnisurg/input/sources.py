@@ -50,6 +50,12 @@ class InputSource(ABC):
     def close(self):
         pass
 
+    def set_force(self, force_xyz):
+        pass
+
+    def supports_force_feedback(self) -> bool:
+        return False
+
 
 class InputRig(ABC):
     """Multi-controller input rig composed from one or more input sources."""
@@ -60,6 +66,12 @@ class InputRig(ABC):
 
     def close(self):
         pass
+
+    def set_force_commands(self, force_commands: dict[str, np.ndarray]):
+        pass
+
+    def supports_force_feedback(self, controller_id: str | None = None) -> bool:
+        return False
 
 
 class MultiSourceRig(InputRig):
@@ -79,6 +91,18 @@ class MultiSourceRig(InputRig):
     def close(self):
         for source in self._sources.values():
             source.close()
+
+    def set_force_commands(self, force_commands: dict[str, np.ndarray]):
+        zero = np.zeros(3, dtype=np.float32)
+        for controller_id, source in self._sources.items():
+            force = force_commands.get(controller_id, zero)
+            source.set_force(force)
+
+    def supports_force_feedback(self, controller_id: str | None = None) -> bool:
+        if controller_id is not None:
+            source = self._sources.get(controller_id)
+            return bool(source is not None and source.supports_force_feedback())
+        return any(source.supports_force_feedback() for source in self._sources.values())
 
 
 class LiveHapticSource(InputSource):
@@ -110,6 +134,14 @@ class LiveHapticSource(InputSource):
         if self._ctrl is not None:
             self._ctrl.close()
             self._ctrl = None
+
+    def set_force(self, force_xyz):
+        if self._ctrl is None:
+            return
+        self._ctrl.set_force(force_xyz)
+
+    def supports_force_feedback(self) -> bool:
+        return self._ctrl is not None
 
 
 class LiveMiniMouSource(InputSource):

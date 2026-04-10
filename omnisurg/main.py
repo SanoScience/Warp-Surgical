@@ -240,6 +240,32 @@ def _build_live_input_rig(args):
     return MultiSourceRig(sources)
 
 
+def _dispatch_haptic_force_commands(input_rig, force_commands):
+    if input_rig is None:
+        return
+
+    dispatch = getattr(input_rig, "set_force_commands", None)
+    if callable(dispatch):
+        dispatch(force_commands)
+        return
+
+    set_force = getattr(input_rig, "set_force", None)
+    if callable(set_force):
+        right_force = force_commands.get("right", np.zeros(3, dtype=np.float32))
+        set_force(right_force)
+
+
+def _zero_haptic_force_commands(input_rig):
+    zero = np.zeros(3, dtype=np.float32)
+    _dispatch_haptic_force_commands(
+        input_rig,
+        {
+            "right": zero,
+            "left": zero.copy(),
+        },
+    )
+
+
 def main():
     args = parse_args()
 
@@ -293,6 +319,8 @@ def main():
             if input_rig:
                 rt.poll_input(input_rig)
             rt.step()
+            if input_rig:
+                _dispatch_haptic_force_commands(input_rig, rt.get_haptic_force_commands())
             rt.render()
             rt.pace()
 
@@ -301,6 +329,7 @@ def main():
                 break
 
         if input_rig:
+            _zero_haptic_force_commands(input_rig)
             input_rig.close()
         rt.close()
 

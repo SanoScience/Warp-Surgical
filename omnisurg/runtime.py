@@ -10,6 +10,18 @@ from newton._src.geometry.kernels import triangle_closest_point
 
 from omnisurg.config import BoundsConfig, HapticConfig, SceneConfig, SimulationConfig, ViewerConfig
 from omnisurg.grasper_runtime import load_kinematic_grasper
+from omnisurg.haptic_feedback import (
+    DEFAULT_HAPTIC_PRESET_FILENAME,
+    HapticFeedbackDiagnostics,
+    HapticFeedbackSettings,
+    HapticPresetRecord,
+    copy_feedback_settings,
+    load_haptic_preset,
+    sanitize_preset_filename,
+    save_haptic_preset,
+    scan_haptic_presets,
+    settings_almost_equal,
+)
 from omnisurg.input.haptic_collision import HapticSphereCollisionSystem, HapticSphereTruncationSystem
 from omnisurg.input.haptic_proxy import HapticProxyState, create_vec3_staging_buffer, scale_position, update_haptic_proxy
 from omnisurg.input.sources import InputRig, InputSource
@@ -28,6 +40,7 @@ from omnisurg.rendering.bridge import RenderBridge
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+HAPTIC_PRESET_DIR = REPO_ROOT / "presets" / "haptics"
 GRASPER_ASSET_PATH = REPO_ROOT / "meshes" / "pgrasp.usdc"
 GRASPER_SCALE = 0.01
 GRASPER_JAW_SPHERE_COUNT = 24
@@ -76,6 +89,7 @@ class ControllerBinding:
 @dataclass
 class ControllerRuntimeState:
     active: bool = False
+    sample_present: bool = False
     button: bool = False
     grip: float = 0.0
     rotation: np.ndarray = field(default_factory=lambda: np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32))
@@ -558,6 +572,29 @@ def _grasper_collision_mode_from_index(index: int) -> str:
     return GRASPER_COLLISION_MODES[clamped]
 
 
+def _ui_section_expanded(ui, label: str) -> bool:
+    collapsing_header = getattr(ui, "collapsing_header", None)
+    if collapsing_header is None:
+        ui.text(label)
+        return True
+
+    state = collapsing_header(label)
+    if isinstance(state, tuple):
+        return bool(state[0])
+    return bool(state)
+
+
+def _format_vec3_readout(value) -> str:
+    array = np.asarray(value, dtype=np.float32).reshape(-1)
+    if array.size < 3:
+        return "(0.0000, 0.0000, 0.0000)"
+    return f"({array[0]:.4f}, {array[1]:.4f}, {array[2]:.4f})"
+
+
+def _vec3_magnitude(value) -> float:
+    return float(np.linalg.norm(np.asarray(value, dtype=np.float32)))
+
+
 class Runtime:
     """Phase 1/2 runtime for soft-body tissue scenes."""
 
@@ -698,6 +735,7 @@ class Runtime:
 
         self._haptic_staging, self._haptic_staging_view = create_vec3_staging_buffer()
         self._haptic_render_pos = wp.zeros(1, dtype=wp.vec3, device=self.device)
+        self._initialize_haptic_feedback()
         self._profile_samples = defaultdict(list)
         self.profiling_enabled = True
         self.profiling_synchronize = False
@@ -727,6 +765,431 @@ class Runtime:
                 staging_view=staging_view,
             )
         return states
+
+    def _initialize_haptic_feedback(self):
+        self.haptic_feedback_settings = HapticFeedbackSettings()
+        self.haptic_feedback_diagnostics = HapticFeedbackDiagnostics()
+        self._haptic_loaded_settings = copy_feedback_settings(self.haptic_feedback_settings)
+        self._haptic_presets: list[HapticPresetRecord] = []
+        self._haptic_selected_preset_index = 0
+        self._haptic_active_preset_path: Path | None = None
+        self._haptic_active_preset_name: str | None = None
+        self._haptic_preset_dir = HAPTIC_PRESET_DIR
+        self._haptic_new_preset_name = "custom"
+        self._haptic_feedback_available = False
+        self._haptic_feedback_state_initialized = False
+        self._haptic_device_position_prev = np.zeros(3, dtype=np.float32)
+        self._haptic_proxy_position = np.zeros(3, dtype=np.float32)
+        self._haptic_lowpass_state = np.zeros(3, dtype=np.float32)
+        self._haptic_force_command = np.zeros(3, dtype=np.float32)
+        self._haptic_force_commands = {
+            PRIMARY_CONTROLLER_ID: np.zeros(3, dtype=np.float32),
+        }
+
+        self._refresh_haptic_presets(show_status=False)
+        default_index = self._find_haptic_preset_index(filename=DEFAULT_HAPTIC_PRESET_FILENAME)
+        if default_index is not None:
+            self._load_haptic_preset_by_index(default_index, show_status=False)
+        else:
+            self._sync_haptic_feedback_metadata()
+
+    def _set_haptic_status(self, message: str = "", *, is_error: bool = False):
+        self.haptic_feedback_diagnostics.status_message = message
+        self.haptic_feedback_diagnostics.status_is_error = bool(message) and is_error
+
+    def _sync_haptic_feedback_metadata(self):
+        preset_name = self._haptic_active_preset_name or "Unsaved"
+        self.haptic_feedback_diagnostics.current_preset_name = preset_name
+        self.haptic_feedback_diagnostics.dirty = not settings_almost_equal(
+            self.haptic_feedback_settings,
+            self._haptic_loaded_settings,
+        )
+        self.haptic_feedback_diagnostics.force_feedback_available = bool(self._haptic_feedback_available)
+
+    def _find_haptic_preset_index(
+        self,
+        *,
+        path: Path | None = None,
+        filename: str | None = None,
+    ) -> int | None:
+        normalized_path = str(path.resolve()) if path is not None and path.exists() else None
+        normalized_filename = filename.lower() if filename is not None else None
+        for index, preset in enumerate(self._haptic_presets):
+            if normalized_path is not None and preset.path.exists() and str(preset.path.resolve()) == normalized_path:
+                return index
+            if normalized_filename is not None and preset.path.name.lower() == normalized_filename:
+                return index
+        return None
+
+    def _refresh_haptic_presets(self, *, show_status: bool = True):
+        selected_path = None
+        if self._haptic_presets and 0 <= self._haptic_selected_preset_index < len(self._haptic_presets):
+            selected_path = self._haptic_presets[self._haptic_selected_preset_index].path
+
+        presets, errors = scan_haptic_presets(self._haptic_preset_dir)
+        self._haptic_presets = presets
+
+        preferred_index = None
+        if selected_path is not None:
+            preferred_index = self._find_haptic_preset_index(path=selected_path)
+        if preferred_index is None and self._haptic_active_preset_path is not None:
+            preferred_index = self._find_haptic_preset_index(path=self._haptic_active_preset_path)
+        if preferred_index is None:
+            preferred_index = self._find_haptic_preset_index(filename=DEFAULT_HAPTIC_PRESET_FILENAME)
+        self._haptic_selected_preset_index = preferred_index if preferred_index is not None else 0
+
+        if not show_status:
+            return
+
+        if errors:
+            summary = errors[0]
+            if len(errors) > 1:
+                summary += f" (+{len(errors) - 1} more)"
+            self._set_haptic_status(summary, is_error=True)
+            return
+
+        self._set_haptic_status(f"Refreshed {len(self._haptic_presets)} haptics preset(s).")
+
+    def _load_haptic_preset_path(self, path: Path, *, show_status: bool = True) -> bool:
+        try:
+            preset = load_haptic_preset(path)
+        except ValueError as exc:
+            self._set_haptic_status(str(exc), is_error=True)
+            return False
+
+        self.haptic_feedback_settings = copy_feedback_settings(preset.settings)
+        self._haptic_loaded_settings = copy_feedback_settings(preset.settings)
+        self._haptic_active_preset_path = preset.path
+        self._haptic_active_preset_name = preset.name
+        self._haptic_new_preset_name = preset.name
+
+        if self._find_haptic_preset_index(path=preset.path) is None:
+            self._refresh_haptic_presets(show_status=False)
+        selected_index = self._find_haptic_preset_index(path=preset.path)
+        if selected_index is not None:
+            self._haptic_selected_preset_index = selected_index
+
+        device_position = None
+        state = self.controller_states.get(PRIMARY_CONTROLLER_ID)
+        if state is not None and state.sample_present:
+            device_position = np.asarray(state.scaled_position, dtype=np.float32)
+        self._reset_haptic_force_state(device_position=device_position)
+        self._sync_haptic_feedback_metadata()
+        if show_status:
+            self._set_haptic_status(f'Loaded preset "{preset.name}".')
+        return True
+
+    def _load_haptic_preset_by_index(self, index: int, *, show_status: bool = True) -> bool:
+        if index < 0 or index >= len(self._haptic_presets):
+            self._set_haptic_status("No haptics preset is selected.", is_error=True)
+            return False
+        return self._load_haptic_preset_path(self._haptic_presets[index].path, show_status=show_status)
+
+    def _save_haptic_preset_to_path(self, path: Path, name: str, *, show_status: bool = True) -> bool:
+        try:
+            save_haptic_preset(path, name, self.haptic_feedback_settings)
+        except OSError as exc:
+            self._set_haptic_status(f'Failed to save preset "{name}": {exc}', is_error=True)
+            return False
+
+        self._refresh_haptic_presets(show_status=False)
+        self._load_haptic_preset_path(path, show_status=False)
+        if show_status:
+            self._set_haptic_status(f'Saved preset "{name}".')
+        return True
+
+    def _save_haptic_selected_preset(self) -> bool:
+        if not self._haptic_presets:
+            self._set_haptic_status("No haptics preset is selected.", is_error=True)
+            return False
+        selected = self._haptic_presets[self._haptic_selected_preset_index]
+        return self._save_haptic_preset_to_path(selected.path, selected.name)
+
+    def _save_haptic_preset_as_new(self, preset_name: str) -> bool:
+        display_name = preset_name.strip()
+        if not display_name:
+            self._set_haptic_status("Preset name cannot be empty.", is_error=True)
+            return False
+        path = self._haptic_preset_dir / sanitize_preset_filename(display_name)
+        return self._save_haptic_preset_to_path(path, display_name)
+
+    def _reset_haptic_force_state(self, device_position: np.ndarray | None = None):
+        if device_position is None:
+            base = np.zeros(3, dtype=np.float32)
+            self._haptic_feedback_state_initialized = False
+        else:
+            base = np.asarray(device_position, dtype=np.float32).copy()
+            self._haptic_feedback_state_initialized = True
+        self._haptic_device_position_prev = base.copy()
+        self._haptic_proxy_position = base.copy()
+        self._haptic_lowpass_state = np.zeros(3, dtype=np.float32)
+        self._haptic_force_command = np.zeros(3, dtype=np.float32)
+        self._haptic_force_commands[PRIMARY_CONTROLLER_ID] = np.zeros(3, dtype=np.float32)
+
+    def _supports_haptic_force_feedback(self, source: InputRig | InputSource | None) -> bool:
+        if source is None:
+            return False
+        supports = getattr(source, "supports_force_feedback", None)
+        if supports is None:
+            return False
+        try:
+            return bool(supports(PRIMARY_CONTROLLER_ID))
+        except TypeError:
+            return bool(supports())
+
+    def _update_haptic_feedback_availability(self, source: InputRig | InputSource | None):
+        self._haptic_feedback_available = self._supports_haptic_force_feedback(source)
+        self.haptic_feedback_diagnostics.force_feedback_available = bool(self._haptic_feedback_available)
+
+    def _update_haptic_force_feedback(self, avg_reaction_offset, contact_count: int):
+        zero = np.zeros(3, dtype=np.float32)
+        diagnostics = self.haptic_feedback_diagnostics
+        settings = self.haptic_feedback_settings
+        state = self.controller_states[PRIMARY_CONTROLLER_ID]
+
+        reaction = np.asarray(avg_reaction_offset, dtype=np.float32).copy()
+        diagnostics.contact_count = int(contact_count)
+        diagnostics.avg_reaction_offset = reaction.copy()
+        diagnostics.force_feedback_available = bool(self._haptic_feedback_available)
+
+        device_position = np.asarray(state.scaled_position, dtype=np.float32).copy() if state.sample_present else zero.copy()
+        if (
+            not settings.enabled
+            or not self._haptic_feedback_available
+            or not state.sample_present
+            or int(contact_count) <= 0
+        ):
+            self._reset_haptic_force_state(device_position if state.sample_present else None)
+            diagnostics.proxy_offset = zero.copy()
+            diagnostics.raw_force = zero.copy()
+            diagnostics.filtered_force = zero.copy()
+            diagnostics.final_force = zero.copy()
+            diagnostics.clamp_active = False
+            diagnostics.slew_active = False
+            return
+
+        if not self._haptic_feedback_state_initialized:
+            self._reset_haptic_force_state(device_position)
+
+        reaction_scale = max(0.0, float(settings.reaction_scale))
+        proxy_follow = float(np.clip(settings.proxy_follow, 0.0, 1.0))
+        max_proxy_offset = max(0.0, float(settings.max_proxy_offset))
+        spring_k = max(0.0, float(settings.spring_k))
+        damper_b = max(0.0, float(settings.damper_b))
+        deadband = max(0.0, float(settings.deadband))
+        lowpass_alpha = float(np.clip(settings.lowpass_alpha, 0.0, 1.0))
+        max_force = max(0.0, float(settings.max_force))
+        slew_rate_limit = max(0.0, float(settings.slew_rate_limit))
+        dt = max(self.sim_config.frame_dt, 1.0e-6)
+
+        proxy_target = device_position + reaction_scale * reaction
+        proxy_offset = proxy_target - device_position
+        proxy_offset_mag = float(np.linalg.norm(proxy_offset))
+        if max_proxy_offset > 0.0 and proxy_offset_mag > max_proxy_offset:
+            proxy_offset *= max_proxy_offset / max(proxy_offset_mag, 1.0e-8)
+        proxy_target = device_position + proxy_offset
+
+        proxy_prev = self._haptic_proxy_position.copy()
+        device_prev = self._haptic_device_position_prev.copy()
+        self._haptic_proxy_position = proxy_prev + proxy_follow * (proxy_target - proxy_prev)
+
+        device_velocity = (device_position - device_prev) / dt
+        proxy_velocity = (self._haptic_proxy_position - proxy_prev) / dt
+        raw_force = spring_k * (self._haptic_proxy_position - device_position) + damper_b * (proxy_velocity - device_velocity)
+
+        deadband_force = raw_force.copy()
+        if float(np.linalg.norm(deadband_force)) < deadband:
+            deadband_force.fill(0.0)
+
+        filtered_force = lowpass_alpha * deadband_force + (1.0 - lowpass_alpha) * self._haptic_lowpass_state
+        self._haptic_lowpass_state = filtered_force.copy()
+
+        final_force = filtered_force.copy()
+        clamp_active = False
+        filtered_force_mag = float(np.linalg.norm(final_force))
+        if max_force <= 0.0:
+            clamp_active = filtered_force_mag > 0.0
+            final_force.fill(0.0)
+        elif filtered_force_mag > max_force:
+            final_force *= max_force / max(filtered_force_mag, 1.0e-8)
+            clamp_active = True
+
+        slew_active = False
+        if slew_rate_limit > 0.0:
+            max_delta = slew_rate_limit * dt
+            delta = final_force - self._haptic_force_command
+            delta_mag = float(np.linalg.norm(delta))
+            if delta_mag > max_delta and delta_mag > 1.0e-8:
+                final_force = self._haptic_force_command + delta * (max_delta / delta_mag)
+                slew_active = True
+
+        self._haptic_force_command = final_force.astype(np.float32, copy=True)
+        self._haptic_force_commands[PRIMARY_CONTROLLER_ID] = self._haptic_force_command.copy()
+        self._haptic_device_position_prev = device_position.copy()
+
+        diagnostics.proxy_offset = (self._haptic_proxy_position - device_position).astype(np.float32, copy=True)
+        diagnostics.raw_force = raw_force.astype(np.float32, copy=True)
+        diagnostics.filtered_force = filtered_force.astype(np.float32, copy=True)
+        diagnostics.final_force = self._haptic_force_command.copy()
+        diagnostics.clamp_active = clamp_active
+        diagnostics.slew_active = slew_active
+
+    def get_haptic_force_commands(self) -> dict[str, np.ndarray]:
+        return {
+            controller_id: np.asarray(force, dtype=np.float32).copy()
+            for controller_id, force in self._haptic_force_commands.items()
+        }
+
+    def _render_haptics_ui(self, ui):
+        if not _ui_section_expanded(ui, "Haptics"):
+            return
+
+        settings = self.haptic_feedback_settings
+        diagnostics = self.haptic_feedback_diagnostics
+        settings_changed = False
+
+        changed, enabled = ui.checkbox("Enable Force Feedback", settings.enabled)
+        if changed:
+            settings.enabled = enabled
+            settings_changed = True
+
+        changed, reaction_scale = ui.slider_float("Reaction Scale", settings.reaction_scale, 0.0, 1000.0, "%.3f")
+        if changed:
+            settings.reaction_scale = reaction_scale
+            settings_changed = True
+
+        changed, proxy_follow = ui.slider_float("Proxy Follow", settings.proxy_follow, 0.0, 1.0, "%.3f")
+        if changed:
+            settings.proxy_follow = proxy_follow
+            settings_changed = True
+
+        changed, max_proxy_offset = ui.slider_float("Max Proxy Offset", settings.max_proxy_offset, 0.0, 1.0, "%.4f")
+        if changed:
+            settings.max_proxy_offset = max_proxy_offset
+            settings_changed = True
+
+        changed, spring_k = ui.slider_float("Spring K", settings.spring_k, 0.0, 1000.0, "%.4f")
+        if changed:
+            settings.spring_k = spring_k
+            settings_changed = True
+
+        changed, damper_b = ui.slider_float("Damper B", settings.damper_b, 0.0, 10.0, "%.4f")
+        if changed:
+            settings.damper_b = damper_b
+            settings_changed = True
+
+        changed, deadband = ui.slider_float("Deadband", settings.deadband, 0.0, 0.1, "%.4f")
+        if changed:
+            settings.deadband = deadband
+            settings_changed = True
+
+        changed, lowpass_alpha = ui.slider_float("Lowpass Alpha", settings.lowpass_alpha, 0.0, 1.0, "%.3f")
+        if changed:
+            settings.lowpass_alpha = lowpass_alpha
+            settings_changed = True
+
+        changed, max_force = ui.slider_float("Max Force", settings.max_force, 0.0, 10.0, "%.4f")
+        if changed:
+            settings.max_force = max_force
+            settings_changed = True
+
+        changed, slew_rate_limit = ui.slider_float("Slew Rate Limit", settings.slew_rate_limit, 0.0, 1000.0, "%.3f")
+        if changed:
+            settings.slew_rate_limit = slew_rate_limit
+            settings_changed = True
+
+        if settings_changed:
+            self._sync_haptic_feedback_metadata()
+
+        ui.separator()
+        ui.text("Presets")
+        if self._haptic_presets:
+            max_index = len(self._haptic_presets) - 1
+            selected_index = int(np.clip(self._haptic_selected_preset_index, 0, max_index))
+            changed, selected_index = ui.slider_int("Preset Index", selected_index, 0, max_index)
+            if changed:
+                self._haptic_selected_preset_index = selected_index
+            selected = self._haptic_presets[self._haptic_selected_preset_index]
+            ui.text(f'Selected: {selected.name} ({selected.path.name})')
+        else:
+            ui.text("Selected: none")
+
+        same_line = getattr(ui, "same_line", None)
+
+        if ui.button("Load Selected"):
+            self._load_haptic_preset_by_index(self._haptic_selected_preset_index)
+        if same_line is not None:
+            same_line()
+        if ui.button("Save Selected"):
+            self._save_haptic_selected_preset()
+        if same_line is not None:
+            same_line()
+        if ui.button("Refresh"):
+            self._refresh_haptic_presets()
+
+        input_text = getattr(ui, "input_text", None)
+        if input_text is not None:
+            changed, preset_name = input_text("New Preset Name", self._haptic_new_preset_name, 128)
+            if changed:
+                self._haptic_new_preset_name = preset_name
+        else:
+            ui.text(f"New Preset Name: {self._haptic_new_preset_name}")
+
+        if ui.button("Save As New"):
+            self._save_haptic_preset_as_new(self._haptic_new_preset_name)
+        if same_line is not None:
+            same_line()
+        if ui.button("Revert"):
+            self.haptic_feedback_settings = copy_feedback_settings(self._haptic_loaded_settings)
+            state = self.controller_states.get(PRIMARY_CONTROLLER_ID)
+            device_position = None
+            if state is not None and state.sample_present:
+                device_position = np.asarray(state.scaled_position, dtype=np.float32)
+            self._reset_haptic_force_state(device_position=device_position)
+            self._sync_haptic_feedback_metadata()
+            self._set_haptic_status("Reverted unsaved haptics tuning changes.")
+        if same_line is not None:
+            same_line()
+        if ui.button("Reset Defaults"):
+            self.haptic_feedback_settings = HapticFeedbackSettings()
+            state = self.controller_states.get(PRIMARY_CONTROLLER_ID)
+            device_position = None
+            if state is not None and state.sample_present:
+                device_position = np.asarray(state.scaled_position, dtype=np.float32)
+            self._reset_haptic_force_state(device_position=device_position)
+            self._sync_haptic_feedback_metadata()
+            self._set_haptic_status("Reset haptics tuning to defaults.")
+
+        ui.separator()
+        ui.text(f"Active Preset: {diagnostics.current_preset_name}")
+        ui.text(f"Dirty: {'yes' if diagnostics.dirty else 'no'}")
+        ui.text(f"Force Feedback Available: {'yes' if diagnostics.force_feedback_available else 'no'}")
+        ui.text(f"Contact Count: {diagnostics.contact_count}")
+        ui.text(
+            f"Avg Reaction Offset: {_format_vec3_readout(diagnostics.avg_reaction_offset)} | "
+            f"|r|={_vec3_magnitude(diagnostics.avg_reaction_offset):.4f}"
+        )
+        ui.text(
+            f"Proxy Offset: {_format_vec3_readout(diagnostics.proxy_offset)} | "
+            f"|p|={_vec3_magnitude(diagnostics.proxy_offset):.4f}"
+        )
+        ui.text(
+            f"Raw Force: {_format_vec3_readout(diagnostics.raw_force)} | "
+            f"|F|={_vec3_magnitude(diagnostics.raw_force):.4f}"
+        )
+        ui.text(
+            f"Filtered Force: {_format_vec3_readout(diagnostics.filtered_force)} | "
+            f"|F|={_vec3_magnitude(diagnostics.filtered_force):.4f}"
+        )
+        ui.text(
+            f"Final Force: {_format_vec3_readout(diagnostics.final_force)} | "
+            f"|F|={_vec3_magnitude(diagnostics.final_force):.4f}"
+        )
+        ui.text(f"Clamp Active: {'yes' if diagnostics.clamp_active else 'no'}")
+        ui.text(f"Slew Active: {'yes' if diagnostics.slew_active else 'no'}")
+        if diagnostics.status_message:
+            prefix = "Error" if diagnostics.status_is_error else "Status"
+            ui.text(f"{prefix}: {diagnostics.status_message}")
 
     def _apply_grasper_collision_mode(self, mode: str):
         self.grasper_collision_mode = _clamp_grasper_collision_mode(mode)
@@ -919,6 +1382,7 @@ class Runtime:
             self._capture_graph()
 
     def poll_input(self, source: InputRig | InputSource):
+        self._update_haptic_feedback_availability(source)
         controller_samples = self._poll_controller_samples(source)
         for controller_id, binding in self.controller_bindings.items():
             self._apply_controller_sample(controller_id, binding, controller_samples.get(controller_id))
@@ -939,12 +1403,14 @@ class Runtime:
         grasper = self.graspers.get(controller_id)
 
         if sample is None:
+            state.sample_present = False
             if binding.uses_physics_proxy:
                 wp.copy(self.proxy.center_prev, self.proxy.center_target)
             state.button = False
             state.grip = 0.0
             return
 
+        state.sample_present = sample.position is not None
         state.button = bool(sample.button)
         state.grip = float(np.clip(sample.grip, 0.0, 1.0))
         if sample.rotation is not None:
@@ -1121,6 +1587,9 @@ class Runtime:
             ui.text(message)
 
         ui.separator()
+        self._render_haptics_ui(ui)
+
+        ui.separator()
         ui.text("Rendering")
         changed, show_tissue = ui.checkbox("Show Tissue", self.show_tissue)
         if changed:
@@ -1181,6 +1650,7 @@ class Runtime:
             if grasper is not None and state.active:
                 grasper.advance(self.sim_config.frame_dt, state.grip)
 
+        self.haptic_collision_system.clear_reaction()
         with wp.ScopedTimer(
             "solver_loop",
             active=self.profiling_enabled,
@@ -1193,6 +1663,8 @@ class Runtime:
             else:
                 self._simulate_step()
 
+        reaction_offset, contact_count = self.haptic_collision_system.get_reaction_average()
+        self._update_haptic_force_feedback(reaction_offset, contact_count)
         self._trim_profile_samples()
         self.sim_time += self.sim_config.frame_dt
 
