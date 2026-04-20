@@ -7,6 +7,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
+import meshio
 import numpy as np
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -30,7 +31,8 @@ from omnisurg.instruments.grasper import load_kinematic_grasper
 from omnisurg.input.sources import MultiSourceRig
 from omnisurg.rendering.bridge import RenderBridge
 from omnisurg.input.follou import MiniMouController
-from omnisurg.input.sources import LiveMiniMouSource
+from omnisurg.input.sources import LiveHapticSource, LiveMiniMouSource
+from omnisurg.mesh.vtk_export import export_asset_dir_to_vtk
 from omnisurg.scene_builder import build_scene
 
 
@@ -233,6 +235,31 @@ class TestPhaseRuntime(unittest.TestCase):
             source.close()
             self.assertIsNone(source._ctrl)
 
+    def test_live_haptic_source_prefers_single_snapshot_poll(self):
+        class FakeController:
+            def __init__(self):
+                self.calls = []
+
+            def poll_state(self):
+                self.calls.append("poll_state")
+                return {
+                    "position": [1.0, 2.0, 3.0],
+                    "rotation": [0.0, 0.0, 0.0, 1.0],
+                    "button": True,
+                }
+
+        source = LiveHapticSource.__new__(LiveHapticSource)
+        source._ctrl = FakeController()
+        source._reported_failure = False
+        source._device_name = "test-device"
+
+        sample = source.poll()
+
+        np.testing.assert_allclose(sample["position"], np.array([1.0, 2.0, 3.0], dtype=np.float32))
+        np.testing.assert_allclose(sample["rotation"], np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32))
+        self.assertTrue(sample["button"])
+        self.assertEqual(source._ctrl.calls, ["poll_state"])
+
     def test_minimou_controller_flips_x_position_and_maps_grip(self):
         class FakeDevice:
             def __init__(self):
@@ -327,6 +354,42 @@ class TestPhaseRuntime(unittest.TestCase):
         self.assertEqual(int(asset.edge_indices.shape[0]), 10622)
         self.assertEqual(int(asset.surface_tri_indices.shape[0]), 3968)
         self.assertTrue(asset.uvs is not None)
+
+    def test_vtk_export_writes_liver_volume_with_uvs(self):
+        output_dir = _prepare_test_subdir("vtk_export_liver")
+        output_path = output_dir / "liver.vtu"
+
+        result = export_asset_dir_to_vtk(REPO_ROOT / "meshes" / "liver", output_path=output_path)
+        mesh = meshio.read(result.primary_output)
+        asset = load_tet_asset("liver")
+
+        self.assertEqual(result.mode, "volume")
+        self.assertEqual(result.primary_output, output_path)
+        self.assertTrue(result.primary_output.exists())
+        self.assertIsNone(result.surface_output)
+        self.assertEqual(mesh.points.shape, asset.rest_positions.shape)
+        self.assertIn("tetra", mesh.cells_dict)
+        self.assertEqual(mesh.cells_dict["tetra"].shape, asset.tet_indices.shape)
+        self.assertIn("uv", mesh.point_data)
+        self.assertEqual(mesh.point_data["uv"].shape, asset.uvs.shape)
+
+    def test_vtk_export_auto_falls_back_to_surface_for_patch_meshes(self):
+        output_dir = _prepare_test_subdir("vtk_export_surface_only")
+        output_path = output_dir / "cloth_regular_low.vtp"
+
+        result = export_asset_dir_to_vtk(
+            REPO_ROOT / "meshes" / "cloth_regular_low",
+            output_path=output_path,
+        )
+        mesh = meshio.read(result.primary_output)
+        asset = load_tet_asset("cloth_regular_low")
+
+        self.assertEqual(result.mode, "surface")
+        self.assertEqual(result.primary_output, output_path)
+        self.assertTrue(result.primary_output.exists())
+        self.assertIn("triangle", mesh.cells_dict)
+        self.assertEqual(mesh.cells_dict["triangle"].shape, asset.surface_tri_indices.shape)
+        self.assertNotIn("tetra", mesh.cells_dict)
 
     def test_multi_organ_asset_loading(self):
         asset = load_scene_asset(SceneConfig(scene_preset="chole"))
@@ -1056,6 +1119,8 @@ class TestPhaseRuntime(unittest.TestCase):
             def run_sweep(sample_count: int):
                 delta_accumulator = wp.zeros(3, dtype=wp.vec3f)
                 delta_counter = wp.zeros(3, dtype=wp.int32)
+                reaction_accumulator = wp.zeros(1, dtype=wp.vec3f)
+                reaction_counter = wp.zeros(1, dtype=wp.int32)
                 wp.launch(
                     kernel=runtime_module.collide_triangles_vs_spheres,
                     dim=sample_count,
@@ -1074,7 +1139,7 @@ class TestPhaseRuntime(unittest.TestCase):
                         1.0 / 120.0,
                         0.0,
                     ],
-                    outputs=[delta_accumulator, delta_counter],
+                    outputs=[delta_accumulator, delta_counter, reaction_accumulator, reaction_counter],
                     device=wp.get_device(),
                 )
                 return int(delta_counter.numpy().sum())
@@ -1101,6 +1166,8 @@ class TestPhaseRuntime(unittest.TestCase):
             def collide(tri):
                 delta_accumulator = wp.zeros(3, dtype=wp.vec3f)
                 delta_counter = wp.zeros(3, dtype=wp.int32)
+                reaction_accumulator = wp.zeros(1, dtype=wp.vec3f)
+                reaction_counter = wp.zeros(1, dtype=wp.int32)
                 wp.launch(
                     kernel=runtime_module.collide_triangles_vs_spheres,
                     dim=1,
@@ -1119,7 +1186,7 @@ class TestPhaseRuntime(unittest.TestCase):
                         1.0 / 120.0,
                         0.0,
                     ],
-                    outputs=[delta_accumulator, delta_counter],
+                    outputs=[delta_accumulator, delta_counter, reaction_accumulator, reaction_counter],
                     device=wp.get_device(),
                 )
                 return delta_accumulator.numpy(), delta_counter.numpy()
@@ -1282,6 +1349,127 @@ class TestPhaseRuntime(unittest.TestCase):
             self.assertEqual(count, 0)
             np.testing.assert_allclose(reaction, np.zeros(3, dtype=np.float32), atol=1.0e-6)
 
+    def test_grasper_collision_system_accumulates_opposite_reaction(self):
+        with wp.ScopedDevice("cpu"):
+            chain = SimpleNamespace(
+                world_points_prev=wp.array([[0.0, 0.0, 0.0]], dtype=wp.vec3f),
+                world_points=wp.array([[0.0, 0.0, 0.0]], dtype=wp.vec3f),
+                base_radii=wp.array([0.1], dtype=wp.float32),
+                radii=wp.array([0.1], dtype=wp.float32),
+            )
+            system = runtime_module.GrasperSphereCollisionSystem(
+                graspers={"right": SimpleNamespace(sphere_chains=[chain])},
+                proxy=SimpleNamespace(max_tri_extent=2.0),
+                motion_samples=1,
+                contact_margin=0.0,
+            )
+            model = SimpleNamespace(
+                particle_count=3,
+                tri_count=1,
+                particle_inv_mass=wp.array([1.0, 1.0, 1.0], dtype=wp.float32),
+                tri_indices=wp.array([[0, 1, 2]], dtype=wp.int32, ndim=2),
+                device=wp.get_device(),
+            )
+            system.initialize(model)
+
+            particle_q = wp.array(
+                [
+                    [-1.0, -1.0, 0.0],
+                    [1.0, -1.0, 0.0],
+                    [0.0, 1.0, 0.0],
+                ],
+                dtype=wp.vec3f,
+            )
+            particle_qd = wp.zeros(3, dtype=wp.vec3f)
+            particle_deltas = wp.zeros(3, dtype=wp.vec3f)
+
+            system.clear_reaction()
+            system.solve_constraints(
+                model,
+                None,
+                None,
+                particle_q,
+                particle_qd,
+                particle_deltas,
+                None,
+                None,
+                None,
+                1.0 / 120.0,
+                0,
+            )
+
+            reaction, count = system.get_reaction_average("right")
+            particle_delta_sum = particle_deltas.numpy().sum(axis=0)
+
+            self.assertEqual(count, 1)
+            np.testing.assert_allclose(reaction, -particle_delta_sum, atol=1.0e-6)
+
+    def test_grasper_collision_system_keeps_controller_reactions_separate(self):
+        with wp.ScopedDevice("cpu"):
+            right_chain = SimpleNamespace(
+                world_points_prev=wp.array([[0.0, 0.0, 0.0]], dtype=wp.vec3f),
+                world_points=wp.array([[0.0, 0.0, 0.0]], dtype=wp.vec3f),
+                base_radii=wp.array([0.1], dtype=wp.float32),
+                radii=wp.array([0.1], dtype=wp.float32),
+            )
+            left_chain = SimpleNamespace(
+                world_points_prev=wp.array([[0.0, 0.0, 2.0]], dtype=wp.vec3f),
+                world_points=wp.array([[0.0, 0.0, 2.0]], dtype=wp.vec3f),
+                base_radii=wp.array([0.1], dtype=wp.float32),
+                radii=wp.array([0.1], dtype=wp.float32),
+            )
+            system = runtime_module.GrasperSphereCollisionSystem(
+                graspers={
+                    "right": SimpleNamespace(sphere_chains=[right_chain]),
+                    "left": SimpleNamespace(sphere_chains=[left_chain]),
+                },
+                proxy=SimpleNamespace(max_tri_extent=2.0),
+                motion_samples=1,
+                contact_margin=0.0,
+            )
+            model = SimpleNamespace(
+                particle_count=3,
+                tri_count=1,
+                particle_inv_mass=wp.array([1.0, 1.0, 1.0], dtype=wp.float32),
+                tri_indices=wp.array([[0, 1, 2]], dtype=wp.int32, ndim=2),
+                device=wp.get_device(),
+            )
+            system.initialize(model)
+
+            particle_q = wp.array(
+                [
+                    [-1.0, -1.0, 0.0],
+                    [1.0, -1.0, 0.0],
+                    [0.0, 1.0, 0.0],
+                ],
+                dtype=wp.vec3f,
+            )
+            particle_qd = wp.zeros(3, dtype=wp.vec3f)
+            particle_deltas = wp.zeros(3, dtype=wp.vec3f)
+
+            system.clear_reaction()
+            system.solve_constraints(
+                model,
+                None,
+                None,
+                particle_q,
+                particle_qd,
+                particle_deltas,
+                None,
+                None,
+                None,
+                1.0 / 120.0,
+                0,
+            )
+
+            right_reaction, right_count = system.get_reaction_average("right")
+            left_reaction, left_count = system.get_reaction_average("left")
+
+            self.assertEqual(right_count, 1)
+            self.assertEqual(left_count, 0)
+            self.assertGreater(np.linalg.norm(right_reaction), 0.0)
+            np.testing.assert_allclose(left_reaction, np.zeros(3, dtype=np.float32), atol=1.0e-6)
+
     def test_multi_source_rig_forwards_force_commands_and_ignores_unsupported_sources(self):
         class FakeSource:
             def __init__(self, force_capable: bool):
@@ -1345,6 +1533,24 @@ class TestPhaseRuntime(unittest.TestCase):
         runtime.haptic_feedback_settings.enabled = False
         runtime_module.Runtime._update_haptic_force_feedback(runtime, np.array([1.0, 0.0, 0.0], dtype=np.float32), 1)
         np.testing.assert_allclose(runtime.haptic_feedback_diagnostics.final_force, np.zeros(3, dtype=np.float32), atol=1.0e-6)
+
+    def test_runtime_combined_haptic_reaction_uses_right_grasper_only(self):
+        runtime = runtime_module.Runtime.__new__(runtime_module.Runtime)
+        runtime.haptic_collision_system = SimpleNamespace(
+            get_reaction_average=lambda: (np.array([1.0, 0.0, 0.0], dtype=np.float32), 2)
+        )
+        runtime.grasper_collision_system = SimpleNamespace(
+            get_reaction_average=lambda controller_id: (
+                (np.array([4.0, 0.0, 0.0], dtype=np.float32), 1)
+                if controller_id == runtime_module.PRIMARY_CONTROLLER_ID
+                else (np.array([99.0, 0.0, 0.0], dtype=np.float32), 1)
+            )
+        )
+
+        reaction, count = runtime_module.Runtime._get_combined_haptic_reaction(runtime)
+
+        self.assertEqual(count, 3)
+        np.testing.assert_allclose(reaction, np.array([2.0, 0.0, 0.0], dtype=np.float32), atol=1.0e-6)
 
     def test_runtime_haptic_force_feedback_filter_pipeline_order(self):
         runtime = _make_haptic_runtime_stub(_prepare_test_subdir("haptic_force_filter"))

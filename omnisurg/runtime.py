@@ -148,6 +148,8 @@ def collide_triangles_vs_spheres(
     cull_radius: wp.float32,
     delta_accumulator: wp.array(dtype=wp.vec3f),
     delta_counter: wp.array(dtype=wp.int32),
+    reaction_accumulator: wp.array(dtype=wp.vec3f),
+    reaction_counter: wp.array(dtype=wp.int32),
 ):
     tid = wp.tid()
     tri_count = tri_indices.shape[0]
@@ -218,6 +220,8 @@ def collide_triangles_vs_spheres(
     wp.atomic_add(delta_counter, t1, 1)
     wp.atomic_add(delta_counter, t2, 1)
     wp.atomic_add(delta_counter, t3, 1)
+    wp.atomic_add(reaction_accumulator, 0, -total_correction)
+    wp.atomic_add(reaction_counter, 0, 1)
 
 
 @wp.kernel
@@ -329,6 +333,8 @@ class GrasperSphereCollisionSystem(SimulationSystem):
         self.proxy = proxy
         self._accumulator: wp.array | None = None
         self._count: wp.array | None = None
+        self._reaction_accumulators: dict[str, wp.array] = {}
+        self._reaction_counts: dict[str, wp.array] = {}
         self.motion_samples = motion_samples
         self.contact_margin = contact_margin
         self._chain_cull_radii: dict[int, float] = {}
@@ -352,6 +358,33 @@ class GrasperSphereCollisionSystem(SimulationSystem):
     def initialize(self, model):
         self._accumulator = wp.zeros(model.particle_count, dtype=wp.vec3f, device=model.device)
         self._count = wp.zeros(model.particle_count, dtype=wp.int32, device=model.device)
+        self._reaction_accumulators = {
+            controller_id: wp.zeros(1, dtype=wp.vec3f, device=model.device)
+            for controller_id in self.graspers
+        }
+        self._reaction_counts = {
+            controller_id: wp.zeros(1, dtype=wp.int32, device=model.device)
+            for controller_id in self.graspers
+        }
+
+    def clear_reaction(self):
+        for accumulator in self._reaction_accumulators.values():
+            accumulator.zero_()
+        for counter in self._reaction_counts.values():
+            counter.zero_()
+
+    def get_reaction_average(self, controller_id: str) -> tuple[np.ndarray, int]:
+        reaction_accumulator = self._reaction_accumulators.get(controller_id)
+        reaction_count = self._reaction_counts.get(controller_id)
+        if reaction_accumulator is None or reaction_count is None:
+            return np.zeros(3, dtype=np.float32), 0
+
+        reaction = np.asarray(reaction_accumulator.numpy()[0], dtype=np.float32)
+        count = int(reaction_count.numpy()[0])
+        if count <= 0:
+            return np.zeros(3, dtype=np.float32), 0
+
+        return reaction / float(count), count
 
     def solve_constraints(
         self,
@@ -370,8 +403,13 @@ class GrasperSphereCollisionSystem(SimulationSystem):
         if model.tri_count == 0:
             return
 
-        for grasper in self.graspers.values():
+        for controller_id, grasper in self.graspers.items():
             if grasper is None:
+                continue
+
+            reaction_accumulator = self._reaction_accumulators.get(controller_id)
+            reaction_count = self._reaction_counts.get(controller_id)
+            if reaction_accumulator is None or reaction_count is None:
                 continue
 
             for chain in grasper.sphere_chains:
@@ -397,7 +435,7 @@ class GrasperSphereCollisionSystem(SimulationSystem):
                         dt,
                         self._chain_cull_radii[id(chain)],
                     ],
-                    outputs=[self._accumulator, self._count],
+                    outputs=[self._accumulator, self._count, reaction_accumulator, reaction_count],
                     device=model.device,
                 )
 
@@ -698,6 +736,7 @@ class Runtime:
         self.solver.register_system(self.haptic_truncation_system)
         self.solver.register_system(self.bounds_system)
 
+        self._extra_key_press_hooks: list = []
         self.renderer = RenderBridge(viewer_config, self.model, self.device)
         self.renderer.set_input_callbacks(on_key_press=self._on_key_press)
         self.renderer.register_ui_callback(self.gui, position="side")
@@ -1039,6 +1078,25 @@ class Runtime:
             controller_id: np.asarray(force, dtype=np.float32).copy()
             for controller_id, force in self._haptic_force_commands.items()
         }
+
+    def _get_combined_haptic_reaction(self) -> tuple[np.ndarray, int]:
+        weighted_sum = np.zeros(3, dtype=np.float32)
+        total_count = 0
+
+        for avg_reaction, contact_count in (
+            self.haptic_collision_system.get_reaction_average(),
+            self.grasper_collision_system.get_reaction_average(PRIMARY_CONTROLLER_ID),
+        ):
+            count = int(contact_count)
+            if count <= 0:
+                continue
+            weighted_sum += np.asarray(avg_reaction, dtype=np.float32) * float(count)
+            total_count += count
+
+        if total_count <= 0:
+            return np.zeros(3, dtype=np.float32), 0
+
+        return weighted_sum / float(total_count), total_count
 
     def _render_haptics_ui(self, ui):
         if not _ui_section_expanded(ui, "Haptics"):
@@ -1481,6 +1539,9 @@ class Runtime:
             self.solver.step(self.state_0, self.state_1, None, None, self.sim_config.substep_dt)
             self.state_0, self.state_1 = self.state_1, self.state_0
 
+    def register_key_press_hook(self, callback):
+        self._extra_key_press_hooks.append(callback)
+
     def _on_key_press(self, symbol: int, modifiers: int):
         try:
             import pyglet
@@ -1489,6 +1550,12 @@ class Runtime:
 
         if symbol == pyglet.window.key.T:
             self.toggle_textures()
+
+        for hook in self._extra_key_press_hooks:
+            try:
+                hook(symbol, modifiers)
+            except Exception as exc:
+                print(f"Key press hook raised: {exc}")
 
     def toggle_textures(self):
         self.textures_enabled = not self.textures_enabled
@@ -1651,6 +1718,7 @@ class Runtime:
                 grasper.advance(self.sim_config.frame_dt, state.grip)
 
         self.haptic_collision_system.clear_reaction()
+        self.grasper_collision_system.clear_reaction()
         with wp.ScopedTimer(
             "solver_loop",
             active=self.profiling_enabled,
@@ -1663,7 +1731,7 @@ class Runtime:
             else:
                 self._simulate_step()
 
-        reaction_offset, contact_count = self.haptic_collision_system.get_reaction_average()
+        reaction_offset, contact_count = self._get_combined_haptic_reaction()
         self._update_haptic_force_feedback(reaction_offset, contact_count)
         self._trim_profile_samples()
         self.sim_time += self.sim_config.frame_dt

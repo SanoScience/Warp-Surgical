@@ -15,6 +15,7 @@ from omnisurg.input.sources import (
     LiveHapticSource,
     LiveMiniMouSource,
     MultiSourceRig,
+    RecordingRig,
     ReplayInputSource,
 )
 
@@ -29,6 +30,7 @@ __all__ = [
     "LiveHapticSource",
     "LiveMiniMouSource",
     "MultiSourceRig",
+    "RecordingRig",
     "ReplayInputSource",
     "create_haptic_proxy_state",
     "create_vec3_staging_buffer",

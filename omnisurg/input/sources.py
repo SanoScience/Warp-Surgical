@@ -56,6 +56,9 @@ class InputSource(ABC):
     def supports_force_feedback(self) -> bool:
         return False
 
+    def reset(self):
+        pass
+
 
 class InputRig(ABC):
     """Multi-controller input rig composed from one or more input sources."""
@@ -72,6 +75,9 @@ class InputRig(ABC):
 
     def supports_force_feedback(self, controller_id: str | None = None) -> bool:
         return False
+
+    def reset(self):
+        pass
 
 
 class MultiSourceRig(InputRig):
@@ -104,6 +110,10 @@ class MultiSourceRig(InputRig):
             return bool(source is not None and source.supports_force_feedback())
         return any(source.supports_force_feedback() for source in self._sources.values())
 
+    def reset(self):
+        for source in self._sources.values():
+            source.reset()
+
 
 class LiveHapticSource(InputSource):
     def __init__(self, scale: float = 1.0, device_name: str = "Default Device"):
@@ -118,6 +128,14 @@ class LiveHapticSource(InputSource):
             return {}
 
         try:
+            if hasattr(self._ctrl, "poll_state"):
+                sample = self._ctrl.poll_state()
+                return {
+                    "position": np.array(sample["position"], dtype=np.float32),
+                    "rotation": np.array(sample["rotation"], dtype=np.float32),
+                    "button": bool(sample["button"]),
+                }
+
             return {
                 "position": np.array(self._ctrl.get_scaled_position(), dtype=np.float32),
                 "rotation": np.array(self._ctrl.get_rotation(), dtype=np.float32),
@@ -178,7 +196,11 @@ class ReplayInputSource(InputSource):
     """Replay a deterministic haptic trace saved as an `(N, 7)` or `(N, 8)` NumPy array."""
 
     def __init__(self, path: str):
+        self._path = path
         self._data = np.load(path)
+        self._frame = 0
+
+    def reset(self):
         self._frame = 0
 
     def poll(self) -> dict:
@@ -196,6 +218,110 @@ class ReplayInputSource(InputSource):
         if sample.shape[0] >= 9:
             result["grip"] = float(np.clip(sample[8], 0.0, 1.0))
         return result
+
+
+class RecordingRig(InputRig):
+    """Wrap an `InputRig` to record per-controller samples to `.npy` traces.
+
+    Each saved row has 9 float32 columns: `[px, py, pz, qx, qy, qz, qw, button, grip]`,
+    matching the format accepted by `ReplayInputSource`.
+    """
+
+    def __init__(self, rig: InputRig, output_paths: dict[str, str | Path]):
+        self._rig = rig
+        self._output_paths: dict[str, Path] = {
+            controller_id: Path(path)
+            for controller_id, path in output_paths.items()
+            if path is not None
+        }
+        if not self._output_paths:
+            raise ValueError("RecordingRig requires at least one output path")
+        self._buffers: dict[str, list[list[float]]] = {cid: [] for cid in self._output_paths}
+        self._active = False
+        self._take_counter = 0
+
+    @property
+    def is_recording(self) -> bool:
+        return self._active
+
+    @property
+    def output_paths(self) -> dict[str, Path]:
+        return dict(self._output_paths)
+
+    def poll(self) -> dict[str, ControllerSample]:
+        frame = self._rig.poll()
+        if self._active:
+            for controller_id, buffer in self._buffers.items():
+                sample = frame.get(controller_id)
+                if sample is None or sample.position is None or sample.rotation is None:
+                    continue
+                buffer.append([
+                    float(sample.position[0]),
+                    float(sample.position[1]),
+                    float(sample.position[2]),
+                    float(sample.rotation[0]),
+                    float(sample.rotation[1]),
+                    float(sample.rotation[2]),
+                    float(sample.rotation[3]),
+                    1.0 if sample.button else 0.0,
+                    float(sample.grip),
+                ])
+        return frame
+
+    def start_recording(self):
+        if self._active:
+            return
+        for buffer in self._buffers.values():
+            buffer.clear()
+        self._active = True
+        print(f"[record] take {self._take_counter + 1} started")
+
+    def stop_recording(self, *, save: bool = True) -> dict[str, Path]:
+        if not self._active:
+            return {}
+        self._active = False
+        written: dict[str, Path] = {}
+        if save:
+            for controller_id, buffer in self._buffers.items():
+                if not buffer:
+                    print(f"[record] {controller_id}: no frames captured, skipping")
+                    continue
+                path = self._take_path(controller_id)
+                path.parent.mkdir(parents=True, exist_ok=True)
+                np.save(path, np.asarray(buffer, dtype=np.float32))
+                written[controller_id] = path
+                print(f"[record] {controller_id}: wrote {len(buffer)} frames to {path}")
+        self._take_counter += 1
+        for buffer in self._buffers.values():
+            buffer.clear()
+        return written
+
+    def toggle_recording(self) -> bool:
+        if self._active:
+            self.stop_recording()
+        else:
+            self.start_recording()
+        return self._active
+
+    def _take_path(self, controller_id: str) -> Path:
+        base = self._output_paths[controller_id]
+        if self._take_counter == 0:
+            return base
+        return base.with_name(f"{base.stem}.{self._take_counter:03d}{base.suffix}")
+
+    def close(self):
+        if self._active:
+            self.stop_recording(save=True)
+        self._rig.close()
+
+    def set_force_commands(self, force_commands: dict[str, np.ndarray]):
+        self._rig.set_force_commands(force_commands)
+
+    def supports_force_feedback(self, controller_id: str | None = None) -> bool:
+        return self._rig.supports_force_feedback(controller_id)
+
+    def reset(self):
+        self._rig.reset()
 
 
 class BimanualOpenHapticsRig(MultiSourceRig):

@@ -39,3 +39,14 @@
   - `cudaGraphLaunch_v10000`: 87.2 ms total
   - `cuLaunchKernel`: 36.1 ms total
 - Old checked-in non-graph-heavy baseline had much larger CPU API totals from launch/memset activity, so the current CUDA graph path materially reduced submission overhead.
+
+## 2026-04-10 Anatomy Mesh VTK Converter
+- Anatomy asset folders such as `meshes/liver/` contain `model.vertices`, `model.tetras`, `model.tris`, `model.edges`, and `model.uvs`.
+- Sample liver counts implied by file lengths:
+  - vertices: 1987 rows of XYZ positions
+  - uvs: 1987 rows of UV coordinates
+  - tris: 3939 rows of triangle connectivity
+  - tetras: 6624 rows of tetra connectivity
+- Connectivity appears to be 0-based already, which matches VTK expectations from the VTK file-format notes.
+- The VTK reference indicates volumetric anatomy should map naturally to `UnstructuredGrid` (`.vtu`) and surface-only exports to `PolyData` (`.vtp`).
+- Existing repo loader logic likely lives in `omnisurg/mesh/assets.py` and `mesh_loader.py`, so the converter should mirror their parsing and optional-file behavior instead of inventing a new interpretation.

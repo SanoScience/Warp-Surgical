@@ -28,9 +28,18 @@ def enable_direct_gl_render():
 
     original_render = RendererGL.render
 
-    def patched_render(self, camera, objects, lines=None):
+    def patched_render(self, camera, objects, lines=None, wireframe_shapes=None, arrows=None, *args, **kwargs):
         if not getattr(self, "_omnisurg_direct_render", False):
-            return original_render(self, camera, objects, lines)
+            return original_render(
+                self,
+                camera,
+                objects,
+                lines,
+                wireframe_shapes,
+                arrows,
+                *args,
+                **kwargs,
+            )
 
         gl = RendererGL.gl
         self._make_current()
@@ -70,6 +79,12 @@ def enable_direct_gl_render():
 
         if lines:
             self._render_lines(lines)
+
+        if arrows:
+            self._render_arrows(arrows)
+
+        if wireframe_shapes:
+            self._render_wireframe_shapes(wireframe_shapes)
 
         check_gl_error()
 

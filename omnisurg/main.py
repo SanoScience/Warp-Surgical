@@ -42,6 +42,18 @@ def parse_args():
         help="Path to left-controller .npy haptic replay trace",
     )
     parser.add_argument(
+        "--record-right",
+        type=str,
+        default=None,
+        help="Path to record the right-controller haptic trace (.npy). Toggle with R in the viewer.",
+    )
+    parser.add_argument(
+        "--record-left",
+        type=str,
+        default=None,
+        help="Path to record the left-controller haptic trace (.npy). Toggle with R in the viewer.",
+    )
+    parser.add_argument(
         "--right-input-backend",
         type=str,
         default="openhaptics",
@@ -276,7 +288,7 @@ def main():
     )
 
     from omnisurg.config import BoundsConfig, HapticConfig, SceneConfig, SimulationConfig, SIMULATION_PRESETS, ViewerConfig
-    from omnisurg.haptics import BimanualReplayRig
+    from omnisurg.haptics import BimanualReplayRig, RecordingRig
     from omnisurg.runtime import Runtime
 
     if args.preset:
@@ -308,11 +320,49 @@ def main():
         if input_rig is None:
             print("Haptic devices not available, running without input")
 
+    recording_rig: RecordingRig | None = None
+    if args.record_right or args.record_left:
+        if input_rig is None:
+            print("No live input rig available; ignoring --record-right/--record-left")
+        else:
+            record_paths = {}
+            if args.record_right:
+                record_paths["right"] = args.record_right
+            if args.record_left:
+                record_paths["left"] = args.record_left
+            recording_rig = RecordingRig(input_rig, record_paths)
+            input_rig = recording_rig
+            print(
+                "Recording armed (press R to start/stop): "
+                + ", ".join(f"{cid}={path}" for cid, path in record_paths.items())
+            )
+
+    is_replay = bool(args.replay or args.left_replay)
+
     if args.viewer in {"gl", "surgsim"}:
         print("Press T in the viewer to toggle textures")
+        if recording_rig is not None:
+            print("Press R in the viewer to start/stop recording")
+        if is_replay:
+            print("Press P in the viewer to restart playback")
 
     with wp.ScopedDevice(args.device):
         rt = Runtime(sim_config, scene_config, haptic_config, viewer_config, bounds_config)
+
+        if recording_rig is not None:
+            def _record_key_hook(symbol, modifiers, rig=recording_rig):
+                import pyglet
+                if symbol == pyglet.window.key.R:
+                    rig.toggle_recording()
+            rt.register_key_press_hook(_record_key_hook)
+
+        if is_replay and input_rig is not None:
+            def _replay_key_hook(symbol, modifiers, rig=input_rig):
+                import pyglet
+                if symbol == pyglet.window.key.P:
+                    rig.reset()
+                    print("[replay] restarted")
+            rt.register_key_press_hook(_replay_key_hook)
 
         frame = 0
         while rt.is_running():
