@@ -42,6 +42,25 @@ def parse_args():
         help="Path to left-controller .npy haptic replay trace",
     )
     parser.add_argument(
+        "--replay-force-feedback",
+        action="store_true",
+        help="During replay, also open the live haptic device(s) and dispatch "
+        "sim-generated forces to them (positions still come from the trace).",
+    )
+    parser.add_argument(
+        "--force-telemetry",
+        action="store_true",
+        help="Show live per-frame force / proxy-offset / contact plots in the "
+        "viewer's Plots window (GL viewer only).",
+    )
+    parser.add_argument(
+        "--force-telemetry-csv",
+        type=str,
+        default=None,
+        help="Path to write per-frame force-feedback telemetry as CSV for "
+        "offline FFT/stability analysis. Implies --force-telemetry sampling.",
+    )
+    parser.add_argument(
         "--record-right",
         type=str,
         default=None,
@@ -288,8 +307,9 @@ def main():
     )
 
     from omnisurg.config import BoundsConfig, HapticConfig, SceneConfig, SimulationConfig, SIMULATION_PRESETS, ViewerConfig
-    from omnisurg.haptics import BimanualReplayRig, RecordingRig
+    from omnisurg.haptics import BimanualReplayRig, RecordingRig, ReplayForceFeedbackRig
     from omnisurg.runtime import Runtime
+    from omnisurg.telemetry import ForceTelemetry
 
     if args.preset:
         sim_config = SIMULATION_PRESETS[args.preset]
@@ -313,6 +333,16 @@ def main():
         if args.left_replay:
             replay_desc.append(f"left={args.left_replay}")
         print("Using replay input: " + ", ".join(replay_desc))
+        if args.replay_force_feedback:
+            force_rig = _build_live_input_rig(args)
+            if force_rig is None:
+                print(
+                    "Replay force-feedback requested but no live haptic devices "
+                    "were available; continuing without force output."
+                )
+            else:
+                input_rig = ReplayForceFeedbackRig(input_rig, force_rig)
+                print("Replay force-feedback armed: sim forces will be sent to live device(s)")
     elif args.viewer == "headless":
         print("Headless mode: running without live haptic input")
     else:
@@ -364,6 +394,24 @@ def main():
                     print("[replay] restarted")
             rt.register_key_press_hook(_replay_key_hook)
 
+        telemetry: ForceTelemetry | None = None
+        if args.force_telemetry or args.force_telemetry_csv:
+            telemetry = ForceTelemetry(
+                rt,
+                viewer_plots=args.force_telemetry,
+                csv_path=args.force_telemetry_csv,
+            )
+            if telemetry.enabled:
+                desc = []
+                if args.force_telemetry:
+                    desc.append("viewer plots")
+                if args.force_telemetry_csv:
+                    desc.append(f"csv={args.force_telemetry_csv}")
+                print("Force telemetry enabled: " + ", ".join(desc))
+            else:
+                telemetry = None
+                print("Force telemetry requested but unsupported for this viewer/backend")
+
         frame = 0
         while rt.is_running():
             if input_rig:
@@ -371,6 +419,8 @@ def main():
             rt.step()
             if input_rig:
                 _dispatch_haptic_force_commands(input_rig, rt.get_haptic_force_commands())
+            if telemetry is not None:
+                telemetry.record()
             rt.render()
             rt.pace()
 
@@ -378,6 +428,8 @@ def main():
             if args.num_frames > 0 and frame >= args.num_frames:
                 break
 
+        if telemetry is not None:
+            telemetry.close()
         if input_rig:
             _zero_haptic_force_commands(input_rig)
             input_rig.close()

@@ -1,0 +1,3 @@
+ uv run python -m omnisurg.main --viewer gl --right-input-backend openhaptics --left-input-backend none --scene single --asset cloth_regular_mid  --replay .\trace_right.npy --replay-force-feedback  --force-telemetry
+
+  uv run python -m omnisurg.main --viewer gl --right-input-backend openhaptics --left-input-backend none --scene single --asset cloth_regular_mid   --force-telemetry

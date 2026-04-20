@@ -381,6 +381,11 @@ class RenderBridge:
         if hasattr(self._renderer, "close"):
             self._renderer.close()
 
+    def log_scalar(self, name: str, value: float) -> None:
+        log_fn = getattr(self._renderer, "log_scalar", None)
+        if callable(log_fn):
+            log_fn(name, float(value))
+
     def draw_mesh(
         self,
         name: str,

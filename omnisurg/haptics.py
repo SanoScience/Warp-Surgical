@@ -8,6 +8,7 @@ from omnisurg.input.sources import (
     LiveMiniMouSource,
     MultiSourceRig,
     RecordingRig,
+    ReplayForceFeedbackRig,
     ReplayInputSource,
 )
 
@@ -21,5 +22,6 @@ __all__ = [
     "LiveMiniMouSource",
     "MultiSourceRig",
     "RecordingRig",
+    "ReplayForceFeedbackRig",
     "ReplayInputSource",
 ]

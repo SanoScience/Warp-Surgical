@@ -816,6 +816,7 @@ class Runtime:
         self._haptic_preset_dir = HAPTIC_PRESET_DIR
         self._haptic_new_preset_name = "custom"
         self._haptic_feedback_available = False
+        self._force_feedback_compute_always = False
         self._haptic_feedback_state_initialized = False
         self._haptic_device_position_prev = np.zeros(3, dtype=np.float32)
         self._haptic_proxy_position = np.zeros(3, dtype=np.float32)
@@ -980,6 +981,12 @@ class Runtime:
         self._haptic_feedback_available = self._supports_haptic_force_feedback(source)
         self.haptic_feedback_diagnostics.force_feedback_available = bool(self._haptic_feedback_available)
 
+    def set_force_feedback_compute_always(self, enabled: bool) -> None:
+        """Run the force-feedback computation path even when no live device is
+        attached. Forces still won't be dispatched, but diagnostics are
+        populated so telemetry can plot/log them."""
+        self._force_feedback_compute_always = bool(enabled)
+
     def _update_haptic_force_feedback(self, avg_reaction_offset, contact_count: int):
         zero = np.zeros(3, dtype=np.float32)
         diagnostics = self.haptic_feedback_diagnostics
@@ -992,9 +999,10 @@ class Runtime:
         diagnostics.force_feedback_available = bool(self._haptic_feedback_available)
 
         device_position = np.asarray(state.scaled_position, dtype=np.float32).copy() if state.sample_present else zero.copy()
+        compute_allowed = self._haptic_feedback_available or self._force_feedback_compute_always
         if (
             not settings.enabled
-            or not self._haptic_feedback_available
+            or not compute_allowed
             or not state.sample_present
             or int(contact_count) <= 0
         ):
