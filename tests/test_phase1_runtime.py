@@ -1160,6 +1160,7 @@ class TestPhaseRuntime(unittest.TestCase):
         renderer._spy = FakeSpy()
         renderer._scene_color_texture = "scene-color"
         renderer._depth_texture = "depth"
+        renderer._resolved_bloom_texture = "bloom"
         renderer._lens_dirt_texture = "lens-dirt"
         renderer._post_sampler = "sampler"
 
@@ -1184,6 +1185,7 @@ class TestPhaseRuntime(unittest.TestCase):
         cursor = renderer._spy.cursor
         self.assertEqual(cursor.scene_color_tex, "scene-color")
         self.assertEqual(cursor.depth_tex, "depth")
+        self.assertEqual(cursor.bloom_tex, "bloom")
         self.assertEqual(cursor.lens_dirt_tex, "lens-dirt")
         self.assertEqual(cursor.post_sampler, "sampler")
         self.assertEqual(cursor.output_size, (1600.0, 800.0))
@@ -1208,6 +1210,62 @@ class TestPhaseRuntime(unittest.TestCase):
 
         with self.assertRaises(ValueError):
             renderer.set_postprocess_params(bloom_strength=1.0)
+
+    def test_slang_renderer_bloom_level_sizes_are_bounded(self):
+        renderer = SlangRenderer.__new__(SlangRenderer)
+
+        self.assertEqual(
+            renderer._bloom_level_sizes(1600, 1000),
+            [(800, 500), (400, 250), (200, 125), (100, 63), (50, 32)],
+        )
+        self.assertEqual(renderer._bloom_level_sizes(1, 1), [(1, 1)])
+        self.assertEqual(renderer._bloom_level_sizes(3, 2), [(2, 1), (1, 1)])
+
+    def test_slang_renderer_resize_invalidates_bloom_textures(self):
+        class FakeDevice:
+            def __init__(self):
+                self.waited = False
+
+            def wait(self):
+                self.waited = True
+
+        class FakeSurface:
+            def __init__(self):
+                self.configured = None
+                self.unconfigured = False
+
+            def configure(self, **kwargs):
+                self.configured = kwargs
+
+            def unconfigure(self):
+                self.unconfigured = True
+
+        renderer = SlangRenderer.__new__(SlangRenderer)
+        renderer._pending_resize = (800, 600)
+        renderer._device = FakeDevice()
+        renderer._surface = FakeSurface()
+        renderer._vsync = False
+        renderer._spy = SimpleNamespace(
+            Viewport=SimpleNamespace(from_size=lambda width, height: ("viewport", width, height)),
+            ScissorRect=SimpleNamespace(from_size=lambda width, height: ("scissor", width, height)),
+        )
+        renderer._scene_color_texture = "scene"
+        renderer._depth_texture = "depth"
+        renderer._bloom_down_textures = ["down"]
+        renderer._bloom_up_textures = ["up"]
+        renderer._bloom_texture_size = (1, 1)
+        renderer._resolved_bloom_texture = "resolved"
+
+        renderer._apply_pending_resize()
+
+        self.assertTrue(renderer._device.waited)
+        self.assertEqual(renderer._surface.configured, {"width": 800, "height": 600, "vsync": False})
+        self.assertIsNone(renderer._scene_color_texture)
+        self.assertIsNone(renderer._depth_texture)
+        self.assertEqual(renderer._bloom_down_textures, [])
+        self.assertEqual(renderer._bloom_up_textures, [])
+        self.assertIsNone(renderer._bloom_texture_size)
+        self.assertIsNone(renderer._resolved_bloom_texture)
 
     def test_slang_renderer_camera_orbit_pan_and_dolly_keep_valid_basis(self):
         renderer = self._make_slang_camera_renderer()
@@ -1690,6 +1748,7 @@ class TestPhaseRuntime(unittest.TestCase):
 
     def test_slang_postprocess_shader_declares_tonemap_and_scope_bindings(self):
         shader_source = (REPO_ROOT / "omnisurg" / "rendering" / "slang_shaders" / "omnisurg_post.slang").read_text()
+        bloom_source = (REPO_ROOT / "omnisurg" / "rendering" / "slang_shaders" / "omnisurg_bloom.slang").read_text()
         mesh_source = (REPO_ROOT / "omnisurg" / "rendering" / "slang_shaders" / "omnisurg_mesh.slang").read_text()
         tissue_source = (REPO_ROOT / "omnisurg" / "rendering" / "slang_shaders" / "omnisurg_tissue.slang").read_text()
         renderer_source = (REPO_ROOT / "omnisurg" / "rendering" / "slang.py").read_text()
@@ -1697,6 +1756,7 @@ class TestPhaseRuntime(unittest.TestCase):
         self.assertIn("uint vertex_id : SV_VertexID", shader_source)
         self.assertIn("Texture2D<float4> scene_color_tex", shader_source)
         self.assertIn("Texture2D<float> depth_tex", shader_source)
+        self.assertIn("Texture2D<float4> bloom_tex", shader_source)
         self.assertIn("Texture2D<float4> lens_dirt_tex", shader_source)
         self.assertIn("SamplerState post_sampler", shader_source)
         for uniform in (
@@ -1717,24 +1777,31 @@ class TestPhaseRuntime(unittest.TestCase):
         ):
             self.assertIn(uniform, shader_source)
         self.assertIn("float3 aces_tonemap", shader_source)
-        self.assertIn("float3 bright_pass", shader_source)
-        self.assertIn("float3 bloom_gather", shader_source)
-        self.assertLess(shader_source.index("bloom_gather(input.uv)"), shader_source.index("aces_tonemap(color)"))
+        self.assertIn("bloom_tex.Sample", shader_source)
         self.assertIn("float3 apply_lens_dirt", shader_source)
         self.assertIn("float3 bloom_drive = bloom_signal * bloom_intensity", shader_source)
         self.assertIn("color += bloom_drive", shader_source)
         self.assertLess(shader_source.index("float3 bloom_drive"), shader_source.index("aces_tonemap(color)"))
         self.assertLess(shader_source.index("aces_tonemap(color)"), shader_source.index("apply_lens_dirt(color, input.uv, bloom_drive)"))
+        self.assertIn("prefilter_downsample_fragment", bloom_source)
+        self.assertIn("downsample_fragment", bloom_source)
+        self.assertIn("upsample_fragment", bloom_source)
+        self.assertIn("float karis_weight", bloom_source)
+        self.assertIn("float3 downsample_13_tap", bloom_source)
+        self.assertIn("float3 tent_upsample", bloom_source)
+        self.assertIn("Texture2D<float4> base_tex", bloom_source)
         self.assertIn("float endoscope_vignette", shader_source)
         self.assertIn("float scope_mask", shader_source)
         self.assertIn("scene_color_tex.Sample", shader_source)
         self.assertIn("omnisurg_post.slang", renderer_source)
+        self.assertIn("omnisurg_bloom.slang", renderer_source)
         self.assertIn("PostProcessParams", renderer_source)
         self.assertIn("DEFAULT_LENS_DIRT_PATH", renderer_source)
         self.assertIn("LensDirt00.png", renderer_source)
         self.assertIn("TextureUsage.render_target | self._spy.TextureUsage.shader_resource", renderer_source)
         self.assertIn("rgba16_float", renderer_source)
         self.assertIn("self._post_pipeline", renderer_source)
+        self.assertIn("self._bloom_prefilter_pipeline", renderer_source)
         self.assertIn("input_layout=None", renderer_source)
         self.assertIn("max(color, float3(0.0))", mesh_source)
         self.assertIn("max(color, float3(0.0))", tissue_source)

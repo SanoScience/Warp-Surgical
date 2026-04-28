@@ -6,6 +6,7 @@ struct V2F
 
 Texture2D<float4> scene_color_tex;
 Texture2D<float> depth_tex;
+Texture2D<float4> bloom_tex;
 Texture2D<float4> lens_dirt_tex;
 SamplerState post_sampler;
 
@@ -42,43 +43,6 @@ float3 aces_tonemap(float3 color)
     const float d = 0.59;
     const float e = 0.14;
     return saturate((color * (a * color + b)) / (color * (c * color + d) + e));
-}
-
-float3 sample_hdr_scene(float2 uv)
-{
-    return max(scene_color_tex.Sample(post_sampler, uv).rgb, float3(0.0)) * white_balance * exposure;
-}
-
-float3 bright_pass(float3 color)
-{
-    float luminance = dot(color, float3(0.2126, 0.7152, 0.0722));
-    float bright = saturate((luminance - bloom_threshold) / max(luminance, 0.0001));
-    return color * bright;
-}
-
-float3 bloom_gather(float2 uv)
-{
-    float2 texel = float2(
-        bloom_radius / max(output_size.x, 1.0),
-        bloom_radius / max(output_size.y, 1.0));
-    float3 bloom = bright_pass(sample_hdr_scene(uv)) * 0.20;
-
-    bloom += bright_pass(sample_hdr_scene(uv + texel * float2( 1.0,  0.0))) * 0.11;
-    bloom += bright_pass(sample_hdr_scene(uv + texel * float2(-1.0,  0.0))) * 0.11;
-    bloom += bright_pass(sample_hdr_scene(uv + texel * float2( 0.0,  1.0))) * 0.11;
-    bloom += bright_pass(sample_hdr_scene(uv + texel * float2( 0.0, -1.0))) * 0.11;
-
-    bloom += bright_pass(sample_hdr_scene(uv + texel * float2( 0.7,  0.7))) * 0.08;
-    bloom += bright_pass(sample_hdr_scene(uv + texel * float2(-0.7,  0.7))) * 0.08;
-    bloom += bright_pass(sample_hdr_scene(uv + texel * float2( 0.7, -0.7))) * 0.08;
-    bloom += bright_pass(sample_hdr_scene(uv + texel * float2(-0.7, -0.7))) * 0.08;
-
-    bloom += bright_pass(sample_hdr_scene(uv + texel * float2( 2.0,  0.0))) * 0.035;
-    bloom += bright_pass(sample_hdr_scene(uv + texel * float2(-2.0,  0.0))) * 0.035;
-    bloom += bright_pass(sample_hdr_scene(uv + texel * float2( 0.0,  2.0))) * 0.035;
-    bloom += bright_pass(sample_hdr_scene(uv + texel * float2( 0.0, -2.0))) * 0.035;
-
-    return bloom;
 }
 
 float radial_distance(float2 uv)
@@ -123,9 +87,9 @@ float4 fragment_main(V2F input) : SV_Target
         color *= white_balance * exposure;
         bool bloom_active = bloom_enabled != 0 && bloom_intensity > 0.0 && bloom_radius > 0.0;
         bool dirt_active = lens_dirt_enabled != 0 && lens_dirt_intensity > 0.0;
-        float3 bloom_signal = float3(0.0);
-        if (bloom_active)
-            bloom_signal = bloom_gather(input.uv);
+        float3 bloom_signal = max(bloom_tex.Sample(post_sampler, input.uv).rgb, float3(0.0));
+        if (!bloom_active)
+            bloom_signal = float3(0.0);
         float3 bloom_drive = bloom_signal * bloom_intensity;
         if (bloom_active)
             color += bloom_drive;

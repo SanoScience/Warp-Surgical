@@ -17,6 +17,7 @@ from omnisurg.config import ViewerConfig
 SLANG_RENDER_BACKENDS = frozenset({"slang", "slang-d3d12", "slang-vulkan", "slang-vk"})
 SLANG_SHADER_DIR = Path(__file__).with_name("slang_shaders")
 DEFAULT_LENS_DIRT_PATH = Path(__file__).resolve().parents[2] / "textures" / "lensdirt" / "LensDirt00.png"
+_BLOOM_MAX_LEVELS = 5
 DEFAULT_WINDOWS_SLANG_BIN = Path(r"G:\warp\slang-2026.5.1-windows-x86_64\bin")
 _SLANG_BIN_ENV = os.environ.get("OMNISURG_SLANG_BIN")
 DEFAULT_SLANG_BIN = Path(_SLANG_BIN_ENV) if _SLANG_BIN_ENV else (
@@ -862,6 +863,10 @@ class SlangRenderer:
         self._pass_encoder = None
         self._scene_color_texture = None
         self._depth_texture = None
+        self._bloom_down_textures: list[Any] = []
+        self._bloom_up_textures: list[Any] = []
+        self._bloom_texture_size: tuple[int, int] | None = None
+        self._resolved_bloom_texture = None
         self._pending_resize: tuple[int, int] | None = None
         self._shared_positions: dict[tuple[int, int], _SharedPositionBuffer] = {}
         self._shared_vertex_colors: dict[tuple[int, int], _SharedVertexColorBuffer] = {}
@@ -1086,6 +1091,18 @@ class SlangRenderer:
             "omnisurg_post.slang",
             ["vertex_main", "fragment_main"],
         )
+        self._bloom_prefilter_program = self._device.load_program(
+            "omnisurg_bloom.slang",
+            ["vertex_main", "prefilter_downsample_fragment"],
+        )
+        self._bloom_downsample_program = self._device.load_program(
+            "omnisurg_bloom.slang",
+            ["vertex_main", "downsample_fragment"],
+        )
+        self._bloom_upsample_program = self._device.load_program(
+            "omnisurg_bloom.slang",
+            ["vertex_main", "upsample_fragment"],
+        )
         self._flat_input_layout = self._device.create_input_layout(
             input_elements=[
                 {
@@ -1181,6 +1198,27 @@ class SlangRenderer:
             targets=[{"format": self._color_format}],
             rasterizer={"cull_mode": self._spy.CullMode.none},
             label="omnisurg-postprocess",
+        )
+        bloom_pipeline_common = {
+            "input_layout": None,
+            "primitive_topology": self._spy.PrimitiveTopology.triangle_list,
+            "targets": [{"format": self._scene_color_format}],
+            "rasterizer": {"cull_mode": self._spy.CullMode.none},
+        }
+        self._bloom_prefilter_pipeline = self._device.create_render_pipeline(
+            program=self._bloom_prefilter_program,
+            label="omnisurg-bloom-prefilter",
+            **bloom_pipeline_common,
+        )
+        self._bloom_downsample_pipeline = self._device.create_render_pipeline(
+            program=self._bloom_downsample_program,
+            label="omnisurg-bloom-downsample",
+            **bloom_pipeline_common,
+        )
+        self._bloom_upsample_pipeline = self._device.create_render_pipeline(
+            program=self._bloom_upsample_program,
+            label="omnisurg-bloom-upsample",
+            **bloom_pipeline_common,
         )
 
     def _init_ui(self) -> None:
@@ -1570,6 +1608,10 @@ class SlangRenderer:
             self._surface.unconfigure()
             self._scene_color_texture = None
             self._depth_texture = None
+            self._bloom_down_textures = []
+            self._bloom_up_textures = []
+            self._bloom_texture_size = None
+            self._resolved_bloom_texture = None
             return
 
         self._surface.configure(width=width, height=height, vsync=self._vsync)
@@ -1577,6 +1619,10 @@ class SlangRenderer:
         self._scissor = self._spy.ScissorRect.from_size(width, height)
         self._scene_color_texture = None
         self._depth_texture = None
+        self._bloom_down_textures = []
+        self._bloom_up_textures = []
+        self._bloom_texture_size = None
+        self._resolved_bloom_texture = None
 
     def _hdr_scene_color_format(self):
         return getattr(self._spy.Format, "rgba16_float", self._spy.Format.rgba32_float)
@@ -1610,6 +1656,66 @@ class SlangRenderer:
                 label="omnisurg-depth",
             )
         return self._depth_texture
+
+    def _bloom_level_sizes(self, width: int, height: int) -> list[tuple[int, int]]:
+        sizes: list[tuple[int, int]] = []
+        level_width = max(1, (int(width) + 1) // 2)
+        level_height = max(1, (int(height) + 1) // 2)
+        for _ in range(_BLOOM_MAX_LEVELS):
+            sizes.append((level_width, level_height))
+            if level_width == 1 and level_height == 1:
+                break
+            level_width = max(1, (level_width + 1) // 2)
+            level_height = max(1, (level_height + 1) // 2)
+        return sizes
+
+    def _ensure_bloom_textures(self, width: int, height: int) -> list[tuple[int, int]]:
+        sizes = self._bloom_level_sizes(width, height)
+        if (
+            self._bloom_texture_size == (int(width), int(height))
+            and len(self._bloom_down_textures) == len(sizes)
+            and len(self._bloom_up_textures) == len(sizes)
+        ):
+            return sizes
+
+        usage = self._spy.TextureUsage.render_target | self._spy.TextureUsage.shader_resource
+        self._bloom_down_textures = []
+        self._bloom_up_textures = []
+        for index, (level_width, level_height) in enumerate(sizes):
+            self._bloom_down_textures.append(
+                self._device.create_texture(
+                    format=self._scene_color_format,
+                    width=int(level_width),
+                    height=int(level_height),
+                    usage=usage,
+                    label=f"omnisurg-bloom-down-{index}",
+                )
+            )
+            self._bloom_up_textures.append(
+                self._device.create_texture(
+                    format=self._scene_color_format,
+                    width=int(level_width),
+                    height=int(level_height),
+                    usage=usage,
+                    label=f"omnisurg-bloom-up-{index}",
+                )
+            )
+        self._bloom_texture_size = (int(width), int(height))
+        return sizes
+
+    def _bloom_is_active(self) -> bool:
+        params = self._postprocess_params
+        return bool(
+            params.enabled
+            and params.bloom_enabled
+            and params.bloom_intensity > 0.0
+            and params.bloom_radius > 0.0
+        )
+
+    def _bloom_texture_resource(self) -> Any:
+        if self._resolved_bloom_texture is not None:
+            return self._resolved_bloom_texture
+        return self._default_texture("black", False)
 
     def _cuda_stream_handle(self):
         stream = wp.get_stream(self._warp_device)
@@ -2346,11 +2452,123 @@ class SlangRenderer:
             cursor.subsurface_strength = tissue_params.subsurface_strength
             cursor.blood_wetness = tissue_params.blood_wetness
 
+    def _set_bloom_uniforms(
+        self,
+        shader_object: Any,
+        *,
+        source_texture: Any,
+        source_size: tuple[int, int],
+        output_size: tuple[int, int],
+        base_texture: Any | None = None,
+    ) -> None:
+        cursor = self._spy.ShaderCursor(shader_object)
+        params = self._postprocess_params
+        cursor.source_tex = source_texture
+        cursor.base_tex = base_texture if base_texture is not None else self._default_texture("black", False)
+        cursor.post_sampler = self._linear_clamp_sampler()
+        cursor.source_size = self._spy.float2(float(max(1, source_size[0])), float(max(1, source_size[1])))
+        cursor.output_size = self._spy.float2(float(max(1, output_size[0])), float(max(1, output_size[1])))
+        cursor.exposure = float(params.exposure)
+        cursor.white_balance = self._spy.float3(*params.white_balance)
+        cursor.bloom_threshold = float(params.bloom_threshold)
+        cursor.bloom_radius = float(params.bloom_radius)
+
+    def _render_fullscreen_to_texture(
+        self,
+        *,
+        pipeline: Any,
+        target_texture: Any,
+        target_size: tuple[int, int],
+        source_texture: Any,
+        source_size: tuple[int, int],
+        base_texture: Any | None = None,
+    ) -> None:
+        if self._command_encoder is None:
+            return
+
+        self._command_encoder.set_texture_state(target_texture, self._spy.ResourceState.render_target)
+        pass_encoder = self._command_encoder.begin_render_pass(
+            {
+                "color_attachments": [
+                    {
+                        "view": target_texture.create_view({}),
+                        "clear_value": [0.0, 0.0, 0.0, 1.0],
+                        "load_op": self._spy.LoadOp.clear,
+                        "store_op": self._spy.StoreOp.store,
+                    }
+                ],
+            }
+        )
+        pass_encoder.set_render_state(
+            {
+                "viewports": [self._spy.Viewport.from_size(int(target_size[0]), int(target_size[1]))],
+                "scissor_rects": [self._spy.ScissorRect.from_size(int(target_size[0]), int(target_size[1]))],
+            }
+        )
+        shader_object = pass_encoder.bind_pipeline(pipeline)
+        self._set_bloom_uniforms(
+            shader_object,
+            source_texture=source_texture,
+            source_size=source_size,
+            output_size=target_size,
+            base_texture=base_texture,
+        )
+        pass_encoder.draw({"vertex_count": 3})
+        pass_encoder.end()
+        self._command_encoder.set_texture_state(target_texture, self._spy.ResourceState.shader_resource)
+
+    def _render_bloom_pyramid(self, width: int, height: int) -> None:
+        if (
+            self._command_encoder is None
+            or self._scene_color_texture is None
+            or not self._bloom_is_active()
+        ):
+            self._resolved_bloom_texture = None
+            return
+
+        sizes = self._ensure_bloom_textures(width, height)
+        if not sizes:
+            self._resolved_bloom_texture = None
+            return
+
+        self._render_fullscreen_to_texture(
+            pipeline=self._bloom_prefilter_pipeline,
+            target_texture=self._bloom_down_textures[0],
+            target_size=sizes[0],
+            source_texture=self._scene_color_texture,
+            source_size=(int(width), int(height)),
+        )
+        for index in range(1, len(sizes)):
+            self._render_fullscreen_to_texture(
+                pipeline=self._bloom_downsample_pipeline,
+                target_texture=self._bloom_down_textures[index],
+                target_size=sizes[index],
+                source_texture=self._bloom_down_textures[index - 1],
+                source_size=sizes[index - 1],
+            )
+
+        current_texture = self._bloom_down_textures[-1]
+        current_size = sizes[-1]
+        for index in range(len(sizes) - 2, -1, -1):
+            self._render_fullscreen_to_texture(
+                pipeline=self._bloom_upsample_pipeline,
+                target_texture=self._bloom_up_textures[index],
+                target_size=sizes[index],
+                source_texture=current_texture,
+                source_size=current_size,
+                base_texture=self._bloom_down_textures[index],
+            )
+            current_texture = self._bloom_up_textures[index]
+            current_size = sizes[index]
+
+        self._resolved_bloom_texture = current_texture
+
     def _set_postprocess_uniforms(self, shader_object: Any, width: int, height: int) -> None:
         cursor = self._spy.ShaderCursor(shader_object)
         params = self._postprocess_params
         cursor.scene_color_tex = self._scene_color_texture
         cursor.depth_tex = self._depth_texture
+        cursor.bloom_tex = self._bloom_texture_resource()
         cursor.lens_dirt_tex = self._lens_dirt_resource()
         cursor.post_sampler = self._linear_clamp_sampler()
         cursor.output_size = self._spy.float2(float(max(1, width)), float(max(1, height)))
@@ -2496,6 +2714,11 @@ class SlangRenderer:
         self._command_encoder.set_texture_state(
             self._depth_texture,
             self._spy.ResourceState.shader_resource,
+        )
+        self._resolved_bloom_texture = None
+        self._render_bloom_pyramid(
+            int(self._surface_texture.width),
+            int(self._surface_texture.height),
         )
         self._render_postprocess(
             int(self._surface_texture.width),

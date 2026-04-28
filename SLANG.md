@@ -6,8 +6,8 @@
   - geometry now renders into an offscreen HDR scene color target
   - a fullscreen `omnisurg_post.slang` pass writes to the swapchain before UI rendering
   - the pass applies exposure, white balance, ACES tonemapping, endoscope vignette, and a soft circular scope mask
-  - added restrained HDR bloom before tonemapping for wet tissue and metal highlights
-  - added highlight-driven lens dirt overlay using `textures/lensdirt/LensDirt00.png`
+  - added COD-style multi-scale HDR bloom before tonemapping for wet tissue and metal highlights
+  - added bloom-driven lens dirt overlay using `textures/lensdirt/LensDirt00.png`
   - Slang mesh/tissue final outputs keep HDR highlights instead of final `saturate()` clipping
   - runtime postprocess controls are exposed in the existing Rendering panel
 - Added Slang viewport camera controls:
@@ -102,7 +102,7 @@ These defaults are intentionally conservative. With zero vertex colors and defau
 - Diffuse wet darkening is hard-coded and conservative. There is no `wet_darken` uniform yet.
 - The wet roughness range is narrow and tuned for sharp film highlights. It does not cover very matte mucus or clotted films.
 - Numeric material parameter clamping is currently asymmetric. Wet parameters are clamped in the renderer API, while older material controls rely mainly on UI ranges.
-- Bloom is currently a single-pass bright gather in the final post shader, not a downsampled separable blur chain.
+- Bloom uses a fixed five-level HDR pyramid with Karis-weighted downsample and tent upsample. It does not yet expose separate knee, firefly suppression, or chromatic dispersion controls.
 - Lens dirt uses a static texture and bloom-driven additive response only. Dynamic droplets, smears, condensation, and blood accumulation are not implemented yet.
 - Auto-exposure, SSAO/contact occlusion, chromatic aberration, distortion, grain, and smoke/haze are not implemented yet.
 - Normal layer blending is still linear in tangent space. It has not been upgraded to reoriented normal blending.
