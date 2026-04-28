@@ -699,6 +699,12 @@ class Runtime:
         self.postprocess_enabled = True
         self.postprocess_exposure = 1.0
         self.postprocess_white_balance = (1.0, 1.0, 1.0)
+        self.postprocess_auto_exposure_enabled = False
+        self.postprocess_auto_exposure_target_luma = 0.35
+        self.postprocess_auto_exposure_min = 0.35
+        self.postprocess_auto_exposure_max = 1.8
+        self.postprocess_auto_exposure_speed = 4.0
+        self.postprocess_auto_exposure_highlight_weight = 0.8
         self.postprocess_bloom_enabled = True
         self.postprocess_bloom_threshold = 1.0
         self.postprocess_bloom_intensity = 0.6
@@ -707,6 +713,22 @@ class Runtime:
         self.postprocess_lens_dirt_texture_index = 0
         self.postprocess_lens_dirt_intensity = 0.45
         self.postprocess_lens_dirt_threshold = 0.20
+        self.postprocess_lens_dirt_base_opacity = 0.05
+        self.postprocess_lens_dirt_global_drive = 1.0
+        self.postprocess_lens_dirt_mask_gamma = 0.60
+        self.postprocess_lens_distortion_enabled = True
+        self.postprocess_lens_distortion_strength = 0.08
+        self.postprocess_lens_distortion_zoom = 1.04
+        self.postprocess_chromatic_aberration_enabled = True
+        self.postprocess_chromatic_aberration_strength = 0.6
+        self.postprocess_sensor_noise_enabled = True
+        self.postprocess_sensor_noise_strength = 0.008
+        self.postprocess_sensor_noise_shadow_boost = 1.5
+        self.postprocess_color_grade_enabled = True
+        self.postprocess_color_saturation = 1.0
+        self.postprocess_color_contrast = 1.0
+        self.postprocess_color_gamma = 1.0
+        self.postprocess_color_warmth = 0.0
         self.postprocess_vignette_strength = 0.45
         self.postprocess_vignette_radius = 0.78
         self.postprocess_scope_radius = 0.965
@@ -1654,6 +1676,12 @@ class Runtime:
             enabled=self.postprocess_enabled,
             exposure=self.postprocess_exposure,
             white_balance=self.postprocess_white_balance,
+            auto_exposure_enabled=self.postprocess_auto_exposure_enabled,
+            auto_exposure_target_luma=self.postprocess_auto_exposure_target_luma,
+            auto_exposure_min=self.postprocess_auto_exposure_min,
+            auto_exposure_max=self.postprocess_auto_exposure_max,
+            auto_exposure_speed=self.postprocess_auto_exposure_speed,
+            auto_exposure_highlight_weight=self.postprocess_auto_exposure_highlight_weight,
             bloom_enabled=self.postprocess_bloom_enabled,
             bloom_threshold=self.postprocess_bloom_threshold,
             bloom_intensity=self.postprocess_bloom_intensity,
@@ -1662,6 +1690,22 @@ class Runtime:
             lens_dirt_texture_index=self.postprocess_lens_dirt_texture_index,
             lens_dirt_intensity=self.postprocess_lens_dirt_intensity,
             lens_dirt_threshold=self.postprocess_lens_dirt_threshold,
+            lens_dirt_base_opacity=self.postprocess_lens_dirt_base_opacity,
+            lens_dirt_global_drive=self.postprocess_lens_dirt_global_drive,
+            lens_dirt_mask_gamma=self.postprocess_lens_dirt_mask_gamma,
+            lens_distortion_enabled=self.postprocess_lens_distortion_enabled,
+            lens_distortion_strength=self.postprocess_lens_distortion_strength,
+            lens_distortion_zoom=self.postprocess_lens_distortion_zoom,
+            chromatic_aberration_enabled=self.postprocess_chromatic_aberration_enabled,
+            chromatic_aberration_strength=self.postprocess_chromatic_aberration_strength,
+            sensor_noise_enabled=self.postprocess_sensor_noise_enabled,
+            sensor_noise_strength=self.postprocess_sensor_noise_strength,
+            sensor_noise_shadow_boost=self.postprocess_sensor_noise_shadow_boost,
+            color_grade_enabled=self.postprocess_color_grade_enabled,
+            color_saturation=self.postprocess_color_saturation,
+            color_contrast=self.postprocess_color_contrast,
+            color_gamma=self.postprocess_color_gamma,
+            color_warmth=self.postprocess_color_warmth,
             vignette_strength=self.postprocess_vignette_strength,
             vignette_radius=self.postprocess_vignette_radius,
             scope_radius=self.postprocess_scope_radius,
@@ -1717,6 +1761,66 @@ class Runtime:
         )
         if changed:
             self._set_postprocess_float("postprocess_exposure", exposure, 0.0, 8.0)
+
+        changed, auto_exposure_enabled = ui.checkbox("Auto Exposure", self.postprocess_auto_exposure_enabled)
+        if changed and bool(auto_exposure_enabled) != self.postprocess_auto_exposure_enabled:
+            self.postprocess_auto_exposure_enabled = bool(auto_exposure_enabled)
+            self._sync_postprocess_params()
+
+        changed, auto_exposure_target_luma = ui.slider_float(
+            "Auto Exposure Target",
+            self.postprocess_auto_exposure_target_luma,
+            0.05,
+            1.0,
+            "%.2f",
+        )
+        if changed:
+            self._set_postprocess_float("postprocess_auto_exposure_target_luma", auto_exposure_target_luma, 0.05, 1.0)
+
+        changed, auto_exposure_min = ui.slider_float(
+            "Auto Exposure Min",
+            self.postprocess_auto_exposure_min,
+            0.05,
+            2.0,
+            "%.2f",
+        )
+        if changed:
+            self._set_postprocess_float("postprocess_auto_exposure_min", auto_exposure_min, 0.05, 2.0)
+
+        changed, auto_exposure_max = ui.slider_float(
+            "Auto Exposure Max",
+            self.postprocess_auto_exposure_max,
+            0.1,
+            4.0,
+            "%.2f",
+        )
+        if changed:
+            self._set_postprocess_float("postprocess_auto_exposure_max", auto_exposure_max, 0.1, 4.0)
+
+        changed, auto_exposure_speed = ui.slider_float(
+            "Auto Exposure Speed",
+            self.postprocess_auto_exposure_speed,
+            0.1,
+            12.0,
+            "%.1f",
+        )
+        if changed:
+            self._set_postprocess_float("postprocess_auto_exposure_speed", auto_exposure_speed, 0.1, 12.0)
+
+        changed, auto_exposure_highlight_weight = ui.slider_float(
+            "Auto Exposure Highlight Weight",
+            self.postprocess_auto_exposure_highlight_weight,
+            0.0,
+            4.0,
+            "%.2f",
+        )
+        if changed:
+            self._set_postprocess_float(
+                "postprocess_auto_exposure_highlight_weight",
+                auto_exposure_highlight_weight,
+                0.0,
+                4.0,
+            )
 
         changed, bloom_enabled = ui.checkbox("Bloom", self.postprocess_bloom_enabled)
         if changed and bool(bloom_enabled) != self.postprocess_bloom_enabled:
@@ -1795,11 +1899,164 @@ class Runtime:
             "Lens Dirt Threshold",
             self.postprocess_lens_dirt_threshold,
             0.0,
+            1.0,
+            "%.2f",
+        )
+        if changed:
+            self._set_postprocess_float("postprocess_lens_dirt_threshold", lens_dirt_threshold, 0.0, 1.0)
+
+        changed, lens_dirt_base_opacity = ui.slider_float(
+            "Lens Dirt Base Opacity",
+            self.postprocess_lens_dirt_base_opacity,
+            0.0,
+            1.0,
+            "%.2f",
+        )
+        if changed:
+            self._set_postprocess_float("postprocess_lens_dirt_base_opacity", lens_dirt_base_opacity, 0.0, 1.0)
+
+        changed, lens_dirt_global_drive = ui.slider_float(
+            "Lens Dirt Global Drive",
+            self.postprocess_lens_dirt_global_drive,
+            0.0,
             4.0,
             "%.2f",
         )
         if changed:
-            self._set_postprocess_float("postprocess_lens_dirt_threshold", lens_dirt_threshold, 0.0, 4.0)
+            self._set_postprocess_float("postprocess_lens_dirt_global_drive", lens_dirt_global_drive, 0.0, 4.0)
+
+        changed, lens_dirt_mask_gamma = ui.slider_float(
+            "Lens Dirt Mask Gamma",
+            self.postprocess_lens_dirt_mask_gamma,
+            0.25,
+            2.0,
+            "%.2f",
+        )
+        if changed:
+            self._set_postprocess_float("postprocess_lens_dirt_mask_gamma", lens_dirt_mask_gamma, 0.25, 2.0)
+
+        changed, lens_distortion_enabled = ui.checkbox("Lens Distortion", self.postprocess_lens_distortion_enabled)
+        if changed and bool(lens_distortion_enabled) != self.postprocess_lens_distortion_enabled:
+            self.postprocess_lens_distortion_enabled = bool(lens_distortion_enabled)
+            self._sync_postprocess_params()
+
+        changed, lens_distortion_strength = ui.slider_float(
+            "Lens Distortion Strength",
+            self.postprocess_lens_distortion_strength,
+            -0.35,
+            0.35,
+            "%.3f",
+        )
+        if changed:
+            self._set_postprocess_float("postprocess_lens_distortion_strength", lens_distortion_strength, -0.35, 0.35)
+
+        changed, lens_distortion_zoom = ui.slider_float(
+            "Lens Distortion Zoom",
+            self.postprocess_lens_distortion_zoom,
+            0.8,
+            1.2,
+            "%.2f",
+        )
+        if changed:
+            self._set_postprocess_float("postprocess_lens_distortion_zoom", lens_distortion_zoom, 0.8, 1.2)
+
+        changed, chromatic_aberration_enabled = ui.checkbox(
+            "Chromatic Aberration",
+            self.postprocess_chromatic_aberration_enabled,
+        )
+        if changed and bool(chromatic_aberration_enabled) != self.postprocess_chromatic_aberration_enabled:
+            self.postprocess_chromatic_aberration_enabled = bool(chromatic_aberration_enabled)
+            self._sync_postprocess_params()
+
+        changed, chromatic_aberration_strength = ui.slider_float(
+            "Chromatic Aberration Strength",
+            self.postprocess_chromatic_aberration_strength,
+            0.0,
+            4.0,
+            "%.2f px",
+        )
+        if changed:
+            self._set_postprocess_float(
+                "postprocess_chromatic_aberration_strength",
+                chromatic_aberration_strength,
+                0.0,
+                4.0,
+            )
+
+        changed, color_grade_enabled = ui.checkbox("Color Grade", self.postprocess_color_grade_enabled)
+        if changed and bool(color_grade_enabled) != self.postprocess_color_grade_enabled:
+            self.postprocess_color_grade_enabled = bool(color_grade_enabled)
+            self._sync_postprocess_params()
+
+        changed, color_saturation = ui.slider_float(
+            "Color Saturation",
+            self.postprocess_color_saturation,
+            0.0,
+            2.0,
+            "%.2f",
+        )
+        if changed:
+            self._set_postprocess_float("postprocess_color_saturation", color_saturation, 0.0, 2.0)
+
+        changed, color_contrast = ui.slider_float(
+            "Color Contrast",
+            self.postprocess_color_contrast,
+            0.5,
+            1.5,
+            "%.2f",
+        )
+        if changed:
+            self._set_postprocess_float("postprocess_color_contrast", color_contrast, 0.5, 1.5)
+
+        changed, color_gamma = ui.slider_float(
+            "Color Gamma",
+            self.postprocess_color_gamma,
+            0.5,
+            2.0,
+            "%.2f",
+        )
+        if changed:
+            self._set_postprocess_float("postprocess_color_gamma", color_gamma, 0.5, 2.0)
+
+        changed, color_warmth = ui.slider_float(
+            "Color Warmth",
+            self.postprocess_color_warmth,
+            -1.0,
+            1.0,
+            "%.2f",
+        )
+        if changed:
+            self._set_postprocess_float("postprocess_color_warmth", color_warmth, -1.0, 1.0)
+
+        changed, sensor_noise_enabled = ui.checkbox("Sensor Noise", self.postprocess_sensor_noise_enabled)
+        if changed and bool(sensor_noise_enabled) != self.postprocess_sensor_noise_enabled:
+            self.postprocess_sensor_noise_enabled = bool(sensor_noise_enabled)
+            self._sync_postprocess_params()
+
+        changed, sensor_noise_strength = ui.slider_float(
+            "Sensor Noise Strength",
+            self.postprocess_sensor_noise_strength,
+            0.0,
+            0.10,
+            "%.3f",
+        )
+        if changed:
+            self._set_postprocess_float("postprocess_sensor_noise_strength", sensor_noise_strength, 0.0, 0.10)
+
+        changed, sensor_noise_shadow_boost = ui.slider_float(
+            "Sensor Noise Shadow Boost",
+            self.postprocess_sensor_noise_shadow_boost,
+            0.0,
+            4.0,
+            "%.2f",
+        )
+        if changed:
+            self._set_postprocess_float(
+                "postprocess_sensor_noise_shadow_boost",
+                sensor_noise_shadow_boost,
+                0.0,
+                4.0,
+            )
 
         for index, label in enumerate(("White Balance R", "White Balance G", "White Balance B")):
             changed, channel = ui.slider_float(

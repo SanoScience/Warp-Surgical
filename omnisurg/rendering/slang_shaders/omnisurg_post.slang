@@ -7,13 +7,22 @@ struct V2F
 Texture2D<float4> scene_color_tex;
 Texture2D<float> depth_tex;
 Texture2D<float4> bloom_tex;
+Texture2D<float4> bloom_global_tex;
 Texture2D<float4> lens_dirt_tex;
+Texture2D<float4> auto_exposure_tex;
 SamplerState post_sampler;
 
 uniform float2 output_size;
+uniform uint frame_index;
 uniform int postprocess_enabled;
 uniform float exposure;
 uniform float3 white_balance;
+uniform int auto_exposure_enabled;
+uniform float auto_exposure_target_luma;
+uniform float auto_exposure_min;
+uniform float auto_exposure_max;
+uniform float auto_exposure_speed;
+uniform float auto_exposure_highlight_weight;
 uniform int bloom_enabled;
 uniform float bloom_threshold;
 uniform float bloom_intensity;
@@ -21,6 +30,22 @@ uniform float bloom_radius;
 uniform int lens_dirt_enabled;
 uniform float lens_dirt_intensity;
 uniform float lens_dirt_threshold;
+uniform float lens_dirt_base_opacity;
+uniform float lens_dirt_global_drive;
+uniform float lens_dirt_mask_gamma;
+uniform int lens_distortion_enabled;
+uniform float lens_distortion_strength;
+uniform float lens_distortion_zoom;
+uniform int chromatic_aberration_enabled;
+uniform float chromatic_aberration_strength;
+uniform int sensor_noise_enabled;
+uniform float sensor_noise_strength;
+uniform float sensor_noise_shadow_boost;
+uniform int color_grade_enabled;
+uniform float color_saturation;
+uniform float color_contrast;
+uniform float color_gamma;
+uniform float color_warmth;
 uniform float vignette_strength;
 uniform float vignette_radius;
 uniform float scope_radius;
@@ -45,12 +70,46 @@ float3 aces_tonemap(float3 color)
     return saturate((color * (a * color + b)) / (color * (c * color + d) + e));
 }
 
-float radial_distance(float2 uv)
+float luminance(float3 color)
+{
+    return dot(color, float3(0.2126, 0.7152, 0.0722));
+}
+
+float2 centered_lens_uv(float2 uv)
 {
     float aspect = output_size.x / max(output_size.y, 1.0);
     float2 centered = uv * 2.0 - 1.0;
     centered.x *= aspect;
-    return length(centered);
+    return centered;
+}
+
+float radial_distance(float2 uv)
+{
+    return length(centered_lens_uv(uv));
+}
+
+float2 distort_uv(float2 uv)
+{
+    float aspect = output_size.x / max(output_size.y, 1.0);
+    float2 centered = uv * 2.0 - 1.0;
+    centered.x *= aspect;
+    float r2 = dot(centered, centered);
+    float scale = lens_distortion_zoom * (1.0 + lens_distortion_strength * r2);
+    centered *= scale;
+    centered.x /= aspect;
+    return centered * 0.5 + 0.5;
+}
+
+float2 radial_unit(float2 uv)
+{
+    float2 centered = centered_lens_uv(uv);
+    float length_centered = length(centered);
+    if (length_centered <= 0.0001)
+        return float2(0.0);
+    float aspect = output_size.x / max(output_size.y, 1.0);
+    float2 dir = centered / length_centered;
+    dir.x /= aspect;
+    return normalize(dir);
 }
 
 float endoscope_vignette(float radius)
@@ -66,13 +125,91 @@ float scope_mask(float radius)
     return 1.0 - smoothstep(scope_radius - softness, scope_radius, radius);
 }
 
-float3 apply_lens_dirt(float3 color, float2 uv, float3 bloom_drive)
+float3 sample_scene_hdr(float2 uv, float effective_exposure)
 {
-    float3 dirt = lens_dirt_tex.Sample(post_sampler, uv).rgb;
-    float bloom_luminance = dot(bloom_drive, float3(0.2126, 0.7152, 0.0722));
-    float drive = saturate((bloom_luminance - lens_dirt_threshold) * 2.5);
+    return max(scene_color_tex.Sample(post_sampler, uv).rgb, float3(0.0)) * white_balance * effective_exposure;
+}
+
+float3 sample_bloom_hdr(float2 uv, bool bloom_active, float auto_exposure_multiplier)
+{
+    if (!bloom_active)
+        return float3(0.0);
+    return max(bloom_tex.Sample(post_sampler, uv).rgb, float3(0.0)) * bloom_intensity * auto_exposure_multiplier;
+}
+
+float3 sample_hdr_with_chromatic_aberration(float2 uv, bool bloom_active, float effective_exposure, float auto_exposure_multiplier)
+{
+    if (chromatic_aberration_enabled == 0 || chromatic_aberration_strength <= 0.0)
+        return sample_scene_hdr(uv, effective_exposure) + sample_bloom_hdr(uv, bloom_active, auto_exposure_multiplier);
+
+    float radius = saturate(radial_distance(uv));
+    float2 inv_size = float2(1.0 / max(output_size.x, 1.0), 1.0 / max(output_size.y, 1.0));
+    float2 offset = radial_unit(uv) * chromatic_aberration_strength * inv_size * radius * radius;
+    float2 red_uv = uv + offset;
+    float2 blue_uv = uv - offset;
+
+    float3 red = sample_scene_hdr(red_uv, effective_exposure) + sample_bloom_hdr(red_uv, bloom_active, auto_exposure_multiplier);
+    float3 green = sample_scene_hdr(uv, effective_exposure) + sample_bloom_hdr(uv, bloom_active, auto_exposure_multiplier);
+    float3 blue = sample_scene_hdr(blue_uv, effective_exposure) + sample_bloom_hdr(blue_uv, bloom_active, auto_exposure_multiplier);
+    return float3(red.r, green.g, blue.b);
+}
+
+float global_bloom_luminance()
+{
+    float result = 0.0;
+    result = max(result, luminance(max(bloom_global_tex.Sample(post_sampler, float2(0.17, 0.17)).rgb, float3(0.0))));
+    result = max(result, luminance(max(bloom_global_tex.Sample(post_sampler, float2(0.50, 0.17)).rgb, float3(0.0))));
+    result = max(result, luminance(max(bloom_global_tex.Sample(post_sampler, float2(0.83, 0.17)).rgb, float3(0.0))));
+    result = max(result, luminance(max(bloom_global_tex.Sample(post_sampler, float2(0.17, 0.50)).rgb, float3(0.0))));
+    result = max(result, luminance(max(bloom_global_tex.Sample(post_sampler, float2(0.50, 0.50)).rgb, float3(0.0))));
+    result = max(result, luminance(max(bloom_global_tex.Sample(post_sampler, float2(0.83, 0.50)).rgb, float3(0.0))));
+    result = max(result, luminance(max(bloom_global_tex.Sample(post_sampler, float2(0.17, 0.83)).rgb, float3(0.0))));
+    result = max(result, luminance(max(bloom_global_tex.Sample(post_sampler, float2(0.50, 0.83)).rgb, float3(0.0))));
+    result = max(result, luminance(max(bloom_global_tex.Sample(post_sampler, float2(0.83, 0.83)).rgb, float3(0.0))));
+    return result;
+}
+
+float3 apply_lens_dirt(float3 color, float2 uv, float3 bloom_drive, float global_drive)
+{
+    float gamma = max(lens_dirt_mask_gamma, 0.001);
+    float3 dirt = pow(saturate(lens_dirt_tex.Sample(post_sampler, uv).rgb), float3(gamma));
+    float local_luminance = luminance(bloom_drive);
+    float highlight_luminance = max(local_luminance, global_drive * lens_dirt_global_drive);
+    float driven_opacity = saturate((highlight_luminance - lens_dirt_threshold) * 2.5);
+    float opacity = saturate(lens_dirt_base_opacity + driven_opacity);
     float3 warmed_dirt = dirt * float3(1.0, 0.92, 0.82);
-    return color + warmed_dirt * drive * lens_dirt_intensity;
+    return color + warmed_dirt * opacity * lens_dirt_intensity;
+}
+
+float3 apply_color_grade(float3 color)
+{
+    float luma = luminance(color);
+    color = lerp(float3(luma), color, color_saturation);
+    color = (color - 0.5) * color_contrast + 0.5;
+    color *= float3(1.0 + color_warmth * 0.08, 1.0, 1.0 - color_warmth * 0.08);
+    color = pow(saturate(color), float3(1.0 / max(color_gamma, 0.001)));
+    return saturate(color);
+}
+
+float hash12(float2 value)
+{
+    float3 p3 = frac(float3(value.xyx) * 0.1031);
+    p3 += dot(p3, p3.yzx + 33.33);
+    return frac((p3.x + p3.y) * p3.z);
+}
+
+float3 apply_sensor_noise(float3 color, float2 uv)
+{
+    float frame = float(frame_index);
+    float2 pixel = uv * output_size;
+    float2 seed = pixel + float2(frame * 17.0, frame * 59.0);
+    float3 noise = float3(
+        hash12(seed),
+        hash12(seed + 19.19),
+        hash12(seed + 37.73)
+    ) - 0.5;
+    float shadow_weight = lerp(1.0 + sensor_noise_shadow_boost, 1.0, saturate(luminance(color)));
+    return color + noise * sensor_noise_strength * shadow_weight;
 }
 
 [shader("fragment")]
@@ -84,21 +221,35 @@ float4 fragment_main(V2F input) : SV_Target
 
     if (postprocess_enabled != 0)
     {
-        color *= white_balance * exposure;
+        float auto_exposure_multiplier = auto_exposure_enabled != 0
+            ? max(auto_exposure_tex.Sample(post_sampler, float2(0.5, 0.5)).r, 0.001)
+            : 1.0;
+        float effective_exposure = exposure * auto_exposure_multiplier;
         bool bloom_active = bloom_enabled != 0 && bloom_intensity > 0.0 && bloom_radius > 0.0;
         bool dirt_active = lens_dirt_enabled != 0 && lens_dirt_intensity > 0.0;
-        float3 bloom_signal = max(bloom_tex.Sample(post_sampler, input.uv).rgb, float3(0.0));
-        if (!bloom_active)
-            bloom_signal = float3(0.0);
-        float3 bloom_drive = bloom_signal * bloom_intensity;
-        if (bloom_active)
-            color += bloom_drive;
+
+        float2 scene_uv = lens_distortion_enabled != 0 ? distort_uv(input.uv) : input.uv;
+        color = sample_hdr_with_chromatic_aberration(
+            scene_uv,
+            bloom_active,
+            effective_exposure,
+            auto_exposure_multiplier
+        );
+
+        float3 bloom_signal = sample_bloom_hdr(scene_uv, bloom_active, auto_exposure_multiplier);
+        float3 bloom_drive = bloom_signal;
+        float global_drive = bloom_active ? global_bloom_luminance() * bloom_intensity * auto_exposure_multiplier : 0.0;
+
         color = aces_tonemap(color);
         if (dirt_active)
-            color = apply_lens_dirt(color, input.uv, bloom_drive);
+            color = apply_lens_dirt(color, input.uv, bloom_drive, global_drive);
+        if (color_grade_enabled != 0)
+            color = apply_color_grade(color);
 
         float radius = radial_distance(input.uv);
         color *= endoscope_vignette(radius);
+        if (sensor_noise_enabled != 0 && sensor_noise_strength > 0.0)
+            color = apply_sensor_noise(color, input.uv);
         color *= scope_mask(radius);
     }
     else
@@ -106,5 +257,5 @@ float4 fragment_main(V2F input) : SV_Target
         color = saturate(color);
     }
 
-    return float4(color, 1.0);
+    return float4(saturate(color), 1.0);
 }

@@ -53,11 +53,28 @@ _TISSUE_MATERIAL_PARAM_RANGES = {
 }
 _POSTPROCESS_PARAM_RANGES = {
     "exposure": (0.0, 8.0),
+    "auto_exposure_target_luma": (0.05, 1.0),
+    "auto_exposure_min": (0.05, 2.0),
+    "auto_exposure_max": (0.1, 4.0),
+    "auto_exposure_speed": (0.1, 12.0),
+    "auto_exposure_highlight_weight": (0.0, 4.0),
     "bloom_threshold": (0.0, 1.0),
     "bloom_intensity": (0.0, 10.0),
     "bloom_radius": (0.0, 64.0),
     "lens_dirt_intensity": (0.0, 10.0),
-    "lens_dirt_threshold": (0.0, 4.0),
+    "lens_dirt_threshold": (0.0, 1.0),
+    "lens_dirt_base_opacity": (0.0, 1.0),
+    "lens_dirt_global_drive": (0.0, 4.0),
+    "lens_dirt_mask_gamma": (0.25, 2.0),
+    "lens_distortion_strength": (-0.35, 0.35),
+    "lens_distortion_zoom": (0.8, 1.2),
+    "chromatic_aberration_strength": (0.0, 4.0),
+    "sensor_noise_strength": (0.0, 0.10),
+    "sensor_noise_shadow_boost": (0.0, 4.0),
+    "color_saturation": (0.0, 2.0),
+    "color_contrast": (0.5, 1.5),
+    "color_gamma": (0.5, 2.0),
+    "color_warmth": (-1.0, 1.0),
     "vignette_strength": (0.0, 1.0),
     "vignette_radius": (0.0, 1.5),
     "scope_radius": (0.0, 1.5),
@@ -86,6 +103,12 @@ class PostProcessParams:
     enabled: bool = True
     exposure: float = 1.0
     white_balance: tuple[float, float, float] = (1.0, 1.0, 1.0)
+    auto_exposure_enabled: bool = False
+    auto_exposure_target_luma: float = 0.35
+    auto_exposure_min: float = 0.35
+    auto_exposure_max: float = 1.8
+    auto_exposure_speed: float = 4.0
+    auto_exposure_highlight_weight: float = 0.8
     bloom_enabled: bool = True
     bloom_threshold: float = 1.0
     bloom_intensity: float = 0.6
@@ -94,6 +117,22 @@ class PostProcessParams:
     lens_dirt_texture_index: int = 0
     lens_dirt_intensity: float = 0.45
     lens_dirt_threshold: float = 0.20
+    lens_dirt_base_opacity: float = 0.05
+    lens_dirt_global_drive: float = 1.0
+    lens_dirt_mask_gamma: float = 0.60
+    lens_distortion_enabled: bool = True
+    lens_distortion_strength: float = 0.08
+    lens_distortion_zoom: float = 1.04
+    chromatic_aberration_enabled: bool = True
+    chromatic_aberration_strength: float = 0.6
+    sensor_noise_enabled: bool = True
+    sensor_noise_strength: float = 0.008
+    sensor_noise_shadow_boost: float = 1.5
+    color_grade_enabled: bool = True
+    color_saturation: float = 1.0
+    color_contrast: float = 1.0
+    color_gamma: float = 1.0
+    color_warmth: float = 0.0
     vignette_strength: float = 0.45
     vignette_radius: float = 0.78
     scope_radius: float = 0.965
@@ -873,6 +912,10 @@ class SlangRenderer:
         self._bloom_up_textures: list[Any] = []
         self._bloom_texture_size: tuple[int, int] | None = None
         self._resolved_bloom_texture = None
+        self._auto_exposure_textures: list[Any] = []
+        self._auto_exposure_index = 0
+        self._auto_exposure_initialized = False
+        self._auto_exposure_last_time = _time.perf_counter()
         self._pending_resize: tuple[int, int] | None = None
         self._shared_positions: dict[tuple[int, int], _SharedPositionBuffer] = {}
         self._shared_vertex_colors: dict[tuple[int, int], _SharedVertexColorBuffer] = {}
@@ -1097,6 +1140,10 @@ class SlangRenderer:
             "omnisurg_post.slang",
             ["vertex_main", "fragment_main"],
         )
+        self._auto_exposure_program = self._device.load_program(
+            "omnisurg_exposure.slang",
+            ["vertex_main", "adapt_exposure_fragment"],
+        )
         self._bloom_prefilter_program = self._device.load_program(
             "omnisurg_bloom.slang",
             ["vertex_main", "prefilter_downsample_fragment"],
@@ -1224,6 +1271,11 @@ class SlangRenderer:
         self._bloom_upsample_pipeline = self._device.create_render_pipeline(
             program=self._bloom_upsample_program,
             label="omnisurg-bloom-upsample",
+            **bloom_pipeline_common,
+        )
+        self._auto_exposure_pipeline = self._device.create_render_pipeline(
+            program=self._auto_exposure_program,
+            label="omnisurg-auto-exposure",
             **bloom_pipeline_common,
         )
 
@@ -1618,6 +1670,9 @@ class SlangRenderer:
             self._bloom_up_textures = []
             self._bloom_texture_size = None
             self._resolved_bloom_texture = None
+            self._auto_exposure_textures = []
+            self._auto_exposure_index = 0
+            self._auto_exposure_initialized = False
             return
 
         self._surface.configure(width=width, height=height, vsync=self._vsync)
@@ -1629,6 +1684,9 @@ class SlangRenderer:
         self._bloom_up_textures = []
         self._bloom_texture_size = None
         self._resolved_bloom_texture = None
+        self._auto_exposure_textures = []
+        self._auto_exposure_index = 0
+        self._auto_exposure_initialized = False
 
     def _hdr_scene_color_format(self):
         return getattr(self._spy.Format, "rgba16_float", self._spy.Format.rgba32_float)
@@ -1722,6 +1780,41 @@ class SlangRenderer:
         if self._resolved_bloom_texture is not None:
             return self._resolved_bloom_texture
         return self._default_texture("black", False)
+
+    def _bloom_global_texture_resource(self) -> Any:
+        bloom_down_textures = getattr(self, "_bloom_down_textures", [])
+        if self._resolved_bloom_texture is not None and bloom_down_textures:
+            return bloom_down_textures[-1]
+        return self._default_texture("black", False)
+
+    def _ensure_auto_exposure_textures(self) -> None:
+        if len(self._auto_exposure_textures) == 2:
+            return
+
+        usage = self._spy.TextureUsage.render_target | self._spy.TextureUsage.shader_resource
+        self._auto_exposure_textures = [
+            self._device.create_texture(
+                format=self._scene_color_format,
+                width=1,
+                height=1,
+                usage=usage,
+                label=f"omnisurg-auto-exposure-{index}",
+            )
+            for index in range(2)
+        ]
+        self._auto_exposure_index = 0
+        self._auto_exposure_initialized = False
+
+    def _auto_exposure_is_active(self) -> bool:
+        params = self._postprocess_params
+        return bool(params.enabled and params.auto_exposure_enabled)
+
+    def _auto_exposure_texture_resource(self) -> Any:
+        textures = getattr(self, "_auto_exposure_textures", [])
+        if getattr(self, "_auto_exposure_initialized", False) and textures:
+            index = int(getattr(self, "_auto_exposure_index", 0)) % len(textures)
+            return textures[index]
+        return self._default_texture("white", False)
 
     def _cuda_stream_handle(self):
         stream = wp.get_stream(self._warp_device)
@@ -2541,6 +2634,80 @@ class SlangRenderer:
         pass_encoder.end()
         self._command_encoder.set_texture_state(target_texture, self._spy.ResourceState.shader_resource)
 
+    def _set_auto_exposure_uniforms(self, shader_object: Any, previous_texture: Any, dt: float) -> None:
+        cursor = self._spy.ShaderCursor(shader_object)
+        params = self._postprocess_params
+        cursor.scene_color_tex = self._scene_color_texture
+        cursor.bloom_global_tex = self._bloom_global_texture_resource()
+        cursor.previous_exposure_tex = previous_texture
+        cursor.post_sampler = self._linear_clamp_sampler()
+        cursor.exposure = float(params.exposure)
+        cursor.white_balance = self._spy.float3(*params.white_balance)
+        cursor.bloom_intensity = float(params.bloom_intensity if self._bloom_is_active() else 0.0)
+        cursor.auto_exposure_target_luma = float(params.auto_exposure_target_luma)
+        cursor.auto_exposure_min = float(params.auto_exposure_min)
+        cursor.auto_exposure_max = float(params.auto_exposure_max)
+        cursor.auto_exposure_speed = float(params.auto_exposure_speed)
+        cursor.auto_exposure_highlight_weight = float(params.auto_exposure_highlight_weight)
+        cursor.auto_exposure_dt = float(dt)
+        cursor.auto_exposure_initialized = 1 if self._auto_exposure_initialized else 0
+
+    def _render_auto_exposure(self) -> None:
+        now = _time.perf_counter()
+        previous_time = float(getattr(self, "_auto_exposure_last_time", now))
+        self._auto_exposure_last_time = now
+        if (
+            self._command_encoder is None
+            or self._scene_color_texture is None
+            or not self._auto_exposure_is_active()
+        ):
+            self._auto_exposure_initialized = False
+            return
+
+        self._ensure_auto_exposure_textures()
+        if len(self._auto_exposure_textures) != 2:
+            self._auto_exposure_initialized = False
+            return
+
+        dt = float(np.clip(now - previous_time, 0.0, 0.25))
+        if dt <= 0.0:
+            dt = 1.0 / 60.0
+
+        previous_texture = (
+            self._auto_exposure_textures[self._auto_exposure_index]
+            if self._auto_exposure_initialized
+            else self._default_texture("white", False)
+        )
+        next_index = (self._auto_exposure_index + 1) % 2
+        target_texture = self._auto_exposure_textures[next_index]
+
+        self._command_encoder.set_texture_state(target_texture, self._spy.ResourceState.render_target)
+        pass_encoder = self._command_encoder.begin_render_pass(
+            {
+                "color_attachments": [
+                    {
+                        "view": target_texture.create_view({}),
+                        "clear_value": [1.0, 1.0, 0.0, 1.0],
+                        "load_op": self._spy.LoadOp.clear,
+                        "store_op": self._spy.StoreOp.store,
+                    }
+                ],
+            }
+        )
+        pass_encoder.set_render_state(
+            {
+                "viewports": [self._spy.Viewport.from_size(1, 1)],
+                "scissor_rects": [self._spy.ScissorRect.from_size(1, 1)],
+            }
+        )
+        shader_object = pass_encoder.bind_pipeline(self._auto_exposure_pipeline)
+        self._set_auto_exposure_uniforms(shader_object, previous_texture, dt)
+        pass_encoder.draw({"vertex_count": 3})
+        pass_encoder.end()
+        self._command_encoder.set_texture_state(target_texture, self._spy.ResourceState.shader_resource)
+        self._auto_exposure_index = next_index
+        self._auto_exposure_initialized = True
+
     def _render_bloom_pyramid(self, width: int, height: int) -> None:
         if (
             self._command_encoder is None
@@ -2593,12 +2760,21 @@ class SlangRenderer:
         cursor.scene_color_tex = self._scene_color_texture
         cursor.depth_tex = self._depth_texture
         cursor.bloom_tex = self._bloom_texture_resource()
+        cursor.bloom_global_tex = self._bloom_global_texture_resource()
         cursor.lens_dirt_tex = self._lens_dirt_resource()
+        cursor.auto_exposure_tex = self._auto_exposure_texture_resource()
         cursor.post_sampler = self._linear_clamp_sampler()
         cursor.output_size = self._spy.float2(float(max(1, width)), float(max(1, height)))
+        cursor.frame_index = int(getattr(self, "_frame_id", 0))
         cursor.postprocess_enabled = 1 if params.enabled else 0
         cursor.exposure = float(params.exposure)
         cursor.white_balance = self._spy.float3(*params.white_balance)
+        cursor.auto_exposure_enabled = 1 if params.auto_exposure_enabled else 0
+        cursor.auto_exposure_target_luma = float(params.auto_exposure_target_luma)
+        cursor.auto_exposure_min = float(params.auto_exposure_min)
+        cursor.auto_exposure_max = float(params.auto_exposure_max)
+        cursor.auto_exposure_speed = float(params.auto_exposure_speed)
+        cursor.auto_exposure_highlight_weight = float(params.auto_exposure_highlight_weight)
         cursor.bloom_enabled = 1 if params.bloom_enabled else 0
         cursor.bloom_threshold = float(params.bloom_threshold)
         cursor.bloom_intensity = float(params.bloom_intensity)
@@ -2606,6 +2782,22 @@ class SlangRenderer:
         cursor.lens_dirt_enabled = 1 if params.lens_dirt_enabled else 0
         cursor.lens_dirt_intensity = float(params.lens_dirt_intensity)
         cursor.lens_dirt_threshold = float(params.lens_dirt_threshold)
+        cursor.lens_dirt_base_opacity = float(params.lens_dirt_base_opacity)
+        cursor.lens_dirt_global_drive = float(params.lens_dirt_global_drive)
+        cursor.lens_dirt_mask_gamma = float(params.lens_dirt_mask_gamma)
+        cursor.lens_distortion_enabled = 1 if params.lens_distortion_enabled else 0
+        cursor.lens_distortion_strength = float(params.lens_distortion_strength)
+        cursor.lens_distortion_zoom = float(params.lens_distortion_zoom)
+        cursor.chromatic_aberration_enabled = 1 if params.chromatic_aberration_enabled else 0
+        cursor.chromatic_aberration_strength = float(params.chromatic_aberration_strength)
+        cursor.sensor_noise_enabled = 1 if params.sensor_noise_enabled else 0
+        cursor.sensor_noise_strength = float(params.sensor_noise_strength)
+        cursor.sensor_noise_shadow_boost = float(params.sensor_noise_shadow_boost)
+        cursor.color_grade_enabled = 1 if params.color_grade_enabled else 0
+        cursor.color_saturation = float(params.color_saturation)
+        cursor.color_contrast = float(params.color_contrast)
+        cursor.color_gamma = float(params.color_gamma)
+        cursor.color_warmth = float(params.color_warmth)
         cursor.vignette_strength = float(params.vignette_strength)
         cursor.vignette_radius = float(params.vignette_radius)
         cursor.scope_radius = float(params.scope_radius)
@@ -2744,6 +2936,7 @@ class SlangRenderer:
             int(self._surface_texture.width),
             int(self._surface_texture.height),
         )
+        self._render_auto_exposure()
         self._render_postprocess(
             int(self._surface_texture.width),
             int(self._surface_texture.height),
@@ -2821,11 +3014,16 @@ class SlangRenderer:
             if not hasattr(current, key):
                 raise ValueError(f"Unknown postprocess parameter: {key}")
 
-            if key == "enabled":
-                value = bool(value)
-            elif key == "bloom_enabled":
-                value = bool(value)
-            elif key == "lens_dirt_enabled":
+            if key in {
+                "enabled",
+                "auto_exposure_enabled",
+                "bloom_enabled",
+                "lens_dirt_enabled",
+                "lens_distortion_enabled",
+                "chromatic_aberration_enabled",
+                "sensor_noise_enabled",
+                "color_grade_enabled",
+            }:
                 value = bool(value)
             elif key == "lens_dirt_texture_index":
                 value = int(np.clip(int(value), 0, len(LENS_DIRT_TEXTURE_PATHS) - 1))

@@ -1170,13 +1170,24 @@ class TestPhaseRuntime(unittest.TestCase):
         renderer._scene_color_texture = "scene-color"
         renderer._depth_texture = "depth"
         renderer._resolved_bloom_texture = "bloom"
+        renderer._bloom_down_textures = ["bloom-global"]
         renderer._lens_dirt_textures = {3: "lens-dirt-3"}
+        renderer._auto_exposure_textures = ["auto-previous", "auto-current"]
+        renderer._auto_exposure_index = 1
+        renderer._auto_exposure_initialized = True
+        renderer._frame_id = 42
         renderer._post_sampler = "sampler"
 
         renderer.set_postprocess_params(
             enabled=0,
             exposure=12.0,
             white_balance=(8.0, -1.0, 0.5),
+            auto_exposure_enabled=0,
+            auto_exposure_target_luma=3.0,
+            auto_exposure_min=0.0,
+            auto_exposure_max=9.0,
+            auto_exposure_speed=99.0,
+            auto_exposure_highlight_weight=9.0,
             bloom_enabled=0,
             bloom_threshold=12.0,
             bloom_intensity=2.0,
@@ -1185,6 +1196,22 @@ class TestPhaseRuntime(unittest.TestCase):
             lens_dirt_texture_index=99,
             lens_dirt_intensity=12.0,
             lens_dirt_threshold=2.0,
+            lens_dirt_base_opacity=2.0,
+            lens_dirt_global_drive=8.0,
+            lens_dirt_mask_gamma=0.0,
+            lens_distortion_enabled=0,
+            lens_distortion_strength=1.0,
+            lens_distortion_zoom=3.0,
+            chromatic_aberration_enabled=0,
+            chromatic_aberration_strength=99.0,
+            sensor_noise_enabled=0,
+            sensor_noise_strength=1.0,
+            sensor_noise_shadow_boost=9.0,
+            color_grade_enabled=0,
+            color_saturation=9.0,
+            color_contrast=9.0,
+            color_gamma=0.0,
+            color_warmth=9.0,
             vignette_strength=2.0,
             vignette_radius=-1.0,
             scope_radius=3.0,
@@ -1196,12 +1223,21 @@ class TestPhaseRuntime(unittest.TestCase):
         self.assertEqual(cursor.scene_color_tex, "scene-color")
         self.assertEqual(cursor.depth_tex, "depth")
         self.assertEqual(cursor.bloom_tex, "bloom")
+        self.assertEqual(cursor.bloom_global_tex, "bloom-global")
         self.assertEqual(cursor.lens_dirt_tex, "lens-dirt-3")
+        self.assertEqual(cursor.auto_exposure_tex, "auto-current")
         self.assertEqual(cursor.post_sampler, "sampler")
         self.assertEqual(cursor.output_size, (1600.0, 800.0))
+        self.assertEqual(cursor.frame_index, 42)
         self.assertEqual(cursor.postprocess_enabled, 0)
         self.assertEqual(cursor.exposure, 8.0)
         self.assertEqual(cursor.white_balance, (4.0, 0.0, 0.5))
+        self.assertEqual(cursor.auto_exposure_enabled, 0)
+        self.assertEqual(cursor.auto_exposure_target_luma, 1.0)
+        self.assertEqual(cursor.auto_exposure_min, 0.05)
+        self.assertEqual(cursor.auto_exposure_max, 4.0)
+        self.assertEqual(cursor.auto_exposure_speed, 12.0)
+        self.assertEqual(cursor.auto_exposure_highlight_weight, 4.0)
         self.assertEqual(cursor.bloom_enabled, 0)
         self.assertEqual(cursor.bloom_threshold, 1.0)
         self.assertEqual(cursor.bloom_intensity, 2.0)
@@ -1209,7 +1245,23 @@ class TestPhaseRuntime(unittest.TestCase):
         self.assertEqual(cursor.lens_dirt_enabled, 0)
         self.assertEqual(renderer._postprocess_params.lens_dirt_texture_index, 3)
         self.assertEqual(cursor.lens_dirt_intensity, 10.0)
-        self.assertEqual(cursor.lens_dirt_threshold, 2.0)
+        self.assertEqual(cursor.lens_dirt_threshold, 1.0)
+        self.assertEqual(cursor.lens_dirt_base_opacity, 1.0)
+        self.assertEqual(cursor.lens_dirt_global_drive, 4.0)
+        self.assertEqual(cursor.lens_dirt_mask_gamma, 0.25)
+        self.assertEqual(cursor.lens_distortion_enabled, 0)
+        self.assertEqual(cursor.lens_distortion_strength, 0.35)
+        self.assertEqual(cursor.lens_distortion_zoom, 1.2)
+        self.assertEqual(cursor.chromatic_aberration_enabled, 0)
+        self.assertEqual(cursor.chromatic_aberration_strength, 4.0)
+        self.assertEqual(cursor.sensor_noise_enabled, 0)
+        self.assertEqual(cursor.sensor_noise_strength, 0.10)
+        self.assertEqual(cursor.sensor_noise_shadow_boost, 4.0)
+        self.assertEqual(cursor.color_grade_enabled, 0)
+        self.assertEqual(cursor.color_saturation, 2.0)
+        self.assertEqual(cursor.color_contrast, 1.5)
+        self.assertEqual(cursor.color_gamma, 0.5)
+        self.assertEqual(cursor.color_warmth, 1.0)
         self.assertEqual(cursor.vignette_strength, 1.0)
         self.assertEqual(cursor.vignette_radius, 0.0)
         self.assertEqual(cursor.scope_radius, 1.5)
@@ -1266,6 +1318,9 @@ class TestPhaseRuntime(unittest.TestCase):
         renderer._bloom_up_textures = ["up"]
         renderer._bloom_texture_size = (1, 1)
         renderer._resolved_bloom_texture = "resolved"
+        renderer._auto_exposure_textures = ["auto-a", "auto-b"]
+        renderer._auto_exposure_index = 1
+        renderer._auto_exposure_initialized = True
 
         renderer._apply_pending_resize()
 
@@ -1277,6 +1332,9 @@ class TestPhaseRuntime(unittest.TestCase):
         self.assertEqual(renderer._bloom_up_textures, [])
         self.assertIsNone(renderer._bloom_texture_size)
         self.assertIsNone(renderer._resolved_bloom_texture)
+        self.assertEqual(renderer._auto_exposure_textures, [])
+        self.assertEqual(renderer._auto_exposure_index, 0)
+        self.assertFalse(renderer._auto_exposure_initialized)
 
     def test_slang_renderer_camera_orbit_pan_and_dolly_keep_valid_basis(self):
         renderer = self._make_slang_camera_renderer()
@@ -1412,6 +1470,12 @@ class TestPhaseRuntime(unittest.TestCase):
         runtime.postprocess_enabled = True
         runtime.postprocess_exposure = 1.0
         runtime.postprocess_white_balance = (1.0, 1.0, 1.0)
+        runtime.postprocess_auto_exposure_enabled = False
+        runtime.postprocess_auto_exposure_target_luma = 0.35
+        runtime.postprocess_auto_exposure_min = 0.35
+        runtime.postprocess_auto_exposure_max = 1.8
+        runtime.postprocess_auto_exposure_speed = 4.0
+        runtime.postprocess_auto_exposure_highlight_weight = 0.8
         runtime.postprocess_bloom_enabled = True
         runtime.postprocess_bloom_threshold = 1.0
         runtime.postprocess_bloom_intensity = 0.12
@@ -1420,6 +1484,22 @@ class TestPhaseRuntime(unittest.TestCase):
         runtime.postprocess_lens_dirt_texture_index = 2
         runtime.postprocess_lens_dirt_intensity = 0.25
         runtime.postprocess_lens_dirt_threshold = 0.35
+        runtime.postprocess_lens_dirt_base_opacity = 0.05
+        runtime.postprocess_lens_dirt_global_drive = 1.0
+        runtime.postprocess_lens_dirt_mask_gamma = 0.6
+        runtime.postprocess_lens_distortion_enabled = True
+        runtime.postprocess_lens_distortion_strength = 0.08
+        runtime.postprocess_lens_distortion_zoom = 1.04
+        runtime.postprocess_chromatic_aberration_enabled = True
+        runtime.postprocess_chromatic_aberration_strength = 0.6
+        runtime.postprocess_sensor_noise_enabled = True
+        runtime.postprocess_sensor_noise_strength = 0.008
+        runtime.postprocess_sensor_noise_shadow_boost = 1.5
+        runtime.postprocess_color_grade_enabled = True
+        runtime.postprocess_color_saturation = 1.0
+        runtime.postprocess_color_contrast = 1.0
+        runtime.postprocess_color_gamma = 1.0
+        runtime.postprocess_color_warmth = 0.0
         runtime.postprocess_vignette_strength = 0.45
         runtime.postprocess_vignette_radius = 0.78
         runtime.postprocess_scope_radius = 0.965
@@ -1430,11 +1510,22 @@ class TestPhaseRuntime(unittest.TestCase):
         self.assertEqual(runtime.renderer.params[-1]["enabled"], True)
         self.assertEqual(runtime.renderer.params[-1]["exposure"], 1.0)
         self.assertEqual(runtime.renderer.params[-1]["white_balance"], (1.0, 1.0, 1.0))
+        self.assertEqual(runtime.renderer.params[-1]["auto_exposure_enabled"], False)
+        self.assertEqual(runtime.renderer.params[-1]["auto_exposure_target_luma"], 0.35)
+        self.assertEqual(runtime.renderer.params[-1]["auto_exposure_highlight_weight"], 0.8)
         self.assertEqual(runtime.renderer.params[-1]["bloom_enabled"], True)
         self.assertEqual(runtime.renderer.params[-1]["bloom_threshold"], 1.0)
         self.assertEqual(runtime.renderer.params[-1]["lens_dirt_enabled"], True)
         self.assertEqual(runtime.renderer.params[-1]["lens_dirt_texture_index"], 2)
         self.assertEqual(runtime.renderer.params[-1]["lens_dirt_intensity"], 0.25)
+        self.assertEqual(runtime.renderer.params[-1]["lens_dirt_base_opacity"], 0.05)
+        self.assertEqual(runtime.renderer.params[-1]["lens_dirt_global_drive"], 1.0)
+        self.assertEqual(runtime.renderer.params[-1]["lens_dirt_mask_gamma"], 0.6)
+        self.assertEqual(runtime.renderer.params[-1]["lens_distortion_enabled"], True)
+        self.assertEqual(runtime.renderer.params[-1]["lens_distortion_strength"], 0.08)
+        self.assertEqual(runtime.renderer.params[-1]["chromatic_aberration_enabled"], True)
+        self.assertEqual(runtime.renderer.params[-1]["sensor_noise_enabled"], True)
+        self.assertEqual(runtime.renderer.params[-1]["color_grade_enabled"], True)
 
         runtime._set_postprocess_lens_dirt_texture(99)
         self.assertEqual(runtime.postprocess_lens_dirt_texture_index, len(LENS_DIRT_TEXTURE_LABELS) - 1)
@@ -1464,6 +1555,12 @@ class TestPhaseRuntime(unittest.TestCase):
         runtime.postprocess_enabled = True
         runtime.postprocess_exposure = 1.0
         runtime.postprocess_white_balance = (1.0, 1.0, 1.0)
+        runtime.postprocess_auto_exposure_enabled = False
+        runtime.postprocess_auto_exposure_target_luma = 0.35
+        runtime.postprocess_auto_exposure_min = 0.35
+        runtime.postprocess_auto_exposure_max = 1.8
+        runtime.postprocess_auto_exposure_speed = 4.0
+        runtime.postprocess_auto_exposure_highlight_weight = 0.8
         runtime.postprocess_bloom_enabled = True
         runtime.postprocess_bloom_threshold = 1.0
         runtime.postprocess_bloom_intensity = 0.12
@@ -1472,20 +1569,62 @@ class TestPhaseRuntime(unittest.TestCase):
         runtime.postprocess_lens_dirt_texture_index = 0
         runtime.postprocess_lens_dirt_intensity = 0.25
         runtime.postprocess_lens_dirt_threshold = 0.35
+        runtime.postprocess_lens_dirt_base_opacity = 0.05
+        runtime.postprocess_lens_dirt_global_drive = 1.0
+        runtime.postprocess_lens_dirt_mask_gamma = 0.6
+        runtime.postprocess_lens_distortion_enabled = True
+        runtime.postprocess_lens_distortion_strength = 0.08
+        runtime.postprocess_lens_distortion_zoom = 1.04
+        runtime.postprocess_chromatic_aberration_enabled = True
+        runtime.postprocess_chromatic_aberration_strength = 0.6
+        runtime.postprocess_sensor_noise_enabled = True
+        runtime.postprocess_sensor_noise_strength = 0.008
+        runtime.postprocess_sensor_noise_shadow_boost = 1.5
+        runtime.postprocess_color_grade_enabled = True
+        runtime.postprocess_color_saturation = 1.0
+        runtime.postprocess_color_contrast = 1.0
+        runtime.postprocess_color_gamma = 1.0
+        runtime.postprocess_color_warmth = 0.0
         runtime.postprocess_vignette_strength = 0.45
         runtime.postprocess_vignette_radius = 0.78
         runtime.postprocess_scope_radius = 0.965
         runtime.postprocess_scope_softness = 0.035
 
         ui = _FakePostProcessUi(
-            checkbox_results={"Postprocess": False, "Bloom": False, "Lens Dirt": False},
+            checkbox_results={
+                "Postprocess": False,
+                "Auto Exposure": True,
+                "Bloom": False,
+                "Lens Dirt": False,
+                "Lens Distortion": False,
+                "Chromatic Aberration": False,
+                "Color Grade": False,
+                "Sensor Noise": False,
+            },
             slider_results={
                 "Exposure": 9.0,
+                "Auto Exposure Target": 3.0,
+                "Auto Exposure Min": 0.0,
+                "Auto Exposure Max": 9.0,
+                "Auto Exposure Speed": 99.0,
+                "Auto Exposure Highlight Weight": 9.0,
                 "Bloom Threshold": 9.0,
                 "Bloom Intensity": 2.0,
                 "Bloom Radius": 20.0,
                 "Lens Dirt Intensity": 12.0,
                 "Lens Dirt Threshold": 2.0,
+                "Lens Dirt Base Opacity": 2.0,
+                "Lens Dirt Global Drive": 9.0,
+                "Lens Dirt Mask Gamma": 0.0,
+                "Lens Distortion Strength": 1.0,
+                "Lens Distortion Zoom": 3.0,
+                "Chromatic Aberration Strength": 9.0,
+                "Color Saturation": 9.0,
+                "Color Contrast": 9.0,
+                "Color Gamma": 0.0,
+                "Color Warmth": 9.0,
+                "Sensor Noise Strength": 1.0,
+                "Sensor Noise Shadow Boost": 9.0,
                 "White Balance R": -1.0,
                 "White Balance G": 3.0,
                 "White Balance B": 5.0,
@@ -1501,14 +1640,43 @@ class TestPhaseRuntime(unittest.TestCase):
 
         calls_by_label = {call[0]: call for call in ui.slider_calls}
         self.assertIn("Postprocessing", ui.texts)
-        self.assertEqual(ui.checkbox_calls, [("Postprocess", True), ("Bloom", True), ("Lens Dirt", True)])
+        self.assertEqual(
+            ui.checkbox_calls,
+            [
+                ("Postprocess", True),
+                ("Auto Exposure", False),
+                ("Bloom", True),
+                ("Lens Dirt", True),
+                ("Lens Distortion", True),
+                ("Chromatic Aberration", True),
+                ("Color Grade", True),
+                ("Sensor Noise", True),
+            ],
+        )
         self.assertEqual(ui.combo_calls, [("Lens Dirt Texture", 0, LENS_DIRT_TEXTURE_LABELS)])
         self.assertEqual(calls_by_label["Exposure"][2:], (0.0, 8.0, "%.2f"))
+        self.assertEqual(calls_by_label["Auto Exposure Target"][2:], (0.05, 1.0, "%.2f"))
+        self.assertEqual(calls_by_label["Auto Exposure Min"][2:], (0.05, 2.0, "%.2f"))
+        self.assertEqual(calls_by_label["Auto Exposure Max"][2:], (0.1, 4.0, "%.2f"))
+        self.assertEqual(calls_by_label["Auto Exposure Speed"][2:], (0.1, 12.0, "%.1f"))
+        self.assertEqual(calls_by_label["Auto Exposure Highlight Weight"][2:], (0.0, 4.0, "%.2f"))
         self.assertEqual(calls_by_label["Bloom Threshold"][2:], (0.0, 1.0, "%.2f"))
         self.assertEqual(calls_by_label["Bloom Intensity"][2:], (0.0, 10.0, "%.2f"))
         self.assertEqual(calls_by_label["Bloom Radius"][2:], (0.0, 64.0, "%.1f px"))
         self.assertEqual(calls_by_label["Lens Dirt Intensity"][2:], (0.0, 10.0, "%.2f"))
-        self.assertEqual(calls_by_label["Lens Dirt Threshold"][2:], (0.0, 4.0, "%.2f"))
+        self.assertEqual(calls_by_label["Lens Dirt Threshold"][2:], (0.0, 1.0, "%.2f"))
+        self.assertEqual(calls_by_label["Lens Dirt Base Opacity"][2:], (0.0, 1.0, "%.2f"))
+        self.assertEqual(calls_by_label["Lens Dirt Global Drive"][2:], (0.0, 4.0, "%.2f"))
+        self.assertEqual(calls_by_label["Lens Dirt Mask Gamma"][2:], (0.25, 2.0, "%.2f"))
+        self.assertEqual(calls_by_label["Lens Distortion Strength"][2:], (-0.35, 0.35, "%.3f"))
+        self.assertEqual(calls_by_label["Lens Distortion Zoom"][2:], (0.8, 1.2, "%.2f"))
+        self.assertEqual(calls_by_label["Chromatic Aberration Strength"][2:], (0.0, 4.0, "%.2f px"))
+        self.assertEqual(calls_by_label["Color Saturation"][2:], (0.0, 2.0, "%.2f"))
+        self.assertEqual(calls_by_label["Color Contrast"][2:], (0.5, 1.5, "%.2f"))
+        self.assertEqual(calls_by_label["Color Gamma"][2:], (0.5, 2.0, "%.2f"))
+        self.assertEqual(calls_by_label["Color Warmth"][2:], (-1.0, 1.0, "%.2f"))
+        self.assertEqual(calls_by_label["Sensor Noise Strength"][2:], (0.0, 0.10, "%.3f"))
+        self.assertEqual(calls_by_label["Sensor Noise Shadow Boost"][2:], (0.0, 4.0, "%.2f"))
         self.assertEqual(calls_by_label["White Balance R"][2:], (0.0, 4.0, "%.2f"))
         self.assertEqual(calls_by_label["Vignette Strength"][2:], (0.0, 1.0, "%.2f"))
         self.assertEqual(calls_by_label["Vignette Radius"][2:], (0.0, 1.5, "%.2f"))
@@ -1517,6 +1685,12 @@ class TestPhaseRuntime(unittest.TestCase):
         self.assertFalse(runtime.postprocess_enabled)
         self.assertEqual(runtime.postprocess_exposure, 8.0)
         self.assertEqual(runtime.postprocess_white_balance, (0.0, 3.0, 4.0))
+        self.assertTrue(runtime.postprocess_auto_exposure_enabled)
+        self.assertEqual(runtime.postprocess_auto_exposure_target_luma, 1.0)
+        self.assertEqual(runtime.postprocess_auto_exposure_min, 0.05)
+        self.assertEqual(runtime.postprocess_auto_exposure_max, 4.0)
+        self.assertEqual(runtime.postprocess_auto_exposure_speed, 12.0)
+        self.assertEqual(runtime.postprocess_auto_exposure_highlight_weight, 4.0)
         self.assertFalse(runtime.postprocess_bloom_enabled)
         self.assertEqual(runtime.postprocess_bloom_threshold, 1.0)
         self.assertEqual(runtime.postprocess_bloom_intensity, 2.0)
@@ -1524,16 +1698,43 @@ class TestPhaseRuntime(unittest.TestCase):
         self.assertFalse(runtime.postprocess_lens_dirt_enabled)
         self.assertEqual(runtime.postprocess_lens_dirt_texture_index, 3)
         self.assertEqual(runtime.postprocess_lens_dirt_intensity, 10.0)
-        self.assertEqual(runtime.postprocess_lens_dirt_threshold, 2.0)
+        self.assertEqual(runtime.postprocess_lens_dirt_threshold, 1.0)
+        self.assertEqual(runtime.postprocess_lens_dirt_base_opacity, 1.0)
+        self.assertEqual(runtime.postprocess_lens_dirt_global_drive, 4.0)
+        self.assertEqual(runtime.postprocess_lens_dirt_mask_gamma, 0.25)
+        self.assertFalse(runtime.postprocess_lens_distortion_enabled)
+        self.assertEqual(runtime.postprocess_lens_distortion_strength, 0.35)
+        self.assertEqual(runtime.postprocess_lens_distortion_zoom, 1.2)
+        self.assertFalse(runtime.postprocess_chromatic_aberration_enabled)
+        self.assertEqual(runtime.postprocess_chromatic_aberration_strength, 4.0)
+        self.assertFalse(runtime.postprocess_color_grade_enabled)
+        self.assertEqual(runtime.postprocess_color_saturation, 2.0)
+        self.assertEqual(runtime.postprocess_color_contrast, 1.5)
+        self.assertEqual(runtime.postprocess_color_gamma, 0.5)
+        self.assertEqual(runtime.postprocess_color_warmth, 1.0)
+        self.assertFalse(runtime.postprocess_sensor_noise_enabled)
+        self.assertEqual(runtime.postprocess_sensor_noise_strength, 0.10)
+        self.assertEqual(runtime.postprocess_sensor_noise_shadow_boost, 4.0)
         self.assertEqual(runtime.postprocess_vignette_strength, 1.0)
         self.assertEqual(runtime.postprocess_vignette_radius, 0.0)
         self.assertEqual(runtime.postprocess_scope_radius, 1.5)
         self.assertEqual(runtime.postprocess_scope_softness, 0.001)
         self.assertEqual(runtime.renderer.params[-1]["scope_softness"], 0.001)
         self.assertEqual(runtime.renderer.params[-1]["white_balance"], (0.0, 3.0, 4.0))
+        self.assertEqual(runtime.renderer.params[-1]["auto_exposure_enabled"], True)
+        self.assertEqual(runtime.renderer.params[-1]["auto_exposure_target_luma"], 1.0)
+        self.assertEqual(runtime.renderer.params[-1]["auto_exposure_highlight_weight"], 4.0)
         self.assertEqual(runtime.renderer.params[-1]["bloom_radius"], 20.0)
         self.assertEqual(runtime.renderer.params[-1]["lens_dirt_texture_index"], 3)
-        self.assertEqual(runtime.renderer.params[-1]["lens_dirt_threshold"], 2.0)
+        self.assertEqual(runtime.renderer.params[-1]["lens_dirt_threshold"], 1.0)
+        self.assertEqual(runtime.renderer.params[-1]["lens_dirt_base_opacity"], 1.0)
+        self.assertEqual(runtime.renderer.params[-1]["lens_dirt_global_drive"], 4.0)
+        self.assertEqual(runtime.renderer.params[-1]["lens_dirt_mask_gamma"], 0.25)
+        self.assertEqual(runtime.renderer.params[-1]["lens_distortion_enabled"], False)
+        self.assertEqual(runtime.renderer.params[-1]["lens_distortion_strength"], 0.35)
+        self.assertEqual(runtime.renderer.params[-1]["chromatic_aberration_strength"], 4.0)
+        self.assertEqual(runtime.renderer.params[-1]["sensor_noise_strength"], 0.10)
+        self.assertEqual(runtime.renderer.params[-1]["color_warmth"], 1.0)
 
     def test_runtime_tissue_material_ui_exposes_wet_sliders_and_syncs_renderer(self):
         class FakeRenderer:
@@ -1774,6 +1975,7 @@ class TestPhaseRuntime(unittest.TestCase):
     def test_slang_postprocess_shader_declares_tonemap_and_scope_bindings(self):
         shader_source = (REPO_ROOT / "omnisurg" / "rendering" / "slang_shaders" / "omnisurg_post.slang").read_text()
         bloom_source = (REPO_ROOT / "omnisurg" / "rendering" / "slang_shaders" / "omnisurg_bloom.slang").read_text()
+        exposure_source = (REPO_ROOT / "omnisurg" / "rendering" / "slang_shaders" / "omnisurg_exposure.slang").read_text()
         mesh_source = (REPO_ROOT / "omnisurg" / "rendering" / "slang_shaders" / "omnisurg_mesh.slang").read_text()
         tissue_source = (REPO_ROOT / "omnisurg" / "rendering" / "slang_shaders" / "omnisurg_tissue.slang").read_text()
         renderer_source = (REPO_ROOT / "omnisurg" / "rendering" / "slang.py").read_text()
@@ -1782,12 +1984,21 @@ class TestPhaseRuntime(unittest.TestCase):
         self.assertIn("Texture2D<float4> scene_color_tex", shader_source)
         self.assertIn("Texture2D<float> depth_tex", shader_source)
         self.assertIn("Texture2D<float4> bloom_tex", shader_source)
+        self.assertIn("Texture2D<float4> bloom_global_tex", shader_source)
         self.assertIn("Texture2D<float4> lens_dirt_tex", shader_source)
+        self.assertIn("Texture2D<float4> auto_exposure_tex", shader_source)
         self.assertIn("SamplerState post_sampler", shader_source)
         for uniform in (
+            "frame_index",
             "postprocess_enabled",
             "exposure",
             "white_balance",
+            "auto_exposure_enabled",
+            "auto_exposure_target_luma",
+            "auto_exposure_min",
+            "auto_exposure_max",
+            "auto_exposure_speed",
+            "auto_exposure_highlight_weight",
             "bloom_enabled",
             "bloom_threshold",
             "bloom_intensity",
@@ -1795,6 +2006,22 @@ class TestPhaseRuntime(unittest.TestCase):
             "lens_dirt_enabled",
             "lens_dirt_intensity",
             "lens_dirt_threshold",
+            "lens_dirt_base_opacity",
+            "lens_dirt_global_drive",
+            "lens_dirt_mask_gamma",
+            "lens_distortion_enabled",
+            "lens_distortion_strength",
+            "lens_distortion_zoom",
+            "chromatic_aberration_enabled",
+            "chromatic_aberration_strength",
+            "sensor_noise_enabled",
+            "sensor_noise_strength",
+            "sensor_noise_shadow_boost",
+            "color_grade_enabled",
+            "color_saturation",
+            "color_contrast",
+            "color_gamma",
+            "color_warmth",
             "vignette_strength",
             "vignette_radius",
             "scope_radius",
@@ -1804,10 +2031,21 @@ class TestPhaseRuntime(unittest.TestCase):
         self.assertIn("float3 aces_tonemap", shader_source)
         self.assertIn("bloom_tex.Sample", shader_source)
         self.assertIn("float3 apply_lens_dirt", shader_source)
-        self.assertIn("float3 bloom_drive = bloom_signal * bloom_intensity", shader_source)
-        self.assertIn("color += bloom_drive", shader_source)
-        self.assertLess(shader_source.index("float3 bloom_drive"), shader_source.index("aces_tonemap(color)"))
-        self.assertLess(shader_source.index("aces_tonemap(color)"), shader_source.index("apply_lens_dirt(color, input.uv, bloom_drive)"))
+        self.assertIn("float2 distort_uv", shader_source)
+        self.assertIn("float3 sample_hdr_with_chromatic_aberration", shader_source)
+        self.assertIn("float3 apply_color_grade", shader_source)
+        self.assertIn("float hash12", shader_source)
+        self.assertIn("float3 apply_sensor_noise", shader_source)
+        self.assertIn("auto_exposure_tex.Sample", shader_source)
+        self.assertIn("float3 bloom_drive = bloom_signal", shader_source)
+        self.assertIn("float global_bloom_luminance", shader_source)
+        self.assertIn("lens_dirt_base_opacity + driven_opacity", shader_source)
+        self.assertIn("lens_dirt_global_drive", shader_source)
+        self.assertIn("pow(saturate(lens_dirt_tex.Sample", shader_source)
+        self.assertLess(shader_source.index("sample_hdr_with_chromatic_aberration"), shader_source.index("aces_tonemap(color)"))
+        self.assertLess(shader_source.index("aces_tonemap(color)"), shader_source.index("apply_lens_dirt(color, input.uv, bloom_drive, global_drive)"))
+        self.assertLess(shader_source.index("apply_lens_dirt(color, input.uv, bloom_drive, global_drive)"), shader_source.index("apply_color_grade(color)"))
+        self.assertLess(shader_source.index("apply_color_grade(color)"), shader_source.index("apply_sensor_noise(color, input.uv)"))
         self.assertIn("prefilter_downsample_fragment", bloom_source)
         self.assertIn("downsample_fragment", bloom_source)
         self.assertIn("upsample_fragment", bloom_source)
@@ -1815,11 +2053,16 @@ class TestPhaseRuntime(unittest.TestCase):
         self.assertIn("float3 downsample_13_tap", bloom_source)
         self.assertIn("float3 tent_upsample", bloom_source)
         self.assertIn("Texture2D<float4> base_tex", bloom_source)
+        self.assertIn("adapt_exposure_fragment", exposure_source)
+        self.assertIn("Texture2D<float4> previous_exposure_tex", exposure_source)
+        self.assertIn("auto_exposure_target_luma", exposure_source)
+        self.assertIn("sampled_highlight_luminance", exposure_source)
         self.assertIn("float endoscope_vignette", shader_source)
         self.assertIn("float scope_mask", shader_source)
         self.assertIn("scene_color_tex.Sample", shader_source)
         self.assertIn("omnisurg_post.slang", renderer_source)
         self.assertIn("omnisurg_bloom.slang", renderer_source)
+        self.assertIn("omnisurg_exposure.slang", renderer_source)
         self.assertIn("PostProcessParams", renderer_source)
         self.assertIn("LENS_DIRT_TEXTURE_PATHS", renderer_source)
         self.assertIn("LENS_DIRT_TEXTURE_LABELS", renderer_source)
@@ -1830,6 +2073,7 @@ class TestPhaseRuntime(unittest.TestCase):
         self.assertIn("rgba16_float", renderer_source)
         self.assertIn("self._post_pipeline", renderer_source)
         self.assertIn("self._bloom_prefilter_pipeline", renderer_source)
+        self.assertIn("self._auto_exposure_pipeline", renderer_source)
         self.assertIn("input_layout=None", renderer_source)
         self.assertIn("max(color, float3(0.0))", mesh_source)
         self.assertIn("max(color, float3(0.0))", tissue_source)

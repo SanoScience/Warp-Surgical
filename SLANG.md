@@ -9,6 +9,10 @@
   - added COD-style multi-scale HDR bloom before tonemapping for wet tissue and metal highlights
   - added bloom-driven lens dirt overlay using `textures/lensdirt/LensDirt00.png`
   - runtime lens dirt selection can switch between the four `textures/lensdirt/LensDirt00..03.png` assets
+  - added endoscope optics controls for barrel/pincushion distortion and radial chromatic aberration
+  - added post-tonemap color calibration controls for saturation, contrast, gamma, and warmth
+  - added subtle luminance-dependent sensor grain
+  - added optional endoscope-style auto-exposure/AGC using a 1x1 temporal adaptation pass
   - Slang mesh/tissue final outputs keep HDR highlights instead of final `saturate()` clipping
   - runtime postprocess controls are exposed in the existing Rendering panel
 - Added Slang viewport camera controls:
@@ -81,6 +85,12 @@
   - `enabled = True`
   - `exposure = 1.0`
   - `white_balance = (1.0, 1.0, 1.0)`
+  - `auto_exposure_enabled = False`
+  - `auto_exposure_target_luma = 0.35`
+  - `auto_exposure_min = 0.35`
+  - `auto_exposure_max = 1.8`
+  - `auto_exposure_speed = 4.0`
+  - `auto_exposure_highlight_weight = 0.8`
   - `bloom_enabled = True`
   - `bloom_threshold = 1.0`
   - `bloom_intensity = 0.6`
@@ -89,6 +99,22 @@
   - `lens_dirt_texture_index = 0` (`LensDirt00`)
   - `lens_dirt_intensity = 0.45`
   - `lens_dirt_threshold = 0.20`
+  - `lens_dirt_base_opacity = 0.05`
+  - `lens_dirt_global_drive = 1.0`
+  - `lens_dirt_mask_gamma = 0.60`
+  - `lens_distortion_enabled = True`
+  - `lens_distortion_strength = 0.08`
+  - `lens_distortion_zoom = 1.04`
+  - `chromatic_aberration_enabled = True`
+  - `chromatic_aberration_strength = 0.6`
+  - `sensor_noise_enabled = True`
+  - `sensor_noise_strength = 0.008`
+  - `sensor_noise_shadow_boost = 1.5`
+  - `color_grade_enabled = True`
+  - `color_saturation = 1.0`
+  - `color_contrast = 1.0`
+  - `color_gamma = 1.0`
+  - `color_warmth = 0.0`
   - `vignette_strength = 0.45`
   - `vignette_radius = 0.78`
   - `scope_radius = 0.965`
@@ -105,8 +131,10 @@ These defaults are intentionally conservative. With zero vertex colors and defau
 - The wet roughness range is narrow and tuned for sharp film highlights. It does not cover very matte mucus or clotted films.
 - Numeric material parameter clamping is currently asymmetric. Wet parameters are clamped in the renderer API, while older material controls rely mainly on UI ranges.
 - Bloom uses a fixed five-level HDR pyramid with Karis-weighted downsample and tent upsample. It does not yet expose separate knee, firefly suppression, or chromatic dispersion controls.
-- Lens dirt uses a static texture and bloom-driven additive response only. Dynamic droplets, smears, condensation, and blood accumulation are not implemented yet.
-- Auto-exposure, SSAO/contact occlusion, chromatic aberration, distortion, grain, and smoke/haze are not implemented yet.
+- Lens dirt uses selectable static textures with base opacity, bloom-driven local flare, low-resolution global bloom drive, and mask gamma shaping. Dynamic droplets, smears, condensation, and blood accumulation are not implemented yet.
+- Auto-exposure samples a fixed 3x3 scene pattern plus the lowest bloom level rather than a full luminance histogram. It is intended as AGC scaffolding, not a finished metering model.
+- Distortion, chromatic aberration, grain, and color grading are screen-space approximations. They do not yet use calibrated optics or sensor profiles.
+- SSAO/contact occlusion and smoke/haze are not implemented yet.
 - Normal layer blending is still linear in tangent space. It has not been upgraded to reoriented normal blending.
 - Specular lighting is still Blinn-Phong style. There is no GGX/physical BRDF yet.
 - Flat/untextured rendering is unchanged; wetness affects the textured Slang tissue path.
@@ -148,24 +176,18 @@ These defaults are intentionally conservative. With zero vertex colors and defau
 
 Highest-value post effects to add after the first postprocess scaffold:
 
-1. Auto-exposure with endoscope-style AGC lag.
-2. Dynamic lens contamination: droplets, smears, condensation, and blood masks.
-3. Downsampled separable bloom if the current single-pass gather is too expensive or too local.
-4. SSAO/contact occlusion for folds and tool contact.
-5. Endoscope optics/sensor pass:
-   - mild barrel distortion
-   - very subtle chromatic aberration
-   - sensor noise
-6. Cautery smoke/haze tied to heat or tool activity.
-7. Very subtle depth of field for close endoscopic camera simulation.
+1. Dynamic lens contamination: droplets, smears, condensation, and blood masks.
+2. SSAO/contact occlusion for folds and tool contact.
+3. Cautery smoke/haze tied to heat or tool activity.
+4. Very subtle depth of field for close endoscopic camera simulation.
+5. Calibrated optics/sensor profiles for distortion, chromatic aberration, AGC, noise, and OR color response.
 
 Suggested implementation order:
 
-1. Auto-exposure luminance reduction and temporal adaptation.
-2. Dynamic lens dirt masks and droplet/smear authoring.
-3. Bloom downsample/blur targets if visual tuning needs a larger radius.
-4. SSAO/contact occlusion.
-5. Endoscope distortion/chromatic aberration/noise.
+1. Dynamic lens dirt masks and droplet/smear authoring.
+2. SSAO/contact occlusion.
+3. Cautery smoke/haze.
+4. Calibrated endoscope profiles and preset bundles for the existing optics controls.
 
 ## Verification Notes
 
