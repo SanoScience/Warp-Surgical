@@ -42,7 +42,7 @@ from omnisurg.physics.systems import (
     VolumeConstraintSystem,
 )
 from omnisurg.rendering.bridge import RenderBridge
-from omnisurg.rendering.slang import TISSUE_DEBUG_MODE_LABELS
+from omnisurg.rendering.slang import LENS_DIRT_TEXTURE_LABELS, TISSUE_DEBUG_MODE_LABELS
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -704,6 +704,7 @@ class Runtime:
         self.postprocess_bloom_intensity = 0.6
         self.postprocess_bloom_radius = 16.0
         self.postprocess_lens_dirt_enabled = True
+        self.postprocess_lens_dirt_texture_index = 0
         self.postprocess_lens_dirt_intensity = 0.45
         self.postprocess_lens_dirt_threshold = 0.20
         self.postprocess_vignette_strength = 0.45
@@ -1658,6 +1659,7 @@ class Runtime:
             bloom_intensity=self.postprocess_bloom_intensity,
             bloom_radius=self.postprocess_bloom_radius,
             lens_dirt_enabled=self.postprocess_lens_dirt_enabled,
+            lens_dirt_texture_index=self.postprocess_lens_dirt_texture_index,
             lens_dirt_intensity=self.postprocess_lens_dirt_intensity,
             lens_dirt_threshold=self.postprocess_lens_dirt_threshold,
             vignette_strength=self.postprocess_vignette_strength,
@@ -1682,6 +1684,13 @@ class Runtime:
         clamped = float(np.clip(value, min_value, max_value))
         if _float_changed(getattr(self, attr), clamped):
             setattr(self, attr, clamped)
+            self._sync_postprocess_params()
+
+    def _set_postprocess_lens_dirt_texture(self, value: int) -> None:
+        max_index = len(LENS_DIRT_TEXTURE_LABELS) - 1
+        clamped = int(np.clip(int(value), 0, max_index))
+        if clamped != self.postprocess_lens_dirt_texture_index:
+            self.postprocess_lens_dirt_texture_index = clamped
             self._sync_postprocess_params()
 
     def _set_postprocess_white_balance_channel(self, index: int, value: float) -> None:
@@ -1749,15 +1758,38 @@ class Runtime:
             self.postprocess_lens_dirt_enabled = bool(lens_dirt_enabled)
             self._sync_postprocess_params()
 
+        max_lens_dirt_index = len(LENS_DIRT_TEXTURE_LABELS) - 1
+        lens_dirt_texture_index = int(np.clip(self.postprocess_lens_dirt_texture_index, 0, max_lens_dirt_index))
+        if lens_dirt_texture_index != self.postprocess_lens_dirt_texture_index:
+            self.postprocess_lens_dirt_texture_index = lens_dirt_texture_index
+            self._sync_postprocess_params()
+
+        combo = getattr(ui, "combo", None)
+        if callable(combo):
+            changed, lens_dirt_texture_index = combo(
+                "Lens Dirt Texture",
+                lens_dirt_texture_index,
+                LENS_DIRT_TEXTURE_LABELS,
+            )
+        else:
+            changed, lens_dirt_texture_index = ui.slider_int(
+                "Lens Dirt Texture",
+                lens_dirt_texture_index,
+                0,
+                max_lens_dirt_index,
+            )
+        if changed:
+            self._set_postprocess_lens_dirt_texture(lens_dirt_texture_index)
+
         changed, lens_dirt_intensity = ui.slider_float(
             "Lens Dirt Intensity",
             self.postprocess_lens_dirt_intensity,
             0.0,
-            2.0,
+            10.0,
             "%.2f",
         )
         if changed:
-            self._set_postprocess_float("postprocess_lens_dirt_intensity", lens_dirt_intensity, 0.0, 2.0)
+            self._set_postprocess_float("postprocess_lens_dirt_intensity", lens_dirt_intensity, 0.0, 10.0)
 
         changed, lens_dirt_threshold = ui.slider_float(
             "Lens Dirt Threshold",

@@ -8,6 +8,7 @@
   - the pass applies exposure, white balance, ACES tonemapping, endoscope vignette, and a soft circular scope mask
   - added COD-style multi-scale HDR bloom before tonemapping for wet tissue and metal highlights
   - added bloom-driven lens dirt overlay using `textures/lensdirt/LensDirt00.png`
+  - runtime lens dirt selection can switch between the four `textures/lensdirt/LensDirt00..03.png` assets
   - Slang mesh/tissue final outputs keep HDR highlights instead of final `saturate()` clipping
   - runtime postprocess controls are exposed in the existing Rendering panel
 - Added Slang viewport camera controls:
@@ -85,6 +86,7 @@
   - `bloom_intensity = 0.6`
   - `bloom_radius = 16.0`
   - `lens_dirt_enabled = True`
+  - `lens_dirt_texture_index = 0` (`LensDirt00`)
   - `lens_dirt_intensity = 0.45`
   - `lens_dirt_threshold = 0.20`
   - `vignette_strength = 0.45`

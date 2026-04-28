@@ -32,6 +32,7 @@ from omnisurg.instruments.grasper import load_kinematic_grasper
 from omnisurg.input.sources import MultiSourceRig
 from omnisurg.rendering.bridge import RenderBridge
 from omnisurg.rendering.slang import (
+    LENS_DIRT_TEXTURE_LABELS,
     PostProcessParams,
     SlangRenderer,
     TISSUE_DEBUG_MODE_LABELS,
@@ -252,11 +253,13 @@ class _FakeTissueMaterialUi:
 
 
 class _FakePostProcessUi:
-    def __init__(self, checkbox_results=None, slider_results=None):
+    def __init__(self, checkbox_results=None, slider_results=None, combo_results=None):
         self.checkbox_results = {} if checkbox_results is None else dict(checkbox_results)
         self.slider_results = {} if slider_results is None else dict(slider_results)
+        self.combo_results = {} if combo_results is None else dict(combo_results)
         self.checkbox_calls = []
         self.slider_calls = []
+        self.combo_calls = []
         self.texts = []
 
     def checkbox(self, label, value):
@@ -269,6 +272,12 @@ class _FakePostProcessUi:
         self.slider_calls.append((label, value, min_value, max_value, fmt))
         if label in self.slider_results:
             return True, self.slider_results[label]
+        return False, value
+
+    def combo(self, label, value, items):
+        self.combo_calls.append((label, value, tuple(items)))
+        if label in self.combo_results:
+            return True, self.combo_results[label]
         return False, value
 
     def text(self, value):
@@ -1161,7 +1170,7 @@ class TestPhaseRuntime(unittest.TestCase):
         renderer._scene_color_texture = "scene-color"
         renderer._depth_texture = "depth"
         renderer._resolved_bloom_texture = "bloom"
-        renderer._lens_dirt_texture = "lens-dirt"
+        renderer._lens_dirt_textures = {3: "lens-dirt-3"}
         renderer._post_sampler = "sampler"
 
         renderer.set_postprocess_params(
@@ -1173,7 +1182,8 @@ class TestPhaseRuntime(unittest.TestCase):
             bloom_intensity=2.0,
             bloom_radius=20.0,
             lens_dirt_enabled=0,
-            lens_dirt_intensity=3.0,
+            lens_dirt_texture_index=99,
+            lens_dirt_intensity=12.0,
             lens_dirt_threshold=2.0,
             vignette_strength=2.0,
             vignette_radius=-1.0,
@@ -1186,7 +1196,7 @@ class TestPhaseRuntime(unittest.TestCase):
         self.assertEqual(cursor.scene_color_tex, "scene-color")
         self.assertEqual(cursor.depth_tex, "depth")
         self.assertEqual(cursor.bloom_tex, "bloom")
-        self.assertEqual(cursor.lens_dirt_tex, "lens-dirt")
+        self.assertEqual(cursor.lens_dirt_tex, "lens-dirt-3")
         self.assertEqual(cursor.post_sampler, "sampler")
         self.assertEqual(cursor.output_size, (1600.0, 800.0))
         self.assertEqual(cursor.postprocess_enabled, 0)
@@ -1197,7 +1207,8 @@ class TestPhaseRuntime(unittest.TestCase):
         self.assertEqual(cursor.bloom_intensity, 2.0)
         self.assertEqual(cursor.bloom_radius, 20.0)
         self.assertEqual(cursor.lens_dirt_enabled, 0)
-        self.assertEqual(cursor.lens_dirt_intensity, 2.0)
+        self.assertEqual(renderer._postprocess_params.lens_dirt_texture_index, 3)
+        self.assertEqual(cursor.lens_dirt_intensity, 10.0)
         self.assertEqual(cursor.lens_dirt_threshold, 2.0)
         self.assertEqual(cursor.vignette_strength, 1.0)
         self.assertEqual(cursor.vignette_radius, 0.0)
@@ -1406,6 +1417,7 @@ class TestPhaseRuntime(unittest.TestCase):
         runtime.postprocess_bloom_intensity = 0.12
         runtime.postprocess_bloom_radius = 3.0
         runtime.postprocess_lens_dirt_enabled = True
+        runtime.postprocess_lens_dirt_texture_index = 2
         runtime.postprocess_lens_dirt_intensity = 0.25
         runtime.postprocess_lens_dirt_threshold = 0.35
         runtime.postprocess_vignette_strength = 0.45
@@ -1421,7 +1433,15 @@ class TestPhaseRuntime(unittest.TestCase):
         self.assertEqual(runtime.renderer.params[-1]["bloom_enabled"], True)
         self.assertEqual(runtime.renderer.params[-1]["bloom_threshold"], 1.0)
         self.assertEqual(runtime.renderer.params[-1]["lens_dirt_enabled"], True)
+        self.assertEqual(runtime.renderer.params[-1]["lens_dirt_texture_index"], 2)
         self.assertEqual(runtime.renderer.params[-1]["lens_dirt_intensity"], 0.25)
+
+        runtime._set_postprocess_lens_dirt_texture(99)
+        self.assertEqual(runtime.postprocess_lens_dirt_texture_index, len(LENS_DIRT_TEXTURE_LABELS) - 1)
+        self.assertEqual(
+            runtime.renderer.params[-1]["lens_dirt_texture_index"],
+            len(LENS_DIRT_TEXTURE_LABELS) - 1,
+        )
 
         runtime._set_postprocess_float("postprocess_exposure", 12.0, 0.0, 8.0)
         self.assertEqual(runtime.postprocess_exposure, 8.0)
@@ -1449,6 +1469,7 @@ class TestPhaseRuntime(unittest.TestCase):
         runtime.postprocess_bloom_intensity = 0.12
         runtime.postprocess_bloom_radius = 3.0
         runtime.postprocess_lens_dirt_enabled = True
+        runtime.postprocess_lens_dirt_texture_index = 0
         runtime.postprocess_lens_dirt_intensity = 0.25
         runtime.postprocess_lens_dirt_threshold = 0.35
         runtime.postprocess_vignette_strength = 0.45
@@ -1463,7 +1484,7 @@ class TestPhaseRuntime(unittest.TestCase):
                 "Bloom Threshold": 9.0,
                 "Bloom Intensity": 2.0,
                 "Bloom Radius": 20.0,
-                "Lens Dirt Intensity": 3.0,
+                "Lens Dirt Intensity": 12.0,
                 "Lens Dirt Threshold": 2.0,
                 "White Balance R": -1.0,
                 "White Balance G": 3.0,
@@ -1473,6 +1494,7 @@ class TestPhaseRuntime(unittest.TestCase):
                 "Scope Radius": 2.0,
                 "Scope Softness": 0.0,
             },
+            combo_results={"Lens Dirt Texture": 3},
         )
 
         runtime._render_postprocess_ui(ui)
@@ -1480,11 +1502,12 @@ class TestPhaseRuntime(unittest.TestCase):
         calls_by_label = {call[0]: call for call in ui.slider_calls}
         self.assertIn("Postprocessing", ui.texts)
         self.assertEqual(ui.checkbox_calls, [("Postprocess", True), ("Bloom", True), ("Lens Dirt", True)])
+        self.assertEqual(ui.combo_calls, [("Lens Dirt Texture", 0, LENS_DIRT_TEXTURE_LABELS)])
         self.assertEqual(calls_by_label["Exposure"][2:], (0.0, 8.0, "%.2f"))
         self.assertEqual(calls_by_label["Bloom Threshold"][2:], (0.0, 1.0, "%.2f"))
         self.assertEqual(calls_by_label["Bloom Intensity"][2:], (0.0, 10.0, "%.2f"))
         self.assertEqual(calls_by_label["Bloom Radius"][2:], (0.0, 64.0, "%.1f px"))
-        self.assertEqual(calls_by_label["Lens Dirt Intensity"][2:], (0.0, 2.0, "%.2f"))
+        self.assertEqual(calls_by_label["Lens Dirt Intensity"][2:], (0.0, 10.0, "%.2f"))
         self.assertEqual(calls_by_label["Lens Dirt Threshold"][2:], (0.0, 4.0, "%.2f"))
         self.assertEqual(calls_by_label["White Balance R"][2:], (0.0, 4.0, "%.2f"))
         self.assertEqual(calls_by_label["Vignette Strength"][2:], (0.0, 1.0, "%.2f"))
@@ -1499,7 +1522,8 @@ class TestPhaseRuntime(unittest.TestCase):
         self.assertEqual(runtime.postprocess_bloom_intensity, 2.0)
         self.assertEqual(runtime.postprocess_bloom_radius, 20.0)
         self.assertFalse(runtime.postprocess_lens_dirt_enabled)
-        self.assertEqual(runtime.postprocess_lens_dirt_intensity, 2.0)
+        self.assertEqual(runtime.postprocess_lens_dirt_texture_index, 3)
+        self.assertEqual(runtime.postprocess_lens_dirt_intensity, 10.0)
         self.assertEqual(runtime.postprocess_lens_dirt_threshold, 2.0)
         self.assertEqual(runtime.postprocess_vignette_strength, 1.0)
         self.assertEqual(runtime.postprocess_vignette_radius, 0.0)
@@ -1508,6 +1532,7 @@ class TestPhaseRuntime(unittest.TestCase):
         self.assertEqual(runtime.renderer.params[-1]["scope_softness"], 0.001)
         self.assertEqual(runtime.renderer.params[-1]["white_balance"], (0.0, 3.0, 4.0))
         self.assertEqual(runtime.renderer.params[-1]["bloom_radius"], 20.0)
+        self.assertEqual(runtime.renderer.params[-1]["lens_dirt_texture_index"], 3)
         self.assertEqual(runtime.renderer.params[-1]["lens_dirt_threshold"], 2.0)
 
     def test_runtime_tissue_material_ui_exposes_wet_sliders_and_syncs_renderer(self):
@@ -1796,8 +1821,11 @@ class TestPhaseRuntime(unittest.TestCase):
         self.assertIn("omnisurg_post.slang", renderer_source)
         self.assertIn("omnisurg_bloom.slang", renderer_source)
         self.assertIn("PostProcessParams", renderer_source)
+        self.assertIn("LENS_DIRT_TEXTURE_PATHS", renderer_source)
+        self.assertIn("LENS_DIRT_TEXTURE_LABELS", renderer_source)
         self.assertIn("DEFAULT_LENS_DIRT_PATH", renderer_source)
-        self.assertIn("LensDirt00.png", renderer_source)
+        self.assertIn("LensDirt{index:02d}.png", renderer_source)
+        self.assertIn("lens_dirt_texture_index", renderer_source)
         self.assertIn("TextureUsage.render_target | self._spy.TextureUsage.shader_resource", renderer_source)
         self.assertIn("rgba16_float", renderer_source)
         self.assertIn("self._post_pipeline", renderer_source)

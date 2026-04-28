@@ -16,8 +16,13 @@ from omnisurg.config import ViewerConfig
 
 SLANG_RENDER_BACKENDS = frozenset({"slang", "slang-d3d12", "slang-vulkan", "slang-vk"})
 SLANG_SHADER_DIR = Path(__file__).with_name("slang_shaders")
-DEFAULT_LENS_DIRT_PATH = Path(__file__).resolve().parents[2] / "textures" / "lensdirt" / "LensDirt00.png"
 _BLOOM_MAX_LEVELS = 5
+LENS_DIRT_TEXTURE_PATHS = tuple(
+    Path(__file__).resolve().parents[2] / "textures" / "lensdirt" / f"LensDirt{index:02d}.png"
+    for index in range(4)
+)
+LENS_DIRT_TEXTURE_LABELS = tuple(path.stem for path in LENS_DIRT_TEXTURE_PATHS)
+DEFAULT_LENS_DIRT_PATH = LENS_DIRT_TEXTURE_PATHS[0]
 DEFAULT_WINDOWS_SLANG_BIN = Path(r"G:\warp\slang-2026.5.1-windows-x86_64\bin")
 _SLANG_BIN_ENV = os.environ.get("OMNISURG_SLANG_BIN")
 DEFAULT_SLANG_BIN = Path(_SLANG_BIN_ENV) if _SLANG_BIN_ENV else (
@@ -51,7 +56,7 @@ _POSTPROCESS_PARAM_RANGES = {
     "bloom_threshold": (0.0, 1.0),
     "bloom_intensity": (0.0, 10.0),
     "bloom_radius": (0.0, 64.0),
-    "lens_dirt_intensity": (0.0, 2.0),
+    "lens_dirt_intensity": (0.0, 10.0),
     "lens_dirt_threshold": (0.0, 4.0),
     "vignette_strength": (0.0, 1.0),
     "vignette_radius": (0.0, 1.5),
@@ -86,6 +91,7 @@ class PostProcessParams:
     bloom_intensity: float = 0.6
     bloom_radius: float = 16.0
     lens_dirt_enabled: bool = True
+    lens_dirt_texture_index: int = 0
     lens_dirt_intensity: float = 0.45
     lens_dirt_threshold: float = 0.20
     vignette_strength: float = 0.45
@@ -875,7 +881,7 @@ class SlangRenderer:
         self._default_textures: dict[tuple[str, bool], Any] = {}
         self._material_sampler = None
         self._post_sampler = None
-        self._lens_dirt_texture = None
+        self._lens_dirt_textures: dict[int, Any] = {}
         self._tissue_material_params = TissueMaterialParams()
         self._postprocess_params = PostProcessParams()
         self._logs: dict[str, float] = {}
@@ -2158,29 +2164,47 @@ class SlangRenderer:
         self._default_textures[key] = texture
         return texture
 
-    def _lens_dirt_resource(self) -> Any:
-        if self._lens_dirt_texture is not None:
-            return self._lens_dirt_texture
+    def _lens_dirt_texture_index(self) -> int:
+        max_index = len(LENS_DIRT_TEXTURE_PATHS) - 1
+        return int(np.clip(getattr(self._postprocess_params, "lens_dirt_texture_index", 0), 0, max_index))
 
-        path = DEFAULT_LENS_DIRT_PATH
+    def _lens_dirt_resource(self) -> Any:
+        texture_index = self._lens_dirt_texture_index()
+        texture_cache = getattr(self, "_lens_dirt_textures", None)
+        if texture_cache is None:
+            legacy_texture = getattr(self, "_lens_dirt_texture", None)
+            if legacy_texture is not None:
+                return legacy_texture
+            texture_cache = {}
+            self._lens_dirt_textures = texture_cache
+
+        existing = texture_cache.get(texture_index)
+        if existing is not None:
+            return existing
+
+        path = LENS_DIRT_TEXTURE_PATHS[texture_index]
         if not path.exists():
             self._warn_once(
                 f"lens-dirt:missing:{path}",
                 f"Slang postprocess lens dirt disabled: missing texture {path}.",
             )
-            self._lens_dirt_texture = self._default_texture("black", True)
-            return self._lens_dirt_texture
+            texture_cache[texture_index] = self._default_texture("black", True)
+            return texture_cache[texture_index]
 
         try:
             data = self._load_texture_data(path)
-            self._lens_dirt_texture = self._create_texture_from_data("omnisurg-lens-dirt", data, True)
+            texture_cache[texture_index] = self._create_texture_from_data(
+                f"omnisurg-lens-dirt-{texture_index:02d}",
+                data,
+                True,
+            )
         except Exception as exc:
             self._warn_once(
                 f"lens-dirt:load:{path}",
                 f"Slang postprocess lens dirt disabled: failed to load {path} ({exc}).",
             )
-            self._lens_dirt_texture = self._default_texture("black", True)
-        return self._lens_dirt_texture
+            texture_cache[texture_index] = self._default_texture("black", True)
+        return texture_cache[texture_index]
 
     def _linear_wrap_sampler(self) -> Any:
         if self._material_sampler is None:
@@ -2803,6 +2827,8 @@ class SlangRenderer:
                 value = bool(value)
             elif key == "lens_dirt_enabled":
                 value = bool(value)
+            elif key == "lens_dirt_texture_index":
+                value = int(np.clip(int(value), 0, len(LENS_DIRT_TEXTURE_PATHS) - 1))
             elif key == "white_balance":
                 color = np.asarray(value, dtype=np.float32).reshape(-1)
                 if color.size < 3:
