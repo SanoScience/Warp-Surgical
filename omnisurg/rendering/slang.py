@@ -37,6 +37,12 @@ TISSUE_DEBUG_MODE_LABELS = (
     "Spec/Roughness",
     "Heat/Blood Masks",
 )
+_TISSUE_MATERIAL_PARAM_RANGES = {
+    "wetness": (0.0, 1.0),
+    "wet_spec_scale": (0.0, 4.0),
+    "wet_roughness": (0.02, 0.6),
+    "blood_wetness": (0.0, 2.0),
+}
 
 
 @dataclass
@@ -2137,6 +2143,9 @@ class SlangRenderer:
                 )
             else:
                 value = float(value)
+                value_range = _TISSUE_MATERIAL_PARAM_RANGES.get(key)
+                if value_range is not None:
+                    value = float(np.clip(value, value_range[0], value_range[1]))
 
             setattr(current, key, value)
 

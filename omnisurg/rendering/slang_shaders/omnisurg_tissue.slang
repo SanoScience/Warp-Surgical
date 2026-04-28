@@ -217,11 +217,19 @@ float4 fragment_main(V2F input) : SV_Target
     float backscatter = pow(saturate(dot(-normal, back_light)), 2.0);
 
     float3 half_dir = normalize(key_light + view_dir);
-    float roughness = saturate(roughness_bias + (1.0 - spec_mask) * 0.35);
-    float shininess = lerp(96.0, 18.0, roughness);
-    float wet_spec = pow(saturate(dot(normal, half_dir)), shininess)
+    float dry_roughness = saturate(roughness_bias + (1.0 - spec_mask) * 0.35);
+    float dry_shininess = lerp(96.0, 18.0, dry_roughness);
+    float dry_spec = pow(saturate(dot(normal, half_dir)), dry_shininess)
         * specular_scale
         * (0.25 + spec_mask);
+    float blood_film = saturate(max(blood_blend, blood_mask) * blood_wetness);
+    float wet_film = saturate(wetness + blood_film);
+    float wet_shininess = lerp(160.0, 32.0, saturate(wet_roughness));
+    float wet_spec = pow(saturate(dot(normal, half_dir)), wet_shininess)
+        * wet_spec_scale
+        * wet_film;
+    float film_spec = dry_spec * (1.0 - wet_film) + wet_spec;
+    float3 wet_base_color = lerp(base_color, base_color * 0.72, wet_film * 0.35);
 
     if (debug_mode == DEBUG_VERTEX_BLEND_RGB)
         return float4(saturate(input.vertex_color.rgb), mesh_color.a);
@@ -232,7 +240,7 @@ float4 fragment_main(V2F input) : SV_Target
     if (debug_mode == DEBUG_BLENDED_NORMAL)
         return float4(saturate(normal * 0.5 + 0.5), mesh_color.a);
     if (debug_mode == DEBUG_SPEC_ROUGHNESS)
-        return float4(saturate(float3(spec_mask, roughness, 0.0)), mesh_color.a);
+        return float4(saturate(float3(spec_mask, dry_roughness, wet_film)), mesh_color.a);
     if (debug_mode == DEBUG_HEAT_BLOOD_MASKS)
         return float4(saturate(float3(heat_mask, blood_mask, blood_layer_mask)), mesh_color.a);
     if (debug_mode == DEBUG_RESERVED_MATERIAL_PARAMS)
@@ -247,15 +255,17 @@ float4 fragment_main(V2F input) : SV_Target
 
     float ndv = saturate(dot(normal, view_dir));
     float rim = pow(1.0 - ndv, 2.0) * rim_strength;
+    float3 subsurface_light = subsurface_color * backscatter * saturate(subsurface_strength);
 
     float3 diffuse_light =
         light_ambient_color * ambient
         + light_key_color * key_diffuse * 0.88
         + light_fill_color * fill_diffuse * 0.42
-        + light_rim_color * backscatter * 0.16;
+        + light_rim_color * backscatter * 0.16
+        + subsurface_light;
     float3 color =
-        base_color * diffuse_light
-        + light_key_color * wet_spec
+        wet_base_color * diffuse_light
+        + light_key_color * film_spec
         + base_color * light_rim_color * rim;
     return float4(saturate(color), mesh_color.a);
 }

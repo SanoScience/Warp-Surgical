@@ -219,6 +219,32 @@ class _FakeTissueDebugSliderUi:
         return self.button_result
 
 
+class _FakeTissueMaterialUi:
+    def __init__(self, slider_results=None):
+        self.slider_results = {} if slider_results is None else dict(slider_results)
+        self.slider_calls = []
+        self.combo_calls = []
+        self.texts = []
+        self.buttons = []
+
+    def combo(self, label, value, items):
+        self.combo_calls.append((label, value, tuple(items)))
+        return False, value
+
+    def slider_float(self, label, value, min_value, max_value, fmt):
+        self.slider_calls.append((label, value, min_value, max_value, fmt))
+        if label in self.slider_results:
+            return True, self.slider_results[label]
+        return False, value
+
+    def text(self, value):
+        self.texts.append(str(value))
+
+    def button(self, label):
+        self.buttons.append(label)
+        return False
+
+
 class TestPhaseRuntime(unittest.TestCase):
     def test_cli_help(self):
         env = os.environ.copy()
@@ -955,12 +981,12 @@ class TestPhaseRuntime(unittest.TestCase):
             roughness_bias=0.25,
             ambient=0.11,
             rim_strength=0.33,
-            wetness=0.2,
-            wet_spec_scale=1.5,
-            wet_roughness=0.08,
+            wetness=1.2,
+            wet_spec_scale=5.0,
+            wet_roughness=0.0,
             subsurface_color=(2.0, -1.0, 0.5),
             subsurface_strength=0.4,
-            blood_wetness=0.9,
+            blood_wetness=3.0,
         )
         renderer._set_shader_uniforms("shader-object", (1.0, 1.0, 1.0, 1.0), material)
 
@@ -982,11 +1008,40 @@ class TestPhaseRuntime(unittest.TestCase):
         self.assertEqual(cursor.blend_damage, 1.0)
         self.assertEqual(cursor.blend_coag, 1.0)
         self.assertEqual(cursor.blend_blood, 1.0)
-        self.assertEqual(cursor.wetness, 0.2)
-        self.assertEqual(cursor.wet_spec_scale, 1.5)
-        self.assertEqual(cursor.wet_roughness, 0.08)
+        self.assertEqual(cursor.wetness, 1.0)
+        self.assertEqual(cursor.wet_spec_scale, 4.0)
+        self.assertEqual(cursor.wet_roughness, 0.02)
         self.assertEqual(cursor.subsurface_strength, 0.4)
-        self.assertEqual(cursor.blood_wetness, 0.9)
+        self.assertEqual(cursor.blood_wetness, 2.0)
+
+    def test_slang_renderer_clamps_wet_tissue_material_params_to_ui_ranges(self):
+        renderer = SlangRenderer.__new__(SlangRenderer)
+        renderer._tissue_material_params = TissueMaterialParams()
+
+        renderer.set_tissue_material_params(
+            wetness=-1.0,
+            wet_spec_scale=-1.0,
+            wet_roughness=-1.0,
+            blood_wetness=-1.0,
+        )
+
+        params = renderer._tissue_material_params
+        self.assertEqual(params.wetness, 0.0)
+        self.assertEqual(params.wet_spec_scale, 0.0)
+        self.assertEqual(params.wet_roughness, 0.02)
+        self.assertEqual(params.blood_wetness, 0.0)
+
+        renderer.set_tissue_material_params(
+            wetness=2.0,
+            wet_spec_scale=8.0,
+            wet_roughness=1.0,
+            blood_wetness=4.0,
+        )
+
+        self.assertEqual(params.wetness, 1.0)
+        self.assertEqual(params.wet_spec_scale, 4.0)
+        self.assertEqual(params.wet_roughness, 0.6)
+        self.assertEqual(params.blood_wetness, 2.0)
 
     def test_runtime_tissue_material_param_sync_updates_renderer(self):
         class FakeRenderer:
@@ -1024,6 +1079,55 @@ class TestPhaseRuntime(unittest.TestCase):
         runtime._set_tissue_material_float("tissue_specular_scale", 4.0, 0.0, 2.0)
         self.assertEqual(runtime.tissue_specular_scale, 2.0)
         self.assertEqual(runtime.renderer.params[-1]["specular_scale"], 2.0)
+
+    def test_runtime_tissue_material_ui_exposes_wet_sliders_and_syncs_renderer(self):
+        class FakeRenderer:
+            def __init__(self):
+                self.params = []
+
+            def set_tissue_material_params(self, **params):
+                self.params.append(params)
+
+        runtime = Runtime.__new__(Runtime)
+        runtime.renderer = FakeRenderer()
+        runtime.tissue_debug_mode = 0
+        runtime.tissue_normal_strength = 0.65
+        runtime.tissue_specular_scale = 0.35
+        runtime.tissue_roughness_bias = 0.45
+        runtime.tissue_ambient = 0.22
+        runtime.tissue_rim_strength = 0.12
+        runtime.tissue_wetness = 0.0
+        runtime.tissue_wet_spec_scale = 1.0
+        runtime.tissue_wet_roughness = 0.18
+        runtime.tissue_subsurface_color = (0.8, 0.22, 0.16)
+        runtime.tissue_subsurface_strength = 0.0
+        runtime.tissue_blood_wetness = 1.0
+
+        ui = _FakeTissueMaterialUi(
+            slider_results={
+                "Wetness": 0.4,
+                "Wet Spec Scale": 4.5,
+                "Wet Roughness": 0.01,
+                "Blood Wetness": 3.0,
+            }
+        )
+
+        runtime._render_tissue_material_ui(ui)
+
+        calls_by_label = {call[0]: call for call in ui.slider_calls}
+        self.assertIn("Tissue Material", ui.texts)
+        self.assertEqual(calls_by_label["Wetness"][2:], (0.0, 1.0, "%.2f"))
+        self.assertEqual(calls_by_label["Wet Spec Scale"][2:], (0.0, 4.0, "%.2f"))
+        self.assertEqual(calls_by_label["Wet Roughness"][2:], (0.02, 0.6, "%.2f"))
+        self.assertEqual(calls_by_label["Blood Wetness"][2:], (0.0, 2.0, "%.2f"))
+        self.assertEqual(runtime.tissue_wetness, 0.4)
+        self.assertEqual(runtime.tissue_wet_spec_scale, 4.0)
+        self.assertEqual(runtime.tissue_wet_roughness, 0.02)
+        self.assertEqual(runtime.tissue_blood_wetness, 2.0)
+        self.assertEqual(runtime.renderer.params[-1]["wetness"], 0.4)
+        self.assertEqual(runtime.renderer.params[-1]["wet_spec_scale"], 4.0)
+        self.assertEqual(runtime.renderer.params[-1]["wet_roughness"], 0.02)
+        self.assertEqual(runtime.renderer.params[-1]["blood_wetness"], 2.0)
 
     def test_runtime_tissue_debug_ui_uses_named_combo_and_reset_button(self):
         class FakeRenderer:
@@ -1198,6 +1302,19 @@ class TestPhaseRuntime(unittest.TestCase):
         self.assertIn("TISSUE_DEBUG_MODE_LABELS", renderer_source)
         self.assertEqual(len(TISSUE_DEBUG_MODE_LABELS), 7)
         self.assertIn("rgba32_float", renderer_source)
+        self.assertIn("float dry_roughness = saturate(roughness_bias + (1.0 - spec_mask) * 0.35)", shader_source)
+        self.assertIn("float dry_spec = pow(saturate(dot(normal, half_dir)), dry_shininess)", shader_source)
+        self.assertIn("float blood_film = saturate(max(blood_blend, blood_mask) * blood_wetness)", shader_source)
+        self.assertIn("float wet_film = saturate(wetness + blood_film)", shader_source)
+        self.assertIn("float wet_shininess = lerp(160.0, 32.0, saturate(wet_roughness))", shader_source)
+        self.assertIn("* wet_spec_scale", shader_source)
+        self.assertIn("float film_spec = dry_spec * (1.0 - wet_film) + wet_spec", shader_source)
+        self.assertIn("float3 wet_base_color = lerp(base_color, base_color * 0.72, wet_film * 0.35)", shader_source)
+        self.assertIn("float3 subsurface_light = subsurface_color * backscatter * saturate(subsurface_strength)", shader_source)
+        self.assertIn("+ subsurface_light", shader_source)
+        self.assertIn("float3(spec_mask, dry_roughness, wet_film)", shader_source)
+        self.assertIn("wet_base_color * diffuse_light", shader_source)
+        self.assertIn("+ light_key_color * film_spec", shader_source)
 
     def test_slang_immediate_ui_reuses_button_until_click_is_reported(self):
         fake_sui = _FakeSlangUiModule()

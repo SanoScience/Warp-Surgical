@@ -1669,6 +1669,94 @@ class Runtime:
         if current_mode != 0 and ui.button("Show Final Tissue"):
             self._set_tissue_debug_mode(0)
 
+    def _render_tissue_material_ui(self, ui) -> None:
+        ui.text("Tissue Material")
+        self._render_tissue_debug_ui(ui)
+
+        changed, normal_strength = ui.slider_float(
+            "Normal Strength",
+            self.tissue_normal_strength,
+            0.0,
+            2.0,
+            "%.2f",
+        )
+        if changed:
+            self._set_tissue_material_float("tissue_normal_strength", normal_strength, 0.0, 2.0)
+
+        changed, specular_scale = ui.slider_float(
+            "Specular Scale",
+            self.tissue_specular_scale,
+            0.0,
+            2.0,
+            "%.2f",
+        )
+        if changed:
+            self._set_tissue_material_float("tissue_specular_scale", specular_scale, 0.0, 2.0)
+
+        changed, roughness_bias = ui.slider_float(
+            "Roughness Bias",
+            self.tissue_roughness_bias,
+            0.0,
+            1.0,
+            "%.2f",
+        )
+        if changed:
+            self._set_tissue_material_float("tissue_roughness_bias", roughness_bias, 0.0, 1.0)
+
+        changed, wetness = ui.slider_float(
+            "Wetness",
+            self.tissue_wetness,
+            0.0,
+            1.0,
+            "%.2f",
+        )
+        if changed:
+            self._set_tissue_material_float("tissue_wetness", wetness, 0.0, 1.0)
+
+        changed, wet_spec_scale = ui.slider_float(
+            "Wet Spec Scale",
+            self.tissue_wet_spec_scale,
+            0.0,
+            4.0,
+            "%.2f",
+        )
+        if changed:
+            self._set_tissue_material_float("tissue_wet_spec_scale", wet_spec_scale, 0.0, 4.0)
+
+        changed, wet_roughness = ui.slider_float(
+            "Wet Roughness",
+            self.tissue_wet_roughness,
+            0.02,
+            0.6,
+            "%.2f",
+        )
+        if changed:
+            self._set_tissue_material_float("tissue_wet_roughness", wet_roughness, 0.02, 0.6)
+
+        changed, blood_wetness = ui.slider_float(
+            "Blood Wetness",
+            self.tissue_blood_wetness,
+            0.0,
+            2.0,
+            "%.2f",
+        )
+        if changed:
+            self._set_tissue_material_float("tissue_blood_wetness", blood_wetness, 0.0, 2.0)
+
+        changed, ambient = ui.slider_float("Ambient", self.tissue_ambient, 0.0, 1.0, "%.2f")
+        if changed:
+            self._set_tissue_material_float("tissue_ambient", ambient, 0.0, 1.0)
+
+        changed, rim_strength = ui.slider_float(
+            "Rim Strength",
+            self.tissue_rim_strength,
+            0.0,
+            1.0,
+            "%.2f",
+        )
+        if changed:
+            self._set_tissue_material_float("tissue_rim_strength", rim_strength, 0.0, 1.0)
+
     def gui(self, ui):
         ui.text("Solver")
         changed, substeps = ui.slider_int("Substeps", self._pending_substeps, 1, 64)
@@ -1786,52 +1874,7 @@ class Runtime:
         if ui.button("Reset Tissue Blend"):
             self._reset_tissue_blend_channels()
 
-        ui.text("Tissue Material")
-        self._render_tissue_debug_ui(ui)
-
-        changed, normal_strength = ui.slider_float(
-            "Normal Strength",
-            self.tissue_normal_strength,
-            0.0,
-            2.0,
-            "%.2f",
-        )
-        if changed:
-            self._set_tissue_material_float("tissue_normal_strength", normal_strength, 0.0, 2.0)
-
-        changed, specular_scale = ui.slider_float(
-            "Specular Scale",
-            self.tissue_specular_scale,
-            0.0,
-            2.0,
-            "%.2f",
-        )
-        if changed:
-            self._set_tissue_material_float("tissue_specular_scale", specular_scale, 0.0, 2.0)
-
-        changed, roughness_bias = ui.slider_float(
-            "Roughness Bias",
-            self.tissue_roughness_bias,
-            0.0,
-            1.0,
-            "%.2f",
-        )
-        if changed:
-            self._set_tissue_material_float("tissue_roughness_bias", roughness_bias, 0.0, 1.0)
-
-        changed, ambient = ui.slider_float("Ambient", self.tissue_ambient, 0.0, 1.0, "%.2f")
-        if changed:
-            self._set_tissue_material_float("tissue_ambient", ambient, 0.0, 1.0)
-
-        changed, rim_strength = ui.slider_float(
-            "Rim Strength",
-            self.tissue_rim_strength,
-            0.0,
-            1.0,
-            "%.2f",
-        )
-        if changed:
-            self._set_tissue_material_float("tissue_rim_strength", rim_strength, 0.0, 1.0)
+        self._render_tissue_material_ui(ui)
 
         changed, sky_enabled = ui.checkbox("Sky", self.sky_enabled)
         if changed:
