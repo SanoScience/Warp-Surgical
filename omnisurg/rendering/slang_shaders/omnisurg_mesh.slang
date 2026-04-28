@@ -87,7 +87,7 @@ float3 shade_surface(float3 world_position, float3 world_normal, float3 base_col
 float4 fragment_main(V2F input) : SV_Target
 {
     float3 color = shade_surface(input.world_position, input.world_normal, mesh_color.rgb);
-    return float4(saturate(color), mesh_color.a);
+    return float4(max(color, float3(0.0)), mesh_color.a);
 }
 
 [shader("vertex")]

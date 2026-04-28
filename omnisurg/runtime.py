@@ -696,6 +696,20 @@ class Runtime:
         self.tissue_subsurface_color = (0.8, 0.22, 0.16)
         self.tissue_subsurface_strength = 0.0
         self.tissue_blood_wetness = 1.0
+        self.postprocess_enabled = True
+        self.postprocess_exposure = 1.0
+        self.postprocess_white_balance = (1.0, 1.0, 1.0)
+        self.postprocess_bloom_enabled = True
+        self.postprocess_bloom_threshold = 1.0
+        self.postprocess_bloom_intensity = 0.6
+        self.postprocess_bloom_radius = 16.0
+        self.postprocess_lens_dirt_enabled = True
+        self.postprocess_lens_dirt_intensity = 0.45
+        self.postprocess_lens_dirt_threshold = 0.20
+        self.postprocess_vignette_strength = 0.45
+        self.postprocess_vignette_radius = 0.78
+        self.postprocess_scope_radius = 0.965
+        self.postprocess_scope_softness = 0.035
         self.mesh_ranges = scene.mesh_ranges
         self.surface_indices = scene.surface_tri_indices
         self.surface_meshes = scene.surface_meshes
@@ -773,6 +787,7 @@ class Runtime:
         self._extra_key_press_hooks: list = []
         self.renderer = RenderBridge(viewer_config, self.model, self.device)
         self._sync_tissue_material_params()
+        self._sync_postprocess_params()
         self.renderer.set_input_callbacks(on_key_press=self._on_key_press)
         self.renderer.register_ui_callback(self.gui, position="side")
         self.graspers = {
@@ -1627,6 +1642,30 @@ class Runtime:
             blood_wetness=self.tissue_blood_wetness,
         )
 
+    def _sync_postprocess_params(self) -> None:
+        renderer = getattr(self, "renderer", None)
+        if renderer is None:
+            return
+        set_params = getattr(renderer, "set_postprocess_params", None)
+        if not callable(set_params):
+            return
+        set_params(
+            enabled=self.postprocess_enabled,
+            exposure=self.postprocess_exposure,
+            white_balance=self.postprocess_white_balance,
+            bloom_enabled=self.postprocess_bloom_enabled,
+            bloom_threshold=self.postprocess_bloom_threshold,
+            bloom_intensity=self.postprocess_bloom_intensity,
+            bloom_radius=self.postprocess_bloom_radius,
+            lens_dirt_enabled=self.postprocess_lens_dirt_enabled,
+            lens_dirt_intensity=self.postprocess_lens_dirt_intensity,
+            lens_dirt_threshold=self.postprocess_lens_dirt_threshold,
+            vignette_strength=self.postprocess_vignette_strength,
+            vignette_radius=self.postprocess_vignette_radius,
+            scope_radius=self.postprocess_scope_radius,
+            scope_softness=self.postprocess_scope_softness,
+        )
+
     def _set_tissue_debug_mode(self, value: int) -> None:
         mode = int(np.clip(value, 0, len(TISSUE_DEBUG_MODE_LABELS) - 1))
         if mode != self.tissue_debug_mode:
@@ -1638,6 +1677,148 @@ class Runtime:
         if _float_changed(getattr(self, attr), clamped):
             setattr(self, attr, clamped)
             self._sync_tissue_material_params()
+
+    def _set_postprocess_float(self, attr: str, value: float, min_value: float, max_value: float) -> None:
+        clamped = float(np.clip(value, min_value, max_value))
+        if _float_changed(getattr(self, attr), clamped):
+            setattr(self, attr, clamped)
+            self._sync_postprocess_params()
+
+    def _set_postprocess_white_balance_channel(self, index: int, value: float) -> None:
+        values = list(self.postprocess_white_balance)
+        values[index] = float(np.clip(value, 0.0, 4.0))
+        updated = tuple(values)
+        if updated != self.postprocess_white_balance:
+            self.postprocess_white_balance = updated
+            self._sync_postprocess_params()
+
+    def _render_postprocess_ui(self, ui) -> None:
+        ui.text("Postprocessing")
+        changed, enabled = ui.checkbox("Postprocess", self.postprocess_enabled)
+        if changed and bool(enabled) != self.postprocess_enabled:
+            self.postprocess_enabled = bool(enabled)
+            self._sync_postprocess_params()
+
+        changed, exposure = ui.slider_float(
+            "Exposure",
+            self.postprocess_exposure,
+            0.0,
+            8.0,
+            "%.2f",
+        )
+        if changed:
+            self._set_postprocess_float("postprocess_exposure", exposure, 0.0, 8.0)
+
+        changed, bloom_enabled = ui.checkbox("Bloom", self.postprocess_bloom_enabled)
+        if changed and bool(bloom_enabled) != self.postprocess_bloom_enabled:
+            self.postprocess_bloom_enabled = bool(bloom_enabled)
+            self._sync_postprocess_params()
+
+        changed, bloom_threshold = ui.slider_float(
+            "Bloom Threshold",
+            self.postprocess_bloom_threshold,
+            0.0,
+            1.0,
+            "%.2f",
+        )
+        if changed:
+            self._set_postprocess_float("postprocess_bloom_threshold", bloom_threshold, 0.0, 1.0)
+
+        changed, bloom_intensity = ui.slider_float(
+            "Bloom Intensity",
+            self.postprocess_bloom_intensity,
+            0.0,
+            10.0,
+            "%.2f",
+        )
+        if changed:
+            self._set_postprocess_float("postprocess_bloom_intensity", bloom_intensity, 0.0, 10.0)
+
+        changed, bloom_radius = ui.slider_float(
+            "Bloom Radius",
+            self.postprocess_bloom_radius,
+            0.0,
+            64.0,
+            "%.1f px",
+        )
+        if changed:
+            self._set_postprocess_float("postprocess_bloom_radius", bloom_radius, 0.0, 64.0)
+
+        changed, lens_dirt_enabled = ui.checkbox("Lens Dirt", self.postprocess_lens_dirt_enabled)
+        if changed and bool(lens_dirt_enabled) != self.postprocess_lens_dirt_enabled:
+            self.postprocess_lens_dirt_enabled = bool(lens_dirt_enabled)
+            self._sync_postprocess_params()
+
+        changed, lens_dirt_intensity = ui.slider_float(
+            "Lens Dirt Intensity",
+            self.postprocess_lens_dirt_intensity,
+            0.0,
+            2.0,
+            "%.2f",
+        )
+        if changed:
+            self._set_postprocess_float("postprocess_lens_dirt_intensity", lens_dirt_intensity, 0.0, 2.0)
+
+        changed, lens_dirt_threshold = ui.slider_float(
+            "Lens Dirt Threshold",
+            self.postprocess_lens_dirt_threshold,
+            0.0,
+            4.0,
+            "%.2f",
+        )
+        if changed:
+            self._set_postprocess_float("postprocess_lens_dirt_threshold", lens_dirt_threshold, 0.0, 4.0)
+
+        for index, label in enumerate(("White Balance R", "White Balance G", "White Balance B")):
+            changed, channel = ui.slider_float(
+                label,
+                self.postprocess_white_balance[index],
+                0.0,
+                4.0,
+                "%.2f",
+            )
+            if changed:
+                self._set_postprocess_white_balance_channel(index, channel)
+
+        changed, vignette_strength = ui.slider_float(
+            "Vignette Strength",
+            self.postprocess_vignette_strength,
+            0.0,
+            1.0,
+            "%.2f",
+        )
+        if changed:
+            self._set_postprocess_float("postprocess_vignette_strength", vignette_strength, 0.0, 1.0)
+
+        changed, vignette_radius = ui.slider_float(
+            "Vignette Radius",
+            self.postprocess_vignette_radius,
+            0.0,
+            1.5,
+            "%.2f",
+        )
+        if changed:
+            self._set_postprocess_float("postprocess_vignette_radius", vignette_radius, 0.0, 1.5)
+
+        changed, scope_radius = ui.slider_float(
+            "Scope Radius",
+            self.postprocess_scope_radius,
+            0.0,
+            1.5,
+            "%.3f",
+        )
+        if changed:
+            self._set_postprocess_float("postprocess_scope_radius", scope_radius, 0.0, 1.5)
+
+        changed, scope_softness = ui.slider_float(
+            "Scope Softness",
+            self.postprocess_scope_softness,
+            0.001,
+            0.5,
+            "%.3f",
+        )
+        if changed:
+            self._set_postprocess_float("postprocess_scope_softness", scope_softness, 0.001, 0.5)
 
     def _render_tissue_debug_ui(self, ui) -> None:
         max_debug_mode = len(TISSUE_DEBUG_MODE_LABELS) - 1
@@ -1875,6 +2056,7 @@ class Runtime:
             self._reset_tissue_blend_channels()
 
         self._render_tissue_material_ui(ui)
+        self._render_postprocess_ui(ui)
 
         changed, sky_enabled = ui.checkbox("Sky", self.sky_enabled)
         if changed:

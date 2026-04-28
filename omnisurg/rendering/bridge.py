@@ -396,6 +396,13 @@ class RenderBridge:
         if callable(set_params):
             set_params(**params)
 
+    def set_postprocess_params(self, **params) -> None:
+        if self._backend not in SLANG_RENDER_BACKENDS:
+            return
+        set_params = getattr(self._renderer, "set_postprocess_params", None)
+        if callable(set_params):
+            set_params(**params)
+
     def draw_mesh(
         self,
         name: str,

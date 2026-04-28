@@ -4,6 +4,7 @@ import ctypes
 from dataclasses import dataclass
 import os
 from pathlib import Path
+import time as _time
 from types import SimpleNamespace
 from typing import Any, Callable
 
@@ -15,6 +16,7 @@ from omnisurg.config import ViewerConfig
 
 SLANG_RENDER_BACKENDS = frozenset({"slang", "slang-d3d12", "slang-vulkan", "slang-vk"})
 SLANG_SHADER_DIR = Path(__file__).with_name("slang_shaders")
+DEFAULT_LENS_DIRT_PATH = Path(__file__).resolve().parents[2] / "textures" / "lensdirt" / "LensDirt00.png"
 DEFAULT_WINDOWS_SLANG_BIN = Path(r"G:\warp\slang-2026.5.1-windows-x86_64\bin")
 _SLANG_BIN_ENV = os.environ.get("OMNISURG_SLANG_BIN")
 DEFAULT_SLANG_BIN = Path(_SLANG_BIN_ENV) if _SLANG_BIN_ENV else (
@@ -43,6 +45,18 @@ _TISSUE_MATERIAL_PARAM_RANGES = {
     "wet_roughness": (0.02, 0.6),
     "blood_wetness": (0.0, 2.0),
 }
+_POSTPROCESS_PARAM_RANGES = {
+    "exposure": (0.0, 8.0),
+    "bloom_threshold": (0.0, 1.0),
+    "bloom_intensity": (0.0, 10.0),
+    "bloom_radius": (0.0, 64.0),
+    "lens_dirt_intensity": (0.0, 2.0),
+    "lens_dirt_threshold": (0.0, 4.0),
+    "vignette_strength": (0.0, 1.0),
+    "vignette_radius": (0.0, 1.5),
+    "scope_radius": (0.0, 1.5),
+    "scope_softness": (0.001, 0.5),
+}
 
 
 @dataclass
@@ -59,6 +73,24 @@ class TissueMaterialParams:
     subsurface_color: tuple[float, float, float] = (0.8, 0.22, 0.16)
     subsurface_strength: float = 0.0
     blood_wetness: float = 1.0
+
+
+@dataclass
+class PostProcessParams:
+    enabled: bool = True
+    exposure: float = 1.0
+    white_balance: tuple[float, float, float] = (1.0, 1.0, 1.0)
+    bloom_enabled: bool = True
+    bloom_threshold: float = 1.0
+    bloom_intensity: float = 0.6
+    bloom_radius: float = 16.0
+    lens_dirt_enabled: bool = True
+    lens_dirt_intensity: float = 0.45
+    lens_dirt_threshold: float = 0.20
+    vignette_strength: float = 0.45
+    vignette_radius: float = 0.78
+    scope_radius: float = 0.965
+    scope_softness: float = 0.035
 
 
 def is_slang_backend(backend: str) -> bool:
@@ -828,6 +860,7 @@ class SlangRenderer:
         self._surface_texture = None
         self._command_encoder = None
         self._pass_encoder = None
+        self._scene_color_texture = None
         self._depth_texture = None
         self._pending_resize: tuple[int, int] | None = None
         self._shared_positions: dict[tuple[int, int], _SharedPositionBuffer] = {}
@@ -836,7 +869,10 @@ class SlangRenderer:
         self._materials: dict[tuple[str, ...], _MaterialResource] = {}
         self._default_textures: dict[tuple[str, bool], Any] = {}
         self._material_sampler = None
+        self._post_sampler = None
+        self._lens_dirt_texture = None
         self._tissue_material_params = TissueMaterialParams()
+        self._postprocess_params = PostProcessParams()
         self._logs: dict[str, float] = {}
         self._warnings: set[str] = set()
         self._sui = None
@@ -853,6 +889,12 @@ class SlangRenderer:
         self._failed_ui_callbacks: set[tuple[str, int]] = set()
         self._on_key_press_callback: Callable[[int, int], None] | None = None
         self._on_key_release_callback: Callable[[int, int], None] | None = None
+        self._camera_key_state: set[str] = set()
+        self._camera_fast_modifier = False
+        self._camera_slow_modifier = False
+        self._camera_mouse_action: str | None = None
+        self._camera_mouse_pos: tuple[float, float] | None = None
+        self._last_camera_update_time = _time.perf_counter()
 
         self._cuda.set_current_context(int(device.context))
 
@@ -884,6 +926,7 @@ class SlangRenderer:
         )
 
         self._color_format = self._surface.info.preferred_format
+        self._scene_color_format = self._hdr_scene_color_format()
         self._depth_format = self._spy.Format.d32_float
         self._viewport = self._spy.Viewport.from_size(self._window.width, self._window.height)
         self._scissor = self._spy.ScissorRect.from_size(self._window.width, self._window.height)
@@ -911,24 +954,120 @@ class SlangRenderer:
     def _init_camera(self, camera_pos: tuple[float, float, float], model: Any) -> None:
         target, radius = _camera_fit_from_model(model)
         eye = np.array(camera_pos, dtype=np.float32)
+        self._camera_target = target.astype(np.float32)
+        self._camera_scene_radius = float(max(radius, 0.25))
+        self._camera_world_up = np.array([0.0, 1.0, 0.0], dtype=np.float32)
+        self._camera_default_pos = eye.copy()
+        self._camera_default_target = self._camera_target.copy()
+        self._set_camera_look_at(eye, self._camera_target)
+        self._camera_inv_tan_half_fovy = float(1.0 / np.tan(np.deg2rad(45.0) * 0.5))
+
+    def _set_camera_look_at(self, eye: np.ndarray, target: np.ndarray) -> None:
+        eye = np.asarray(eye, dtype=np.float32)
+        target = np.asarray(target, dtype=np.float32)
         forward = _normalize_or(target - eye, (0.0, 0.0, -1.0))
-        right = _normalize_or(
-            np.cross(forward, np.array([0.0, 1.0, 0.0], dtype=np.float32)),
-            (1.0, 0.0, 0.0),
-        )
+        right = _normalize_or(np.cross(forward, self._camera_world_up), (1.0, 0.0, 0.0))
         up = _normalize_or(np.cross(right, forward), (0.0, 1.0, 0.0))
 
         distance = float(np.linalg.norm(target - eye))
-        near = max(0.01, distance - radius * 3.0)
-        far = max(near + 1.0, distance + radius * 5.0)
+        scene_radius = float(max(getattr(self, "_camera_scene_radius", 0.25), 0.25))
+        near = max(0.005, min(0.05, distance * 0.02))
+        far = max(near + 1.0, distance + scene_radius * 8.0)
 
-        self._camera_pos = eye
+        self._camera_pos = eye.astype(np.float32)
+        self._camera_target = target.astype(np.float32)
         self._camera_right = right
         self._camera_up = up
         self._camera_forward = forward
         self._camera_near = float(near)
         self._camera_far = float(far)
-        self._camera_inv_tan_half_fovy = float(1.0 / np.tan(np.deg2rad(45.0) * 0.5))
+
+    def _reset_camera(self) -> None:
+        self._set_camera_look_at(self._camera_default_pos, self._camera_default_target)
+
+    def _rotate_vector(self, value: np.ndarray, axis: np.ndarray, angle: float) -> np.ndarray:
+        axis = _normalize_or(axis, (0.0, 1.0, 0.0))
+        value = np.asarray(value, dtype=np.float32)
+        cos_angle = float(np.cos(angle))
+        sin_angle = float(np.sin(angle))
+        rotated = (
+            value * cos_angle
+            + np.cross(axis, value) * sin_angle
+            + axis * float(np.dot(axis, value)) * (1.0 - cos_angle)
+        )
+        return rotated.astype(np.float32)
+
+    def _orbit_camera(self, delta_x: float, delta_y: float) -> None:
+        rel = self._camera_pos - self._camera_target
+        distance = float(np.linalg.norm(rel))
+        if distance <= 1.0e-6:
+            return
+
+        sensitivity = 0.004
+        rel = self._rotate_vector(rel, self._camera_world_up, -float(delta_x) * sensitivity)
+        pitch_axis = _normalize_or(np.cross(self._camera_world_up, rel), self._camera_right)
+        pitched = self._rotate_vector(rel, pitch_axis, -float(delta_y) * sensitivity)
+        forward_after_pitch = _normalize_or(-pitched, self._camera_forward)
+        if abs(float(np.dot(forward_after_pitch, self._camera_world_up))) < 0.98:
+            rel = pitched
+
+        rel = _normalize_or(rel, self._camera_pos - self._camera_target) * distance
+        self._set_camera_look_at(self._camera_target + rel, self._camera_target)
+
+    def _pan_camera(self, delta_x: float, delta_y: float) -> None:
+        distance = max(float(np.linalg.norm(self._camera_target - self._camera_pos)), 0.01)
+        scale = distance * 0.0015
+        offset = (self._camera_right * -float(delta_x) + self._camera_up * float(delta_y)) * scale
+        self._set_camera_look_at(self._camera_pos + offset, self._camera_target + offset)
+
+    def _dolly_camera(self, scroll_y: float) -> None:
+        distance = float(np.linalg.norm(self._camera_target - self._camera_pos))
+        if distance <= 1.0e-6:
+            return
+        scene_radius = max(float(self._camera_scene_radius), 0.25)
+        factor = float(np.exp(-float(scroll_y) * 0.12))
+        new_distance = float(np.clip(distance * factor, scene_radius * 0.05, scene_radius * 50.0))
+        self._set_camera_look_at(
+            self._camera_target - self._camera_forward * new_distance,
+            self._camera_target,
+        )
+
+    def _apply_keyboard_camera_motion(self, dt: float) -> None:
+        if not self._camera_key_state:
+            return
+
+        move = np.zeros(3, dtype=np.float32)
+        if "w" in self._camera_key_state:
+            move += self._camera_forward
+        if "s" in self._camera_key_state:
+            move -= self._camera_forward
+        if "d" in self._camera_key_state:
+            move += self._camera_right
+        if "a" in self._camera_key_state:
+            move -= self._camera_right
+        if "e" in self._camera_key_state:
+            move += self._camera_world_up
+        if "q" in self._camera_key_state:
+            move -= self._camera_world_up
+
+        length = float(np.linalg.norm(move))
+        if length <= 1.0e-6:
+            return
+
+        distance = max(float(np.linalg.norm(self._camera_target - self._camera_pos)), self._camera_scene_radius)
+        speed = distance * 0.75
+        if self._camera_fast_modifier:
+            speed *= 4.0
+        if self._camera_slow_modifier:
+            speed *= 0.25
+        offset = (move / length) * speed * max(0.0, min(float(dt), 0.1))
+        self._set_camera_look_at(self._camera_pos + offset, self._camera_target + offset)
+
+    def _update_camera_motion(self) -> None:
+        now = _time.perf_counter()
+        dt = now - float(self._last_camera_update_time)
+        self._last_camera_update_time = now
+        self._apply_keyboard_camera_motion(dt)
 
     def _init_pipeline(self) -> None:
         self._flat_program = self._device.load_program(
@@ -941,6 +1080,10 @@ class SlangRenderer:
         )
         self._tissue_program = self._device.load_program(
             "omnisurg_tissue.slang",
+            ["vertex_main", "fragment_main"],
+        )
+        self._post_program = self._device.load_program(
+            "omnisurg_post.slang",
             ["vertex_main", "fragment_main"],
         )
         self._flat_input_layout = self._device.create_input_layout(
@@ -1001,7 +1144,7 @@ class SlangRenderer:
             vertex_streams=[{"stride": 12}, {"stride": 12}, {"stride": 8}, {"stride": 16}],
         )
         common = {
-            "targets": [{"format": self._color_format}],
+            "targets": [{"format": self._scene_color_format}],
             "depth_stencil": {
                 "format": self._depth_format,
                 "depth_test_enable": True,
@@ -1030,6 +1173,14 @@ class SlangRenderer:
             primitive_topology=self._spy.PrimitiveTopology.triangle_list,
             label="omnisurg-tissue-triangles",
             **common,
+        )
+        self._post_pipeline = self._device.create_render_pipeline(
+            program=self._post_program,
+            input_layout=None,
+            primitive_topology=self._spy.PrimitiveTopology.triangle_list,
+            targets=[{"format": self._color_format}],
+            rasterizer={"cull_mode": self._spy.CullMode.none},
+            label="omnisurg-postprocess",
         )
 
     def _init_ui(self) -> None:
@@ -1138,13 +1289,151 @@ class SlangRenderer:
         except Exception:
             return value
 
+    def _slang_key_name(self, key: Any) -> str:
+        name = getattr(key, "name", None)
+        if name is None:
+            name = str(key)
+        name = str(name).lower().replace("-", "_")
+        aliases = {
+            "ctrl": "control",
+            "left_ctrl": "left_control",
+            "right_ctrl": "right_control",
+            "pageup": "page_up",
+            "pagedown": "page_down",
+        }
+        return aliases.get(name, name)
+
+    def _mouse_button_name(self, button: Any) -> str:
+        name = getattr(button, "name", None)
+        if name is None:
+            name = str(button)
+        return str(name).lower().replace("-", "_")
+
+    def _mouse_pos_tuple(self, pos: Any) -> tuple[float, float]:
+        if pos is None:
+            return (0.0, 0.0)
+        x = getattr(pos, "x", None)
+        y = getattr(pos, "y", None)
+        if x is not None and y is not None:
+            return (float(x), float(y))
+        try:
+            return (float(pos[0]), float(pos[1]))
+        except Exception:
+            return (0.0, 0.0)
+
+    def _mouse_scroll_y(self, scroll: Any) -> float:
+        if scroll is None:
+            return 0.0
+        y = getattr(scroll, "y", None)
+        if y is not None:
+            return float(y)
+        try:
+            return float(scroll[1])
+        except Exception:
+            try:
+                return float(scroll)
+            except Exception:
+                return 0.0
+
+    def _on_camera_keyboard_event(self, event: Any) -> None:
+        key = self._slang_key_name(getattr(event, "key", None))
+        if not key:
+            return
+
+        is_press = bool(event.is_key_press())
+        is_release = bool(event.is_key_release())
+        is_repeat = bool(getattr(event, "is_key_repeat", lambda: False)())
+        move_keys = {"w", "a", "s", "d", "q", "e"}
+        fast_keys = {"shift", "left_shift", "right_shift"}
+        slow_keys = {"control", "left_control", "right_control"}
+
+        if key in move_keys:
+            if is_press or is_repeat:
+                self._camera_key_state.add(key)
+            elif is_release:
+                self._camera_key_state.discard(key)
+            return
+
+        if key in fast_keys:
+            self._camera_fast_modifier = not is_release
+            return
+        if key in slow_keys:
+            self._camera_slow_modifier = not is_release
+            return
+
+        if not (is_press or is_repeat):
+            return
+
+        if key == "left":
+            self._orbit_camera(-32.0, 0.0)
+        elif key == "right":
+            self._orbit_camera(32.0, 0.0)
+        elif key == "up":
+            self._orbit_camera(0.0, -24.0)
+        elif key == "down":
+            self._orbit_camera(0.0, 24.0)
+        elif key == "home":
+            self._reset_camera()
+        elif key == "page_up":
+            self._dolly_camera(1.0)
+        elif key == "page_down":
+            self._dolly_camera(-1.0)
+
+    def _on_camera_mouse_event(self, event: Any, *, captured: bool = False) -> None:
+        button = self._mouse_button_name(getattr(event, "button", None))
+        pos = self._mouse_pos_tuple(getattr(event, "pos", None))
+
+        if bool(event.is_button_up()):
+            if button in {"left", "right", "middle"}:
+                self._camera_mouse_action = None
+                self._camera_mouse_pos = None
+            return
+
+        if captured:
+            return
+
+        if bool(event.is_button_down()):
+            if button == "left":
+                self._camera_mouse_action = "orbit"
+                self._camera_mouse_pos = pos
+            elif button in {"right", "middle"}:
+                self._camera_mouse_action = "pan"
+                self._camera_mouse_pos = pos
+            return
+
+        if bool(event.is_scroll()):
+            self._dolly_camera(self._mouse_scroll_y(getattr(event, "scroll", None)))
+            return
+
+        if not bool(event.is_move()) or self._camera_mouse_action is None:
+            return
+
+        previous = self._camera_mouse_pos
+        self._camera_mouse_pos = pos
+        if previous is None:
+            return
+
+        delta_x = pos[0] - previous[0]
+        delta_y = pos[1] - previous[1]
+        if self._camera_mouse_action == "orbit":
+            self._orbit_camera(delta_x, delta_y)
+        elif self._camera_mouse_action == "pan":
+            self._pan_camera(delta_x, delta_y)
+
     def _on_keyboard_event(self, event: Any) -> None:
+        captured = False
         if self._ui_enabled and self._ui_context is not None:
             try:
-                if bool(self._ui_context.handle_keyboard_event(event)):
-                    return
+                captured = bool(self._ui_context.handle_keyboard_event(event))
             except Exception as exc:
                 self._warn_once("slang-ui:keyboard", f"Slang ImGui keyboard handling disabled: {exc}")
+
+        if captured:
+            if bool(event.is_key_release()):
+                self._on_camera_keyboard_event(event)
+            return
+
+        self._on_camera_keyboard_event(event)
 
         if event.is_key_press():
             callback = self._on_key_press_callback
@@ -1166,11 +1455,13 @@ class SlangRenderer:
             self._warn_once("slang-key-callback", f"Slang key callback raised: {exc}")
 
     def _on_mouse_event(self, event: Any) -> None:
+        captured = False
         if self._ui_enabled and self._ui_context is not None:
             try:
-                self._ui_context.handle_mouse_event(event)
+                captured = bool(self._ui_context.handle_mouse_event(event))
             except Exception as exc:
                 self._warn_once("slang-ui:mouse", f"Slang ImGui mouse handling disabled: {exc}")
+        self._on_camera_mouse_event(event, captured=captured)
 
     def _invoke_ui_callbacks(
         self,
@@ -1277,13 +1568,33 @@ class SlangRenderer:
         self._device.wait()
         if width <= 0 or height <= 0:
             self._surface.unconfigure()
+            self._scene_color_texture = None
             self._depth_texture = None
             return
 
         self._surface.configure(width=width, height=height, vsync=self._vsync)
         self._viewport = self._spy.Viewport.from_size(width, height)
         self._scissor = self._spy.ScissorRect.from_size(width, height)
+        self._scene_color_texture = None
         self._depth_texture = None
+
+    def _hdr_scene_color_format(self):
+        return getattr(self._spy.Format, "rgba16_float", self._spy.Format.rgba32_float)
+
+    def _ensure_scene_color_texture(self, width: int, height: int):
+        if (
+            self._scene_color_texture is None
+            or self._scene_color_texture.width != width
+            or self._scene_color_texture.height != height
+        ):
+            self._scene_color_texture = self._device.create_texture(
+                format=self._scene_color_format,
+                width=int(width),
+                height=int(height),
+                usage=self._spy.TextureUsage.render_target | self._spy.TextureUsage.shader_resource,
+                label="omnisurg-scene-color",
+            )
+        return self._scene_color_texture
 
     def _ensure_depth_texture(self, width: int, height: int):
         if (
@@ -1295,7 +1606,7 @@ class SlangRenderer:
                 format=self._depth_format,
                 width=width,
                 height=height,
-                usage=self._spy.TextureUsage.depth_stencil,
+                usage=self._spy.TextureUsage.depth_stencil | self._spy.TextureUsage.shader_resource,
                 label="omnisurg-depth",
             )
         return self._depth_texture
@@ -1741,6 +2052,30 @@ class SlangRenderer:
         self._default_textures[key] = texture
         return texture
 
+    def _lens_dirt_resource(self) -> Any:
+        if self._lens_dirt_texture is not None:
+            return self._lens_dirt_texture
+
+        path = DEFAULT_LENS_DIRT_PATH
+        if not path.exists():
+            self._warn_once(
+                f"lens-dirt:missing:{path}",
+                f"Slang postprocess lens dirt disabled: missing texture {path}.",
+            )
+            self._lens_dirt_texture = self._default_texture("black", True)
+            return self._lens_dirt_texture
+
+        try:
+            data = self._load_texture_data(path)
+            self._lens_dirt_texture = self._create_texture_from_data("omnisurg-lens-dirt", data, True)
+        except Exception as exc:
+            self._warn_once(
+                f"lens-dirt:load:{path}",
+                f"Slang postprocess lens dirt disabled: failed to load {path} ({exc}).",
+            )
+            self._lens_dirt_texture = self._default_texture("black", True)
+        return self._lens_dirt_texture
+
     def _linear_wrap_sampler(self) -> Any:
         if self._material_sampler is None:
             self._material_sampler = self._device.create_sampler(
@@ -1753,6 +2088,19 @@ class SlangRenderer:
                 label="omnisurg-material-linear-wrap",
             )
         return self._material_sampler
+
+    def _linear_clamp_sampler(self) -> Any:
+        if self._post_sampler is None:
+            self._post_sampler = self._device.create_sampler(
+                min_filter=self._spy.TextureFilteringMode.linear,
+                mag_filter=self._spy.TextureFilteringMode.linear,
+                mip_filter=self._spy.TextureFilteringMode.linear,
+                address_u=self._spy.TextureAddressingMode.clamp_to_edge,
+                address_v=self._spy.TextureAddressingMode.clamp_to_edge,
+                address_w=self._spy.TextureAddressingMode.clamp_to_edge,
+                label="omnisurg-post-linear-clamp",
+            )
+        return self._post_sampler
 
     def _load_material_texture(
         self,
@@ -1998,6 +2346,60 @@ class SlangRenderer:
             cursor.subsurface_strength = tissue_params.subsurface_strength
             cursor.blood_wetness = tissue_params.blood_wetness
 
+    def _set_postprocess_uniforms(self, shader_object: Any, width: int, height: int) -> None:
+        cursor = self._spy.ShaderCursor(shader_object)
+        params = self._postprocess_params
+        cursor.scene_color_tex = self._scene_color_texture
+        cursor.depth_tex = self._depth_texture
+        cursor.lens_dirt_tex = self._lens_dirt_resource()
+        cursor.post_sampler = self._linear_clamp_sampler()
+        cursor.output_size = self._spy.float2(float(max(1, width)), float(max(1, height)))
+        cursor.postprocess_enabled = 1 if params.enabled else 0
+        cursor.exposure = float(params.exposure)
+        cursor.white_balance = self._spy.float3(*params.white_balance)
+        cursor.bloom_enabled = 1 if params.bloom_enabled else 0
+        cursor.bloom_threshold = float(params.bloom_threshold)
+        cursor.bloom_intensity = float(params.bloom_intensity)
+        cursor.bloom_radius = float(params.bloom_radius)
+        cursor.lens_dirt_enabled = 1 if params.lens_dirt_enabled else 0
+        cursor.lens_dirt_intensity = float(params.lens_dirt_intensity)
+        cursor.lens_dirt_threshold = float(params.lens_dirt_threshold)
+        cursor.vignette_strength = float(params.vignette_strength)
+        cursor.vignette_radius = float(params.vignette_radius)
+        cursor.scope_radius = float(params.scope_radius)
+        cursor.scope_softness = float(params.scope_softness)
+
+    def _render_postprocess(self, width: int, height: int) -> None:
+        if (
+            self._command_encoder is None
+            or self._surface_texture is None
+            or self._scene_color_texture is None
+        ):
+            return
+
+        pass_encoder = self._command_encoder.begin_render_pass(
+            {
+                "color_attachments": [
+                    {
+                        "view": self._surface_texture.create_view({}),
+                        "clear_value": [0.0, 0.0, 0.0, 1.0],
+                        "load_op": self._spy.LoadOp.clear,
+                        "store_op": self._spy.StoreOp.store,
+                    }
+                ],
+            }
+        )
+        pass_encoder.set_render_state(
+            {
+                "viewports": [self._viewport],
+                "scissor_rects": [self._scissor],
+            }
+        )
+        shader_object = pass_encoder.bind_pipeline(self._post_pipeline)
+        self._set_postprocess_uniforms(shader_object, width, height)
+        pass_encoder.draw({"vertex_count": 3})
+        pass_encoder.end()
+
     def _draw_buffer(
         self,
         *,
@@ -2042,11 +2444,16 @@ class SlangRenderer:
         if self._window.should_close() or not self._surface.config:
             return
 
+        self._update_camera_motion()
+
         self._surface_texture = self._surface.acquire_next_image()
         if not self._surface_texture:
             self._surface_texture = None
             return
 
+        width = int(self._surface_texture.width)
+        height = int(self._surface_texture.height)
+        scene_color_texture = self._ensure_scene_color_texture(width, height)
         depth_texture = self._ensure_depth_texture(
             self._surface_texture.width,
             self._surface_texture.height,
@@ -2056,7 +2463,7 @@ class SlangRenderer:
             {
                 "color_attachments": [
                     {
-                        "view": self._surface_texture.create_view({}),
+                        "view": scene_color_texture.create_view({}),
                         "clear_value": [0.025, 0.030, 0.034, 1.0],
                         "load_op": self._spy.LoadOp.clear,
                         "store_op": self._spy.StoreOp.store,
@@ -2082,6 +2489,18 @@ class SlangRenderer:
 
         self._pass_encoder.end()
         self._pass_encoder = None
+        self._command_encoder.set_texture_state(
+            self._scene_color_texture,
+            self._spy.ResourceState.shader_resource,
+        )
+        self._command_encoder.set_texture_state(
+            self._depth_texture,
+            self._spy.ResourceState.shader_resource,
+        )
+        self._render_postprocess(
+            int(self._surface_texture.width),
+            int(self._surface_texture.height),
+        )
         self._render_ui(
             int(self._surface_texture.width),
             int(self._surface_texture.height),
@@ -2144,6 +2563,35 @@ class SlangRenderer:
             else:
                 value = float(value)
                 value_range = _TISSUE_MATERIAL_PARAM_RANGES.get(key)
+                if value_range is not None:
+                    value = float(np.clip(value, value_range[0], value_range[1]))
+
+            setattr(current, key, value)
+
+    def set_postprocess_params(self, **params: Any) -> None:
+        current = self._postprocess_params
+        for key, value in params.items():
+            if not hasattr(current, key):
+                raise ValueError(f"Unknown postprocess parameter: {key}")
+
+            if key == "enabled":
+                value = bool(value)
+            elif key == "bloom_enabled":
+                value = bool(value)
+            elif key == "lens_dirt_enabled":
+                value = bool(value)
+            elif key == "white_balance":
+                color = np.asarray(value, dtype=np.float32).reshape(-1)
+                if color.size < 3:
+                    color = np.asarray(current.white_balance, dtype=np.float32)
+                value = (
+                    float(np.clip(color[0], 0.0, 4.0)),
+                    float(np.clip(color[1], 0.0, 4.0)),
+                    float(np.clip(color[2], 0.0, 4.0)),
+                )
+            else:
+                value = float(value)
+                value_range = _POSTPROCESS_PARAM_RANGES.get(key)
                 if value_range is not None:
                     value = float(np.clip(value, value_range[0], value_range[1]))
 

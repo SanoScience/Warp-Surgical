@@ -267,5 +267,5 @@ float4 fragment_main(V2F input) : SV_Target
         wet_base_color * diffuse_light
         + light_key_color * film_spec
         + base_color * light_rim_color * rim;
-    return float4(saturate(color), mesh_color.a);
+    return float4(max(color, float3(0.0)), mesh_color.a);
 }

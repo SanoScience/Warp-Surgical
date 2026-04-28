@@ -31,7 +31,13 @@ from omnisurg.haptics import BimanualReplayRig, ReplayInputSource
 from omnisurg.instruments.grasper import load_kinematic_grasper
 from omnisurg.input.sources import MultiSourceRig
 from omnisurg.rendering.bridge import RenderBridge
-from omnisurg.rendering.slang import SlangRenderer, TISSUE_DEBUG_MODE_LABELS, TissueMaterialParams, _SlangImmediateUi
+from omnisurg.rendering.slang import (
+    PostProcessParams,
+    SlangRenderer,
+    TISSUE_DEBUG_MODE_LABELS,
+    TissueMaterialParams,
+    _SlangImmediateUi,
+)
 from omnisurg.input.follou import MiniMouController
 from omnisurg.input.sources import LiveHapticSource, LiveMiniMouSource
 from omnisurg.mesh.vtk_export import export_asset_dir_to_vtk
@@ -245,7 +251,71 @@ class _FakeTissueMaterialUi:
         return False
 
 
+class _FakePostProcessUi:
+    def __init__(self, checkbox_results=None, slider_results=None):
+        self.checkbox_results = {} if checkbox_results is None else dict(checkbox_results)
+        self.slider_results = {} if slider_results is None else dict(slider_results)
+        self.checkbox_calls = []
+        self.slider_calls = []
+        self.texts = []
+
+    def checkbox(self, label, value):
+        self.checkbox_calls.append((label, value))
+        if label in self.checkbox_results:
+            return True, self.checkbox_results[label]
+        return False, value
+
+    def slider_float(self, label, value, min_value, max_value, fmt):
+        self.slider_calls.append((label, value, min_value, max_value, fmt))
+        if label in self.slider_results:
+            return True, self.slider_results[label]
+        return False, value
+
+    def text(self, value):
+        self.texts.append(str(value))
+
+
 class TestPhaseRuntime(unittest.TestCase):
+    def _make_slang_camera_renderer(self):
+        renderer = SlangRenderer.__new__(SlangRenderer)
+        renderer._camera_world_up = np.array([0.0, 1.0, 0.0], dtype=np.float32)
+        renderer._camera_scene_radius = 1.0
+        renderer._camera_default_pos = np.array([0.0, 0.0, 3.0], dtype=np.float32)
+        renderer._camera_default_target = np.array([0.0, 0.0, 0.0], dtype=np.float32)
+        renderer._camera_key_state = set()
+        renderer._camera_fast_modifier = False
+        renderer._camera_slow_modifier = False
+        renderer._camera_mouse_action = None
+        renderer._camera_mouse_pos = None
+        renderer._set_camera_look_at(renderer._camera_default_pos, renderer._camera_default_target)
+        return renderer
+
+    def _slang_key_event(self, key, *, press=False, release=False, repeat=False):
+        return SimpleNamespace(
+            key=SimpleNamespace(name=key),
+            is_key_press=lambda: press,
+            is_key_release=lambda: release,
+            is_key_repeat=lambda: repeat,
+        )
+
+    def _slang_mouse_event(
+        self,
+        event_type,
+        *,
+        pos=(0.0, 0.0),
+        button=None,
+        scroll=(0.0, 0.0),
+    ):
+        return SimpleNamespace(
+            pos=SimpleNamespace(x=pos[0], y=pos[1]),
+            button=SimpleNamespace(name=button) if button is not None else None,
+            scroll=SimpleNamespace(x=scroll[0], y=scroll[1]),
+            is_button_down=lambda: event_type == "down",
+            is_button_up=lambda: event_type == "up",
+            is_move=lambda: event_type == "move",
+            is_scroll=lambda: event_type == "scroll",
+        )
+
     def test_cli_help(self):
         env = os.environ.copy()
         env["WARP_CACHE_PATH"] = str(WARP_CACHE_DIR)
@@ -929,6 +999,33 @@ class TestPhaseRuntime(unittest.TestCase):
 
         bridge.set_tissue_material_params(debug_mode=2, specular_scale=0.6)
 
+    def test_render_bridge_forwards_postprocess_params_to_slang(self):
+        class FakeSlangRenderer:
+            def __init__(self):
+                self.params = []
+
+            def set_postprocess_params(self, **params):
+                self.params.append(params)
+
+        bridge = RenderBridge.__new__(RenderBridge)
+        bridge._backend = "slang"
+        bridge._renderer = FakeSlangRenderer()
+
+        bridge.set_postprocess_params(enabled=False, exposure=1.4)
+
+        self.assertEqual(bridge._renderer.params, [{"enabled": False, "exposure": 1.4}])
+
+    def test_render_bridge_ignores_postprocess_params_on_non_slang(self):
+        class FakeGlRenderer:
+            def set_postprocess_params(self, **params):
+                raise AssertionError("non-Slang renderers should not receive postprocess params")
+
+        bridge = RenderBridge.__new__(RenderBridge)
+        bridge._backend = "gl"
+        bridge._renderer = FakeGlRenderer()
+
+        bridge.set_postprocess_params(enabled=False, exposure=1.4)
+
     def test_slang_renderer_tissue_material_params_are_clamped_and_bound(self):
         class FakeSpy:
             def __init__(self):
@@ -1043,6 +1140,159 @@ class TestPhaseRuntime(unittest.TestCase):
         self.assertEqual(params.wet_roughness, 0.6)
         self.assertEqual(params.blood_wetness, 2.0)
 
+    def test_slang_renderer_postprocess_params_are_clamped_and_bound(self):
+        class FakeSpy:
+            def __init__(self):
+                self.cursor = SimpleNamespace()
+
+            def ShaderCursor(self, shader_object):
+                del shader_object
+                return self.cursor
+
+            def float2(self, *values):
+                return tuple(values)
+
+            def float3(self, *values):
+                return tuple(values)
+
+        renderer = SlangRenderer.__new__(SlangRenderer)
+        renderer._postprocess_params = PostProcessParams()
+        renderer._spy = FakeSpy()
+        renderer._scene_color_texture = "scene-color"
+        renderer._depth_texture = "depth"
+        renderer._lens_dirt_texture = "lens-dirt"
+        renderer._post_sampler = "sampler"
+
+        renderer.set_postprocess_params(
+            enabled=0,
+            exposure=12.0,
+            white_balance=(8.0, -1.0, 0.5),
+            bloom_enabled=0,
+            bloom_threshold=12.0,
+            bloom_intensity=2.0,
+            bloom_radius=20.0,
+            lens_dirt_enabled=0,
+            lens_dirt_intensity=3.0,
+            lens_dirt_threshold=2.0,
+            vignette_strength=2.0,
+            vignette_radius=-1.0,
+            scope_radius=3.0,
+            scope_softness=0.0,
+        )
+        renderer._set_postprocess_uniforms("shader-object", 1600, 800)
+
+        cursor = renderer._spy.cursor
+        self.assertEqual(cursor.scene_color_tex, "scene-color")
+        self.assertEqual(cursor.depth_tex, "depth")
+        self.assertEqual(cursor.lens_dirt_tex, "lens-dirt")
+        self.assertEqual(cursor.post_sampler, "sampler")
+        self.assertEqual(cursor.output_size, (1600.0, 800.0))
+        self.assertEqual(cursor.postprocess_enabled, 0)
+        self.assertEqual(cursor.exposure, 8.0)
+        self.assertEqual(cursor.white_balance, (4.0, 0.0, 0.5))
+        self.assertEqual(cursor.bloom_enabled, 0)
+        self.assertEqual(cursor.bloom_threshold, 1.0)
+        self.assertEqual(cursor.bloom_intensity, 2.0)
+        self.assertEqual(cursor.bloom_radius, 20.0)
+        self.assertEqual(cursor.lens_dirt_enabled, 0)
+        self.assertEqual(cursor.lens_dirt_intensity, 2.0)
+        self.assertEqual(cursor.lens_dirt_threshold, 2.0)
+        self.assertEqual(cursor.vignette_strength, 1.0)
+        self.assertEqual(cursor.vignette_radius, 0.0)
+        self.assertEqual(cursor.scope_radius, 1.5)
+        self.assertEqual(cursor.scope_softness, 0.001)
+
+    def test_slang_renderer_rejects_unknown_postprocess_params(self):
+        renderer = SlangRenderer.__new__(SlangRenderer)
+        renderer._postprocess_params = PostProcessParams()
+
+        with self.assertRaises(ValueError):
+            renderer.set_postprocess_params(bloom_strength=1.0)
+
+    def test_slang_renderer_camera_orbit_pan_and_dolly_keep_valid_basis(self):
+        renderer = self._make_slang_camera_renderer()
+        initial_pos = renderer._camera_pos.copy()
+
+        renderer._orbit_camera(40.0, -20.0)
+
+        self.assertFalse(np.allclose(renderer._camera_pos, initial_pos))
+        self.assertAlmostEqual(float(np.linalg.norm(renderer._camera_forward)), 1.0, places=5)
+        self.assertAlmostEqual(float(np.linalg.norm(renderer._camera_right)), 1.0, places=5)
+        self.assertAlmostEqual(float(np.linalg.norm(renderer._camera_up)), 1.0, places=5)
+
+        orbit_offset = renderer._camera_pos - renderer._camera_target
+        orbit_distance = float(np.linalg.norm(orbit_offset))
+        target_before_pan = renderer._camera_target.copy()
+        renderer._pan_camera(10.0, -5.0)
+
+        self.assertFalse(np.allclose(renderer._camera_target, target_before_pan))
+        np.testing.assert_allclose(
+            renderer._camera_pos - renderer._camera_target,
+            orbit_offset,
+            rtol=1.0e-5,
+            atol=1.0e-5,
+        )
+
+        renderer._dolly_camera(1.0)
+        self.assertLess(float(np.linalg.norm(renderer._camera_pos - renderer._camera_target)), orbit_distance)
+
+    def test_slang_renderer_camera_keyboard_controls_move_and_reset(self):
+        renderer = self._make_slang_camera_renderer()
+        initial_pos = renderer._camera_pos.copy()
+        initial_target = renderer._camera_target.copy()
+
+        renderer._on_camera_keyboard_event(self._slang_key_event("w", press=True))
+        renderer._apply_keyboard_camera_motion(0.5)
+
+        self.assertIn("w", renderer._camera_key_state)
+        self.assertLess(float(renderer._camera_pos[2]), float(initial_pos[2]))
+        self.assertLess(float(renderer._camera_target[2]), float(initial_target[2]))
+
+        renderer._on_camera_keyboard_event(self._slang_key_event("w", release=True))
+        self.assertNotIn("w", renderer._camera_key_state)
+
+        renderer._on_camera_keyboard_event(self._slang_key_event("left_shift", press=True))
+        self.assertTrue(renderer._camera_fast_modifier)
+        renderer._on_camera_keyboard_event(self._slang_key_event("left_shift", release=True))
+        self.assertFalse(renderer._camera_fast_modifier)
+
+        renderer._on_camera_keyboard_event(self._slang_key_event("home", press=True))
+        np.testing.assert_allclose(renderer._camera_pos, renderer._camera_default_pos, rtol=1.0e-6, atol=1.0e-6)
+        np.testing.assert_allclose(
+            renderer._camera_target,
+            renderer._camera_default_target,
+            rtol=1.0e-6,
+            atol=1.0e-6,
+        )
+
+    def test_slang_renderer_camera_mouse_controls_respect_capture(self):
+        renderer = self._make_slang_camera_renderer()
+
+        renderer._on_camera_mouse_event(self._slang_mouse_event("down", pos=(100.0, 100.0), button="left"))
+        renderer._on_camera_mouse_event(self._slang_mouse_event("move", pos=(130.0, 90.0)))
+        self.assertFalse(np.allclose(renderer._camera_pos, renderer._camera_default_pos))
+        renderer._on_camera_mouse_event(self._slang_mouse_event("up", pos=(130.0, 90.0), button="left"))
+        self.assertIsNone(renderer._camera_mouse_action)
+
+        target_before_pan = renderer._camera_target.copy()
+        renderer._on_camera_mouse_event(self._slang_mouse_event("down", pos=(40.0, 40.0), button="right"))
+        renderer._on_camera_mouse_event(self._slang_mouse_event("move", pos=(55.0, 30.0)))
+        self.assertFalse(np.allclose(renderer._camera_target, target_before_pan))
+
+        distance_before_scroll = float(np.linalg.norm(renderer._camera_pos - renderer._camera_target))
+        renderer._on_camera_mouse_event(self._slang_mouse_event("scroll", scroll=(0.0, 1.0)))
+        self.assertLess(
+            float(np.linalg.norm(renderer._camera_pos - renderer._camera_target)),
+            distance_before_scroll,
+        )
+
+        captured_renderer = self._make_slang_camera_renderer()
+        captured_renderer._on_camera_mouse_event(
+            self._slang_mouse_event("down", pos=(100.0, 100.0), button="left"),
+            captured=True,
+        )
+        self.assertIsNone(captured_renderer._camera_mouse_action)
+
     def test_runtime_tissue_material_param_sync_updates_renderer(self):
         class FakeRenderer:
             def __init__(self):
@@ -1079,6 +1329,128 @@ class TestPhaseRuntime(unittest.TestCase):
         runtime._set_tissue_material_float("tissue_specular_scale", 4.0, 0.0, 2.0)
         self.assertEqual(runtime.tissue_specular_scale, 2.0)
         self.assertEqual(runtime.renderer.params[-1]["specular_scale"], 2.0)
+
+    def test_runtime_postprocess_param_sync_updates_renderer(self):
+        class FakeRenderer:
+            def __init__(self):
+                self.params = []
+
+            def set_postprocess_params(self, **params):
+                self.params.append(params)
+
+        runtime = Runtime.__new__(Runtime)
+        runtime.renderer = FakeRenderer()
+        runtime.postprocess_enabled = True
+        runtime.postprocess_exposure = 1.0
+        runtime.postprocess_white_balance = (1.0, 1.0, 1.0)
+        runtime.postprocess_bloom_enabled = True
+        runtime.postprocess_bloom_threshold = 1.0
+        runtime.postprocess_bloom_intensity = 0.12
+        runtime.postprocess_bloom_radius = 3.0
+        runtime.postprocess_lens_dirt_enabled = True
+        runtime.postprocess_lens_dirt_intensity = 0.25
+        runtime.postprocess_lens_dirt_threshold = 0.35
+        runtime.postprocess_vignette_strength = 0.45
+        runtime.postprocess_vignette_radius = 0.78
+        runtime.postprocess_scope_radius = 0.965
+        runtime.postprocess_scope_softness = 0.035
+
+        runtime._sync_postprocess_params()
+
+        self.assertEqual(runtime.renderer.params[-1]["enabled"], True)
+        self.assertEqual(runtime.renderer.params[-1]["exposure"], 1.0)
+        self.assertEqual(runtime.renderer.params[-1]["white_balance"], (1.0, 1.0, 1.0))
+        self.assertEqual(runtime.renderer.params[-1]["bloom_enabled"], True)
+        self.assertEqual(runtime.renderer.params[-1]["bloom_threshold"], 1.0)
+        self.assertEqual(runtime.renderer.params[-1]["lens_dirt_enabled"], True)
+        self.assertEqual(runtime.renderer.params[-1]["lens_dirt_intensity"], 0.25)
+
+        runtime._set_postprocess_float("postprocess_exposure", 12.0, 0.0, 8.0)
+        self.assertEqual(runtime.postprocess_exposure, 8.0)
+        self.assertEqual(runtime.renderer.params[-1]["exposure"], 8.0)
+
+        runtime._set_postprocess_white_balance_channel(1, 5.0)
+        self.assertEqual(runtime.postprocess_white_balance, (1.0, 4.0, 1.0))
+        self.assertEqual(runtime.renderer.params[-1]["white_balance"], (1.0, 4.0, 1.0))
+
+    def test_runtime_postprocess_ui_exposes_optics_controls_and_syncs_renderer(self):
+        class FakeRenderer:
+            def __init__(self):
+                self.params = []
+
+            def set_postprocess_params(self, **params):
+                self.params.append(params)
+
+        runtime = Runtime.__new__(Runtime)
+        runtime.renderer = FakeRenderer()
+        runtime.postprocess_enabled = True
+        runtime.postprocess_exposure = 1.0
+        runtime.postprocess_white_balance = (1.0, 1.0, 1.0)
+        runtime.postprocess_bloom_enabled = True
+        runtime.postprocess_bloom_threshold = 1.0
+        runtime.postprocess_bloom_intensity = 0.12
+        runtime.postprocess_bloom_radius = 3.0
+        runtime.postprocess_lens_dirt_enabled = True
+        runtime.postprocess_lens_dirt_intensity = 0.25
+        runtime.postprocess_lens_dirt_threshold = 0.35
+        runtime.postprocess_vignette_strength = 0.45
+        runtime.postprocess_vignette_radius = 0.78
+        runtime.postprocess_scope_radius = 0.965
+        runtime.postprocess_scope_softness = 0.035
+
+        ui = _FakePostProcessUi(
+            checkbox_results={"Postprocess": False, "Bloom": False, "Lens Dirt": False},
+            slider_results={
+                "Exposure": 9.0,
+                "Bloom Threshold": 9.0,
+                "Bloom Intensity": 2.0,
+                "Bloom Radius": 20.0,
+                "Lens Dirt Intensity": 3.0,
+                "Lens Dirt Threshold": 2.0,
+                "White Balance R": -1.0,
+                "White Balance G": 3.0,
+                "White Balance B": 5.0,
+                "Vignette Strength": 2.0,
+                "Vignette Radius": -1.0,
+                "Scope Radius": 2.0,
+                "Scope Softness": 0.0,
+            },
+        )
+
+        runtime._render_postprocess_ui(ui)
+
+        calls_by_label = {call[0]: call for call in ui.slider_calls}
+        self.assertIn("Postprocessing", ui.texts)
+        self.assertEqual(ui.checkbox_calls, [("Postprocess", True), ("Bloom", True), ("Lens Dirt", True)])
+        self.assertEqual(calls_by_label["Exposure"][2:], (0.0, 8.0, "%.2f"))
+        self.assertEqual(calls_by_label["Bloom Threshold"][2:], (0.0, 1.0, "%.2f"))
+        self.assertEqual(calls_by_label["Bloom Intensity"][2:], (0.0, 10.0, "%.2f"))
+        self.assertEqual(calls_by_label["Bloom Radius"][2:], (0.0, 64.0, "%.1f px"))
+        self.assertEqual(calls_by_label["Lens Dirt Intensity"][2:], (0.0, 2.0, "%.2f"))
+        self.assertEqual(calls_by_label["Lens Dirt Threshold"][2:], (0.0, 4.0, "%.2f"))
+        self.assertEqual(calls_by_label["White Balance R"][2:], (0.0, 4.0, "%.2f"))
+        self.assertEqual(calls_by_label["Vignette Strength"][2:], (0.0, 1.0, "%.2f"))
+        self.assertEqual(calls_by_label["Vignette Radius"][2:], (0.0, 1.5, "%.2f"))
+        self.assertEqual(calls_by_label["Scope Radius"][2:], (0.0, 1.5, "%.3f"))
+        self.assertEqual(calls_by_label["Scope Softness"][2:], (0.001, 0.5, "%.3f"))
+        self.assertFalse(runtime.postprocess_enabled)
+        self.assertEqual(runtime.postprocess_exposure, 8.0)
+        self.assertEqual(runtime.postprocess_white_balance, (0.0, 3.0, 4.0))
+        self.assertFalse(runtime.postprocess_bloom_enabled)
+        self.assertEqual(runtime.postprocess_bloom_threshold, 1.0)
+        self.assertEqual(runtime.postprocess_bloom_intensity, 2.0)
+        self.assertEqual(runtime.postprocess_bloom_radius, 20.0)
+        self.assertFalse(runtime.postprocess_lens_dirt_enabled)
+        self.assertEqual(runtime.postprocess_lens_dirt_intensity, 2.0)
+        self.assertEqual(runtime.postprocess_lens_dirt_threshold, 2.0)
+        self.assertEqual(runtime.postprocess_vignette_strength, 1.0)
+        self.assertEqual(runtime.postprocess_vignette_radius, 0.0)
+        self.assertEqual(runtime.postprocess_scope_radius, 1.5)
+        self.assertEqual(runtime.postprocess_scope_softness, 0.001)
+        self.assertEqual(runtime.renderer.params[-1]["scope_softness"], 0.001)
+        self.assertEqual(runtime.renderer.params[-1]["white_balance"], (0.0, 3.0, 4.0))
+        self.assertEqual(runtime.renderer.params[-1]["bloom_radius"], 20.0)
+        self.assertEqual(runtime.renderer.params[-1]["lens_dirt_threshold"], 2.0)
 
     def test_runtime_tissue_material_ui_exposes_wet_sliders_and_syncs_renderer(self):
         class FakeRenderer:
@@ -1315,6 +1687,57 @@ class TestPhaseRuntime(unittest.TestCase):
         self.assertIn("float3(spec_mask, dry_roughness, wet_film)", shader_source)
         self.assertIn("wet_base_color * diffuse_light", shader_source)
         self.assertIn("+ light_key_color * film_spec", shader_source)
+
+    def test_slang_postprocess_shader_declares_tonemap_and_scope_bindings(self):
+        shader_source = (REPO_ROOT / "omnisurg" / "rendering" / "slang_shaders" / "omnisurg_post.slang").read_text()
+        mesh_source = (REPO_ROOT / "omnisurg" / "rendering" / "slang_shaders" / "omnisurg_mesh.slang").read_text()
+        tissue_source = (REPO_ROOT / "omnisurg" / "rendering" / "slang_shaders" / "omnisurg_tissue.slang").read_text()
+        renderer_source = (REPO_ROOT / "omnisurg" / "rendering" / "slang.py").read_text()
+
+        self.assertIn("uint vertex_id : SV_VertexID", shader_source)
+        self.assertIn("Texture2D<float4> scene_color_tex", shader_source)
+        self.assertIn("Texture2D<float> depth_tex", shader_source)
+        self.assertIn("Texture2D<float4> lens_dirt_tex", shader_source)
+        self.assertIn("SamplerState post_sampler", shader_source)
+        for uniform in (
+            "postprocess_enabled",
+            "exposure",
+            "white_balance",
+            "bloom_enabled",
+            "bloom_threshold",
+            "bloom_intensity",
+            "bloom_radius",
+            "lens_dirt_enabled",
+            "lens_dirt_intensity",
+            "lens_dirt_threshold",
+            "vignette_strength",
+            "vignette_radius",
+            "scope_radius",
+            "scope_softness",
+        ):
+            self.assertIn(uniform, shader_source)
+        self.assertIn("float3 aces_tonemap", shader_source)
+        self.assertIn("float3 bright_pass", shader_source)
+        self.assertIn("float3 bloom_gather", shader_source)
+        self.assertLess(shader_source.index("bloom_gather(input.uv)"), shader_source.index("aces_tonemap(color)"))
+        self.assertIn("float3 apply_lens_dirt", shader_source)
+        self.assertIn("float3 bloom_drive = bloom_signal * bloom_intensity", shader_source)
+        self.assertIn("color += bloom_drive", shader_source)
+        self.assertLess(shader_source.index("float3 bloom_drive"), shader_source.index("aces_tonemap(color)"))
+        self.assertLess(shader_source.index("aces_tonemap(color)"), shader_source.index("apply_lens_dirt(color, input.uv, bloom_drive)"))
+        self.assertIn("float endoscope_vignette", shader_source)
+        self.assertIn("float scope_mask", shader_source)
+        self.assertIn("scene_color_tex.Sample", shader_source)
+        self.assertIn("omnisurg_post.slang", renderer_source)
+        self.assertIn("PostProcessParams", renderer_source)
+        self.assertIn("DEFAULT_LENS_DIRT_PATH", renderer_source)
+        self.assertIn("LensDirt00.png", renderer_source)
+        self.assertIn("TextureUsage.render_target | self._spy.TextureUsage.shader_resource", renderer_source)
+        self.assertIn("rgba16_float", renderer_source)
+        self.assertIn("self._post_pipeline", renderer_source)
+        self.assertIn("input_layout=None", renderer_source)
+        self.assertIn("max(color, float3(0.0))", mesh_source)
+        self.assertIn("max(color, float3(0.0))", tissue_source)
 
     def test_slang_immediate_ui_reuses_button_until_click_is_reported(self):
         fake_sui = _FakeSlangUiModule()

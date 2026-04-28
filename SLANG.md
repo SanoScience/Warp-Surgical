@@ -2,6 +2,20 @@
 
 ## Done
 
+- Added the first Slang postprocessing scaffold:
+  - geometry now renders into an offscreen HDR scene color target
+  - a fullscreen `omnisurg_post.slang` pass writes to the swapchain before UI rendering
+  - the pass applies exposure, white balance, ACES tonemapping, endoscope vignette, and a soft circular scope mask
+  - added restrained HDR bloom before tonemapping for wet tissue and metal highlights
+  - added highlight-driven lens dirt overlay using `textures/lensdirt/LensDirt00.png`
+  - Slang mesh/tissue final outputs keep HDR highlights instead of final `saturate()` clipping
+  - runtime postprocess controls are exposed in the existing Rendering panel
+- Added Slang viewport camera controls:
+  - left mouse drag orbits around the fitted scene target
+  - right or middle mouse drag pans
+  - mouse wheel and PageUp/PageDown dolly
+  - WASD strafes/flies, Q/E moves vertically, Shift speeds up, Control slows down
+  - arrow keys orbit and Home resets the view
 - Added the textured Slang tissue shader path for layered tissue rendering.
 - Bound tissue vertex colors through the Slang mesh path so RGB channels can drive:
   - damage blend
@@ -62,6 +76,21 @@
 - `wet_roughness = 0.18`
 - `blood_wetness = 1.0`
 - `subsurface_strength = 0.0`
+- Postprocessing:
+  - `enabled = True`
+  - `exposure = 1.0`
+  - `white_balance = (1.0, 1.0, 1.0)`
+  - `bloom_enabled = True`
+  - `bloom_threshold = 1.0`
+  - `bloom_intensity = 0.6`
+  - `bloom_radius = 16.0`
+  - `lens_dirt_enabled = True`
+  - `lens_dirt_intensity = 0.45`
+  - `lens_dirt_threshold = 0.20`
+  - `vignette_strength = 0.45`
+  - `vignette_radius = 0.78`
+  - `scope_radius = 0.965`
+  - `scope_softness = 0.035`
 
 These defaults are intentionally conservative. With zero vertex colors and default wetness, existing scenes should stay close to their previous appearance.
 
@@ -73,6 +102,9 @@ These defaults are intentionally conservative. With zero vertex colors and defau
 - Diffuse wet darkening is hard-coded and conservative. There is no `wet_darken` uniform yet.
 - The wet roughness range is narrow and tuned for sharp film highlights. It does not cover very matte mucus or clotted films.
 - Numeric material parameter clamping is currently asymmetric. Wet parameters are clamped in the renderer API, while older material controls rely mainly on UI ranges.
+- Bloom is currently a single-pass bright gather in the final post shader, not a downsampled separable blur chain.
+- Lens dirt uses a static texture and bloom-driven additive response only. Dynamic droplets, smears, condensation, and blood accumulation are not implemented yet.
+- Auto-exposure, SSAO/contact occlusion, chromatic aberration, distortion, grain, and smoke/haze are not implemented yet.
 - Normal layer blending is still linear in tangent space. It has not been upgraded to reoriented normal blending.
 - Specular lighting is still Blinn-Phong style. There is no GGX/physical BRDF yet.
 - Flat/untextured rendering is unchanged; wetness affects the textured Slang tissue path.
@@ -112,28 +144,26 @@ These defaults are intentionally conservative. With zero vertex colors and defau
 
 ## Todo: Postprocessing Realism
 
-Highest-value post effects to add after the tissue shader is stable:
+Highest-value post effects to add after the first postprocess scaffold:
 
-1. Screen-space ambient occlusion or contact occlusion.
-2. Tone mapping and color calibration.
-3. Temporal anti-aliasing.
-4. Subtle bloom for wet tissue and metal highlights.
-5. Endoscope/lens pass:
+1. Auto-exposure with endoscope-style AGC lag.
+2. Dynamic lens contamination: droplets, smears, condensation, and blood masks.
+3. Downsampled separable bloom if the current single-pass gather is too expensive or too local.
+4. SSAO/contact occlusion for folds and tool contact.
+5. Endoscope optics/sensor pass:
    - mild barrel distortion
-   - slight edge darkening
    - very subtle chromatic aberration
    - sensor noise
-6. Screen-space contact shadows under tools and tissue folds.
-7. Very subtle depth of field for endoscopic camera simulation.
-8. Cautery smoke/haze tied to heat or tool activity.
+6. Cautery smoke/haze tied to heat or tool activity.
+7. Very subtle depth of field for close endoscopic camera simulation.
 
 Suggested implementation order:
 
-1. SSAO/contact occlusion.
-2. Tone mapping.
-3. TAA.
-4. Subtle bloom.
-5. Endoscope lens/sensor pass.
+1. Auto-exposure luminance reduction and temporal adaptation.
+2. Dynamic lens dirt masks and droplet/smear authoring.
+3. Bloom downsample/blur targets if visual tuning needs a larger radius.
+4. SSAO/contact occlusion.
+5. Endoscope distortion/chromatic aberration/noise.
 
 ## Verification Notes
 
