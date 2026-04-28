@@ -94,6 +94,10 @@ class MultiSourceRig(InputRig):
                 frame[controller_id] = sample
         return frame
 
+    def replay_exhausted(self, controller_id: str) -> bool:
+        source = self._sources.get(controller_id)
+        return bool(getattr(source, "exhausted", False))
+
     def close(self):
         for source in self._sources.values():
             source.close()
@@ -206,6 +210,10 @@ class ReplayInputSource(InputSource):
         self._data = np.load(path)
         self._frame = 0
         self._end_announced = False
+
+    @property
+    def exhausted(self) -> bool:
+        return self._frame >= len(self._data)
 
     def reset(self):
         self._frame = 0

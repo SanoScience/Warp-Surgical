@@ -1,0 +1,9 @@
+{
+  "spring_k":        {"type": "float", "low": 0.5,    "high": 200.0, "log": true},
+  "damper_b":        {"type": "float", "low": 0.01,   "high": 5.0,   "log": true},
+  "proxy_follow":    {"type": "float", "low": 0.05,   "high": 1.0},
+  "max_proxy_offset":{"type": "float", "low": 0.002,  "high": 0.05},
+  "deadband":        {"type": "float", "low": 0.0,    "high": 0.005},
+  "lowpass_alpha":   {"type": "float", "low": 0.05,   "high": 1.0},
+  "slew_rate_limit": {"type": "float", "low": 0.1,    "high": 50.0}
+}

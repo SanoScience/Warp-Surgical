@@ -87,6 +87,8 @@ class ForceTelemetry:
         renderer = getattr(self._runtime.renderer, "_renderer", None)
         if renderer is None or not hasattr(renderer, "register_ui_callback"):
             return
+        if getattr(renderer, "supports_implot", True) is False:
+            return
         try:
             from imgui_bundle import implot
         except ImportError:
@@ -197,3 +199,148 @@ class ForceTelemetry:
             self._csv_file = None
             self._csv_writer = None
             print(f"[telemetry] wrote {self._frame} frames to {self._csv_path}")
+
+
+class ContactTraceRecorder:
+    """Records the inputs consumed by the haptic force algorithm per frame.
+
+    Output `.npz` carries `t`, `dt`, `device_position[3]`, `device_velocity[3]`,
+    `avg_reaction_offset[3]`, `contact_count`. This is exactly the input
+    surface of `HapticAlgorithm.compute`, so offline bench runs can replay
+    it through any algorithm variant without re-simulating the scene.
+    """
+
+    CONTROLLER_ID = "right"
+    SCHEMA_VERSION = 1
+
+    def __init__(self, runtime: "Runtime", out_path: str | Path):
+        self._runtime = runtime
+        self._path = Path(out_path)
+        self._path.parent.mkdir(parents=True, exist_ok=True)
+        self._frame = 0
+        self._t: list[float] = []
+        self._dt: list[float] = []
+        self._device_pos: list[np.ndarray] = []
+        self._device_vel: list[np.ndarray] = []
+        self._reaction: list[np.ndarray] = []
+        self._contact_count: list[int] = []
+        self._prev_device_pos: np.ndarray | None = None
+        setter = getattr(runtime, "set_force_feedback_compute_always", None)
+        if callable(setter):
+            setter(True)
+
+    def record(self) -> None:
+        rt = self._runtime
+        diagnostics = rt.haptic_feedback_diagnostics
+        state = rt.controller_states.get(self.CONTROLLER_ID)
+        dt = float(rt.sim_config.frame_dt)
+        t = float(getattr(rt, "sim_time", self._frame * dt))
+
+        if state is not None and state.sample_present:
+            device_pos = np.asarray(state.scaled_position, dtype=np.float32).copy()
+        else:
+            device_pos = np.zeros(3, dtype=np.float32)
+
+        if self._prev_device_pos is None:
+            device_vel = np.zeros(3, dtype=np.float32)
+        else:
+            device_vel = ((device_pos - self._prev_device_pos) / max(dt, 1.0e-6)).astype(
+                np.float32
+            )
+        self._prev_device_pos = device_pos
+
+        self._t.append(t)
+        self._dt.append(dt)
+        self._device_pos.append(device_pos)
+        self._device_vel.append(device_vel)
+        self._reaction.append(
+            np.asarray(diagnostics.avg_reaction_offset, dtype=np.float32).copy()
+        )
+        self._contact_count.append(int(diagnostics.contact_count))
+        self._frame += 1
+
+    def close(self) -> None:
+        if self._frame == 0:
+            return
+        np.savez_compressed(
+            self._path,
+            schema_version=np.asarray(self.SCHEMA_VERSION, dtype=np.int32),
+            t=np.asarray(self._t, dtype=np.float32),
+            dt=np.asarray(self._dt, dtype=np.float32),
+            device_position=np.stack(self._device_pos, axis=0).astype(np.float32),
+            device_velocity=np.stack(self._device_vel, axis=0).astype(np.float32),
+            avg_reaction_offset=np.stack(self._reaction, axis=0).astype(np.float32),
+            contact_count=np.asarray(self._contact_count, dtype=np.int32),
+        )
+        print(f"[telemetry] wrote {self._frame} contact-trace frames to {self._path}")
+
+
+class Stage3TelemetryRecorder:
+    """Per-frame record of a stage-3 real-device validation run.
+
+    Captures: target (from replay), measured (from device), effective_target
+    (post ramp-in blend), pd_force, contact_force, total_force, tracking
+    error magnitude, plus ramp/saturation/abort flags. The resulting `.npz`
+    is the primary artifact for comparing what-we-expected (virtual device
+    predictions) against what-actually-happened on the real hardware.
+    """
+
+    SCHEMA_VERSION = 1
+
+    def __init__(self, rig, out_path: str | Path, *, sim_frame_dt: float):
+        self._rig = rig
+        self._path = Path(out_path)
+        self._path.parent.mkdir(parents=True, exist_ok=True)
+        self._frame_dt = float(sim_frame_dt)
+        self._frame = 0
+        self._t: list[float] = []
+        self._target: list[np.ndarray] = []
+        self._measured: list[np.ndarray] = []
+        self._effective_target: list[np.ndarray] = []
+        self._pd_force: list[np.ndarray] = []
+        self._contact_force: list[np.ndarray] = []
+        self._total_force: list[np.ndarray] = []
+        self._tracking_error: list[float] = []
+        self._in_ramp: list[bool] = []
+        self._saturated: list[bool] = []
+
+    def record(self) -> None:
+        snap = self._rig.last_dispatched
+        self._t.append(self._frame * self._frame_dt)
+        self._target.append(np.asarray(snap["target"], dtype=np.float32).copy())
+        self._measured.append(np.asarray(snap["measured"], dtype=np.float32).copy())
+        self._effective_target.append(
+            np.asarray(snap["effective_target"], dtype=np.float32).copy()
+        )
+        self._pd_force.append(np.asarray(snap["pd_force"], dtype=np.float32).copy())
+        self._contact_force.append(
+            np.asarray(snap["contact_force"], dtype=np.float32).copy()
+        )
+        self._total_force.append(
+            np.asarray(snap["total_force"], dtype=np.float32).copy()
+        )
+        self._tracking_error.append(float(snap["tracking_error"]))
+        self._in_ramp.append(bool(snap["in_ramp"]))
+        self._saturated.append(bool(snap["saturated"]))
+        self._frame += 1
+
+    def close(self) -> None:
+        if self._frame == 0:
+            return
+        np.savez_compressed(
+            self._path,
+            schema_version=np.asarray(self.SCHEMA_VERSION, dtype=np.int32),
+            t=np.asarray(self._t, dtype=np.float32),
+            dt=np.asarray(self._frame_dt, dtype=np.float32),
+            target=np.stack(self._target, axis=0).astype(np.float32),
+            measured=np.stack(self._measured, axis=0).astype(np.float32),
+            effective_target=np.stack(self._effective_target, axis=0).astype(np.float32),
+            pd_force=np.stack(self._pd_force, axis=0).astype(np.float32),
+            contact_force=np.stack(self._contact_force, axis=0).astype(np.float32),
+            total_force=np.stack(self._total_force, axis=0).astype(np.float32),
+            tracking_error=np.asarray(self._tracking_error, dtype=np.float32),
+            in_ramp=np.asarray(self._in_ramp, dtype=np.bool_),
+            saturated=np.asarray(self._saturated, dtype=np.bool_),
+            aborted=np.asarray(bool(getattr(self._rig, "aborted", False)), dtype=np.bool_),
+        )
+        print(f"[telemetry] wrote {self._frame} stage3 frames to {self._path}")

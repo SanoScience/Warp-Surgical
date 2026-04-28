@@ -1,0 +1,580 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=1280,initial-scale=1">
+<title>Agentic Testing of Interactive Simulations</title>
+<style>
+  :root {
+    --bg: #0b0d10;
+    --bg-elev: #10141b;
+    --fg: #e8ecf1;
+    --fg-strong: #ffffff;
+    --muted: #8892a0;
+    --dim: #5a6472;
+    --accent: #76b900;
+    --accent-soft: #76b90022;
+    --accent-border: #76b90055;
+    --line: #1f2530;
+    --good: #57d68d;
+    --warn: #f0b429;
+    --code-bg: #0e131a;
+    --code-fg: #c9d1d9;
+    --body: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", Roboto, sans-serif;
+    --mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body {
+    height: 100%;
+    background: var(--bg);
+    color: var(--fg);
+    font-family: var(--body);
+    -webkit-font-smoothing: antialiased;
+    overflow: hidden;
+    font-weight: 400;
+  }
+  #deck { position: relative; width: 100vw; height: 100vh; }
+  .slide {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    padding: 5.5vh 7vw;
+    opacity: 0;
+    transform: translateX(40px);
+    transition: opacity 280ms ease, transform 320ms ease;
+    pointer-events: none;
+    overflow-y: auto;
+  }
+  .slide.active { opacity: 1; transform: translateX(0); pointer-events: auto; }
+  .slide.prev { transform: translateX(-40px); }
+
+  h1 { font-size: 4.4rem; line-height: 1.04; font-weight: 700; letter-spacing: -0.02em; color: var(--fg-strong); }
+  h2 { font-size: 2.5rem; line-height: 1.12; font-weight: 600; letter-spacing: -0.01em; margin-bottom: 1.2rem; color: var(--fg-strong); }
+  h3 { font-size: 0.95rem; color: var(--accent); font-weight: 600; text-transform: uppercase; letter-spacing: 0.18em; margin-bottom: 1.2rem; }
+  h4 { font-size: 0.82rem; text-transform: uppercase; letter-spacing: 0.14em; color: var(--accent); margin-bottom: 0.6rem; font-weight: 600; }
+  p { font-size: 1.2rem; line-height: 1.6; }
+  .lead { font-size: 1.4rem; line-height: 1.5; color: var(--fg); max-width: 48em; }
+  .muted { color: var(--muted); }
+
+  .byline {
+    position: absolute; bottom: 5vh; left: 7vw;
+    font-size: 0.95rem; color: var(--muted);
+    border-top: 1px solid var(--line); padding-top: 1rem; max-width: 40em;
+  }
+  .byline strong { color: var(--fg); font-weight: 500; }
+
+  ul { list-style: none; }
+  ul li {
+    font-size: 1.15rem; line-height: 1.55;
+    padding: 0.35rem 0 0.35rem 1.6rem; position: relative;
+  }
+  ul li::before {
+    content: ""; position: absolute; left: 0; top: 0.95rem;
+    width: 0.45rem; height: 0.45rem; background: var(--accent);
+    border-radius: 1px; transform: rotate(45deg);
+  }
+  ul li strong { color: var(--fg-strong); font-weight: 600; }
+
+  .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 3rem; }
+  .grid-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1.4rem; }
+  .two-col { display: grid; grid-template-columns: 1fr 1.2fr; gap: 2.5rem; }
+
+  .card {
+    background: linear-gradient(180deg, #161b24 0%, var(--bg-elev) 100%);
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    padding: 1.4rem 1.5rem;
+  }
+  .card.accent-left { border-left: 3px solid var(--accent); }
+  .card .big { font-size: 1.5rem; font-weight: 600; color: var(--fg-strong); line-height: 1.2; margin-bottom: 0.7rem; }
+  .card p { font-size: 1rem; color: var(--fg); line-height: 1.55; }
+  .card p + p { margin-top: 0.6rem; }
+  .card p em { color: var(--fg-strong); font-style: italic; }
+  .card .analogy { margin-top: 0.9rem; padding-top: 0.9rem; border-top: 1px dashed var(--line); font-size: 0.88rem; color: var(--muted); }
+  .card .analogy strong { color: var(--accent); font-weight: 600; }
+  .card ul li { font-size: 0.98rem; padding: 0.2rem 0 0.2rem 1.1rem; }
+  .card ul li::before { top: 0.7rem; width: 0.35rem; height: 0.35rem; }
+
+  pre {
+    background: var(--code-bg);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 1rem 1.2rem;
+    overflow-x: auto;
+    font-family: var(--mono);
+    font-size: 0.88rem;
+    line-height: 1.55;
+    color: var(--code-fg);
+    margin-top: 0.8rem;
+  }
+  pre + pre { margin-top: 0.8rem; }
+  code { font-family: var(--mono); font-size: 0.95em; }
+  p code, li code, td code {
+    background: var(--accent-soft); padding: 0.08rem 0.38rem;
+    border-radius: 4px; color: var(--accent); font-size: 0.92em;
+  }
+
+  table { width: 100%; border-collapse: collapse; margin-top: 0.8rem; font-size: 1rem; }
+  th, td { padding: 0.7rem 0.8rem; text-align: left; border-bottom: 1px solid var(--line); }
+  th {
+    font-weight: 600; color: var(--muted);
+    text-transform: uppercase; letter-spacing: 0.08em; font-size: 0.78rem;
+  }
+  td strong { color: var(--good); }
+  td.num { font-variant-numeric: tabular-nums; color: var(--muted); }
+  td.ratio { color: var(--accent); font-weight: 600; font-variant-numeric: tabular-nums; }
+
+  .callout {
+    background: var(--accent-soft);
+    border: 1px solid var(--accent-border);
+    border-radius: 10px;
+    padding: 1.1rem 1.4rem;
+    margin-top: 1.4rem;
+  }
+  .callout strong { color: var(--accent); font-weight: 600; }
+
+  .chip {
+    display: inline-block;
+    background: var(--accent-soft); color: var(--accent);
+    padding: 0.2rem 0.6rem; border-radius: 4px;
+    font-size: 0.78rem; font-weight: 600;
+    text-transform: uppercase; letter-spacing: 0.08em;
+    margin-right: 0.4rem;
+  }
+
+  .takeaway {
+    margin-top: auto;
+    padding: 1.2rem 1.4rem;
+    background: var(--bg-elev);
+    border-radius: 10px;
+    border-left: 3px solid var(--accent);
+    color: var(--fg); font-size: 1.02rem; line-height: 1.55;
+  }
+  .takeaway strong { color: var(--fg-strong); font-weight: 600; }
+
+  .hud {
+    position: fixed; bottom: 2vh; right: 3vw;
+    display: flex; gap: 1rem; align-items: center;
+    color: var(--dim); font-family: var(--mono); font-size: 0.82rem;
+    user-select: none;
+  }
+  .hud .bar { width: 180px; height: 2px; background: var(--line); border-radius: 2px; overflow: hidden; }
+  .hud .bar span { display: block; height: 100%; background: var(--accent); transition: width 280ms ease; }
+
+  .hint {
+    position: fixed; bottom: 2vh; left: 3vw;
+    color: var(--dim); font-family: var(--mono); font-size: 0.78rem; opacity: 0.6;
+  }
+  .hint kbd {
+    background: #1a2029; border: 1px solid var(--line);
+    border-radius: 4px; padding: 0.08rem 0.38rem;
+    font-family: var(--mono); font-size: 0.72rem;
+  }
+
+  /* Cover slide specifics */
+  .cover { justify-content: center; }
+  .cover h1 { margin-top: 2rem; }
+  .cover .lead { margin-top: 1.8rem; font-size: 1.5rem; color: var(--muted); max-width: 42em; }
+  .eyebrow { font-size: 0.85rem; color: var(--accent); letter-spacing: 0.24em; text-transform: uppercase; font-weight: 600; }
+
+  /* Setup diagram */
+  .setup-svg { width: 100%; max-width: 480px; display: block; margin: 0.6rem auto 0; }
+
+  @media print {
+    html, body { overflow: visible; height: auto; background: white; color: black; }
+    #deck { position: static; width: auto; height: auto; }
+    .slide { position: static; opacity: 1 !important; transform: none !important;
+      page-break-after: always; height: 100vh; padding: 2cm; color: black; background: white; overflow: hidden; }
+    .hud, .hint { display: none; }
+    .card, pre, .callout, .takeaway { background: #f4f5f7 !important; color: black !important; border-color: #ddd !important; }
+  }
+</style>
+</head>
+<body>
+<div id="deck">
+
+  <!-- ================= SLIDE 1 · COVER ================= -->
+  <section class="slide cover">
+    <div class="eyebrow">A pattern for tuning interactive simulations</div>
+    <h1>Agentic Testing<br>of Interactive Simulations</h1>
+    <p class="lead">
+      How we put an LLM in charge of the <em>outer loop</em> of haptic force-feedback tuning — and let an optimizer, a metric suite, and an agent-native CLI do the heavy lifting underneath.
+    </p>
+    <div class="byline">
+      <strong>Case study</strong> · cloth-contact haptics on a surgical-training simulator &nbsp;·&nbsp; <strong>Pattern</strong> · generic to any interactive sim with tunable parameters
+    </div>
+  </section>
+
+  <!-- ================= SLIDE 2 · PROBLEM ================= -->
+  <section class="slide">
+    <h3>The setup, in plain terms</h3>
+    <h2>"Interactive simulation" = a loop with a human in it</h2>
+    <div class="two-col" style="grid-template-columns: 1.4fr 1fr; gap: 3rem; align-items: center;">
+      <div>
+        <p class="lead" style="margin-bottom: 1.2rem;">
+          A physical stylus your hand holds. A simulated cloth inside the computer. When you push the stylus into the virtual cloth, the device pushes back against your hand — in real time, 1000 updates per second.
+        </p>
+        <p style="color: var(--muted); font-size: 1.1rem;">
+          The whole value of the simulator depends on the feel of that push-back. Get it wrong and the stylus <em>vibrates</em> in your hand, or feels <em>mushy</em>, or <em>fights you</em>. Get it right and the virtual cloth feels like cloth.
+        </p>
+      </div>
+      <figure style="margin:0;">
+        <svg class="setup-svg" viewBox="0 0 420 240">
+          <defs>
+            <marker id="m2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+              <path d="M 0 0 L 10 5 L 0 10 z" fill="#76b900"/>
+            </marker>
+          </defs>
+          <!-- hand/user box -->
+          <rect x="20" y="90" width="90" height="60" rx="8" fill="#161b24" stroke="#1f2530"/>
+          <text x="65" y="120" fill="#e8ecf1" text-anchor="middle" font-size="13" font-weight="600">User</text>
+          <text x="65" y="138" fill="#8892a0" text-anchor="middle" font-size="10">hand on stylus</text>
+          <!-- device box -->
+          <rect x="160" y="90" width="100" height="60" rx="8" fill="#161b24" stroke="#1f2530"/>
+          <text x="210" y="120" fill="#e8ecf1" text-anchor="middle" font-size="13" font-weight="600">Haptic device</text>
+          <text x="210" y="138" fill="#8892a0" text-anchor="middle" font-size="10">motors + encoders</text>
+          <!-- sim box -->
+          <rect x="310" y="90" width="90" height="60" rx="8" fill="#161b24" stroke="#76b900" stroke-width="1.5"/>
+          <text x="355" y="120" fill="#e8ecf1" text-anchor="middle" font-size="13" font-weight="600">Simulation</text>
+          <text x="355" y="138" fill="#8892a0" text-anchor="middle" font-size="10">cloth, organs, tools</text>
+          <!-- position arrows -->
+          <line x1="110" y1="110" x2="160" y2="110" stroke="#76b900" stroke-width="1.5" marker-end="url(#m2)"/>
+          <line x1="260" y1="110" x2="310" y2="110" stroke="#76b900" stroke-width="1.5" marker-end="url(#m2)"/>
+          <text x="135" y="103" fill="#76b900" font-size="9" text-anchor="middle">position</text>
+          <text x="285" y="103" fill="#76b900" font-size="9" text-anchor="middle">position</text>
+          <!-- force arrows back -->
+          <line x1="310" y1="135" x2="260" y2="135" stroke="#76b900" stroke-width="1.5" marker-end="url(#m2)"/>
+          <line x1="160" y1="135" x2="110" y2="135" stroke="#76b900" stroke-width="1.5" marker-end="url(#m2)"/>
+          <text x="285" y="154" fill="#76b900" font-size="9" text-anchor="middle">force</text>
+          <text x="135" y="154" fill="#76b900" font-size="9" text-anchor="middle">force</text>
+          <!-- note -->
+          <text x="210" y="200" fill="#8892a0" text-anchor="middle" font-size="11">Closed loop at ~1 kHz. Humans feel ms-scale glitches.</text>
+        </svg>
+      </figure>
+    </div>
+
+    <h3 style="margin-top: 2.5rem;">Why tuning this isn't a unit test</h3>
+    <div class="grid-3" style="margin-top: 0.6rem;">
+      <div class="card accent-left">
+        <div class="big">Not pass/fail</div>
+        <p>Outputs are scalars with trade-offs. "Less oscillation" usually costs "slower response." There's no green check; there's a Pareto curve.</p>
+      </div>
+      <div class="card accent-left">
+        <div class="big">Subjective</div>
+        <p>The thing being optimised is ultimately "how it feels to a hand." You can't write an assert for that — you write <em>proxy metrics</em> and trust them.</p>
+      </div>
+      <div class="card accent-left">
+        <div class="big">Combinatorial</div>
+        <p>Multiple algorithms × 7 numeric knobs each × multiple scenarios. A human can maybe try 100 configs per day. That's nothing.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= SLIDE 3 · ARCHITECTURE ================= -->
+  <section class="slide">
+    <h3>Architecture</h3>
+    <h2>Three layers, each best at one thing</h2>
+    <p class="lead" style="margin-bottom: 1.4rem;">
+      Stop asking one system to do everything. Split <strong>how do we score a run</strong> from <strong>which knob do we turn</strong> from <strong>which idea do we try next</strong>. Wire the right tool into each layer.
+    </p>
+    <div class="grid-3">
+      <div class="card">
+        <h4>1 · Metrics</h4>
+        <div class="big">Score a run, deterministically</div>
+        <p>Plain functions that turn a recorded trace into numbers. Did the output <em>buzz with high-frequency noise it shouldn't have</em>? <em>How fast did it respond when the input changed</em>? <em>How smooth was the motion</em>?</p>
+        <p class="analogy"><strong>Think:</strong> a benchmark suite. Latency, tail latency, error rate — but for behaviour quality, not raw perf.</p>
+      </div>
+      <div class="card">
+        <h4>2 · Optimizer</h4>
+        <div class="big">Sweep knobs, find the sweet spot</div>
+        <p>6–8 numeric parameters with no known-good values. Lowering one metric usually raises another, so there's no single "best" — only a <em>Pareto front</em> of trade-offs. Optuna (NSGA-II) runs ~100 trials/minute against a fast virtual model.</p>
+        <p class="analogy"><strong>Think:</strong> multi-objective hyperparameter search. The "loss" is a vector of competing goals.</p>
+      </div>
+      <div class="card">
+        <h4>3 · Agent (LLM)</h4>
+        <div class="big">Read the Pareto, pick what's next</div>
+        <p>LLMs can't beat an optimizer at numeric wiggling. They <em>can</em> reason about structure: <em>"oscillation's solved but response is slow — try a different filter architecture."</em> Reads JSON, proposes the next variant, launches another study.</p>
+        <p class="analogy"><strong>Think:</strong> a senior engineer triaging CI output. Doesn't fix every lint — decides which refactor earns a full run.</p>
+      </div>
+    </div>
+
+    <div class="two-col" style="margin-top: 1.6rem; grid-template-columns: 1.3fr 1fr; align-items: center; gap: 2.5rem;">
+      <p style="font-size: 1.1rem;">
+        <strong style="color: var(--fg-strong);">The contract between layers is a JSON dict.</strong> Metrics produce it, optimizer treats it as an objective vector, agent reads it as context. Each layer is replaceable without touching the others — swap Optuna for CMA-ES, swap Claude for GPT-5, add a new metric as new failure modes appear.
+      </p>
+      <figure style="margin: 0;">
+        <svg viewBox="0 0 480 260" style="width:100%; height:auto; display:block;">
+          <defs>
+            <marker id="arr" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+              <path d="M 0 0 L 10 5 L 0 10 z" fill="#8892a0"/>
+            </marker>
+          </defs>
+          <line x1="56" y1="226" x2="452" y2="226" stroke="#8892a0" stroke-width="1.2" marker-end="url(#arr)"/>
+          <line x1="56" y1="226" x2="56" y2="22"  stroke="#8892a0" stroke-width="1.2" marker-end="url(#arr)"/>
+          <text x="254" y="253" fill="#8892a0" text-anchor="middle" font-size="12">oscillation &rarr;   (lower is better)</text>
+          <text x="22" y="124" fill="#8892a0" text-anchor="middle" font-size="12" transform="rotate(-90 22 124)">rise time &rarr;   (lower is better)</text>
+
+          <circle cx="160" cy="96"  r="4" fill="#8892a0" opacity="0.55"/>
+          <circle cx="200" cy="82"  r="4" fill="#8892a0" opacity="0.55"/>
+          <circle cx="235" cy="118" r="4" fill="#8892a0" opacity="0.55"/>
+          <circle cx="275" cy="104" r="4" fill="#8892a0" opacity="0.55"/>
+          <circle cx="215" cy="150" r="4" fill="#8892a0" opacity="0.55"/>
+          <circle cx="255" cy="145" r="4" fill="#8892a0" opacity="0.55"/>
+          <circle cx="300" cy="130" r="4" fill="#8892a0" opacity="0.55"/>
+          <circle cx="315" cy="162" r="4" fill="#8892a0" opacity="0.55"/>
+          <circle cx="345" cy="148" r="4" fill="#8892a0" opacity="0.55"/>
+          <circle cx="280" cy="185" r="4" fill="#8892a0" opacity="0.55"/>
+          <circle cx="360" cy="190" r="4" fill="#8892a0" opacity="0.55"/>
+          <circle cx="400" cy="165" r="4" fill="#8892a0" opacity="0.55"/>
+
+          <path d="M 90 54 C 140 70, 170 100, 205 120 S 285 165, 410 208"
+                fill="none" stroke="#76b900" stroke-width="1.2" stroke-dasharray="5 5" opacity="0.75"/>
+
+          <circle cx="90"  cy="54"  r="6" fill="#76b900"/>
+          <circle cx="140" cy="76"  r="6" fill="#76b900"/>
+          <circle cx="195" cy="112" r="6" fill="#76b900"/>
+          <circle cx="260" cy="140" r="6" fill="#76b900"/>
+          <circle cx="335" cy="172" r="6" fill="#76b900"/>
+          <circle cx="410" cy="208" r="6" fill="#76b900"/>
+
+          <text x="102" y="40" fill="#76b900" font-size="11" font-weight="600">Pareto front</text>
+          <text x="102" y="52" fill="#76b900" font-size="10" opacity="0.8">best-at-something</text>
+          <text x="340" y="140" fill="#8892a0" font-size="11">dominated trials</text>
+          <text x="340" y="153" fill="#8892a0" font-size="10" opacity="0.7">someone beats them on both axes</text>
+        </svg>
+        <figcaption style="color: var(--muted); font-size: 0.88rem; margin-top: 0.4rem; text-align:center;">
+          Each dot is one trial. <span style="color: var(--accent);">Green</span> dots can't be improved on one axis without worsening the other.
+        </figcaption>
+      </figure>
+    </div>
+  </section>
+
+  <!-- ================= SLIDE 4 · NEWTON-CLI ================= -->
+  <section class="slide">
+    <h3>The interface</h3>
+    <h2><code>newton-cli</code>: making the machine agent-legible</h2>
+    <p class="lead" style="margin-bottom: 1.2rem;">
+      An agent asked to run a physics scene used to have to emit <strong>~40 lines of Python</strong> — imports, Warp types, ModelBuilder calls, a step loop, a solver. One mistake and the whole thing falls over. newton-cli replaces that with <strong>two shell calls driven by a JSON recipe</strong>.
+    </p>
+    <div class="two-col" style="margin-top: 0.4rem;">
+      <div>
+        <h4 style="color: var(--accent);">Why agents love it</h4>
+        <ul>
+          <li><strong>JSON keys, not code.</strong> Agent produces numbers and strings — no risk of wrong imports, wrong types, missing function calls. Agents are good at keys. They're bad at 40-line scripts.</li>
+          <li><strong>Constrained surface.</strong> No arbitrary <code>os.remove()</code>. Safety is a side-effect of the CLI being the only entry point.</li>
+          <li><strong>Deterministic exit codes.</strong> <code>0</code> ok · <code>2</code> user err · <code>3</code> runtime · <code>4</code> missing dep. Agent branches on integers, not on stack-trace substrings.</li>
+          <li><strong>Recipe IS the model.</strong> No opaque binary dumps — the JSON is re-executable, diffable, git-friendly. Version-control your scenes like you version-control code.</li>
+          <li><strong>Stateless calls.</strong> Files in, files out. No hidden in-process state between invocations.</li>
+          <li><strong>Examples-as-spec.</strong> The CLI grew bottom-up from Newton's own <code>examples/</code>. 58 / 65 covered.</li>
+        </ul>
+      </div>
+      <div>
+        <h4 style="color: var(--accent);">What the agent actually emits</h4>
+<pre><span style="color:var(--muted)">// cloth_patch.json</span>
+{
+  "schema": "newton-cli/recipe/v1",
+  "ops": [
+    {"op": "add_ground_plane"},
+    {"op": "add_cloth_grid",
+     "args": {
+       "pos":   [-0.5, 2.0, -0.5],
+       "dim_x": 10, "dim_y": 10,
+       "mass":  0.1,
+       "add_springs": true
+     }},
+    {"op": "set_builder_array",
+     "args": {"name": "particle_mass",
+              "index": 0, "value": 0.0}}
+  ]
+}</pre>
+<pre>newton-cli model build --recipe cloth_patch.json \
+  --out model.json --json
+newton-cli sim run --model model.json \
+  --solver SolverXPBD --num-frames 200 \
+  --substeps 10 --out state.npz --json</pre>
+      </div>
+    </div>
+    <div class="takeaway">
+      <strong>We applied the same contract</strong> to our haptic research bench:
+      <code>list-algorithms</code> · <code>run</code> · <code>study</code> · <code>compare</code>. All JSON-in / JSON-out. An LLM drives the whole tuning loop — read the Pareto, pick a structural variant, launch the next study — without ever writing Python.
+    </div>
+  </section>
+
+  <!-- ================= SLIDE 5 · CASE STUDY ================= -->
+  <section class="slide">
+    <h3>Case study</h3>
+    <h2>Cloth-contact haptic tuning — 60 seconds of compute</h2>
+    <p class="lead" style="margin-bottom: 1rem;">
+      We recorded a 2.1 s trace of a real stylus poking into a simulated cloth patch (120 Hz, 257 frames). We asked Optuna to tune 7 parameters of a "virtual coupling" algorithm against a synthetic device model. 100 trials · NSGA-II · one minute wall-clock. It returned a 29-member Pareto front. This is the best pick vs the starting baseline:
+    </p>
+    <table>
+      <thead>
+        <tr>
+          <th>What it measures (in plain terms)</th>
+          <th style="text-align:right">Technical metric</th>
+          <th style="text-align:right">Baseline</th>
+          <th style="text-align:right">Tuned</th>
+          <th style="text-align:right">Better by</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Buzzing in the hand (worst harmonic)</td>
+          <td class="num" style="text-align:right">oscillation_peak</td>
+          <td class="num" style="text-align:right">0.0108</td>
+          <td style="text-align:right"><strong>0.00039</strong></td>
+          <td class="ratio" style="text-align:right">27×</td>
+        </tr>
+        <tr>
+          <td>Buzzing overall (noise energy)</td>
+          <td class="num" style="text-align:right">oscillation_rms</td>
+          <td class="num" style="text-align:right">0.00481</td>
+          <td style="text-align:right"><strong>0.00029</strong></td>
+          <td class="ratio" style="text-align:right">17×</td>
+        </tr>
+        <tr>
+          <td>Motion smoothness</td>
+          <td class="num" style="text-align:right">jerk_rms</td>
+          <td class="num" style="text-align:right">132.6</td>
+          <td style="text-align:right"><strong>9.64</strong></td>
+          <td class="ratio" style="text-align:right">14×</td>
+        </tr>
+        <tr>
+          <td>How fast contact "pops" to full strength</td>
+          <td class="num" style="text-align:right">rise time (ms)</td>
+          <td class="num" style="text-align:right">500</td>
+          <td style="text-align:right"><strong>16.7</strong></td>
+          <td class="ratio" style="text-align:right">30×</td>
+        </tr>
+        <tr>
+          <td>Phantom force when nothing is touching</td>
+          <td class="num" style="text-align:right">free_space_force</td>
+          <td class="num" style="text-align:right">0.00483</td>
+          <td style="text-align:right"><strong>0.0007</strong></td>
+          <td class="ratio" style="text-align:right">7×</td>
+        </tr>
+        <tr>
+          <td>Energy the loop "invents" (stability risk)</td>
+          <td class="num" style="text-align:right">|energy_injection|</td>
+          <td class="num" style="text-align:right">0.879</td>
+          <td style="text-align:right"><strong>0.005</strong></td>
+          <td class="ratio" style="text-align:right">176×</td>
+        </tr>
+      </tbody>
+    </table>
+    <p style="margin-top: 1.2rem;">
+      <span class="chip">Strict Pareto</span> <strong>Every</strong> metric improved simultaneously. No trade-off.
+    </p>
+    <div class="callout">
+      <strong>Agent-level insight.</strong> The dominant lever turned out to be <code>slew_rate_limit</code> — a rate-of-change cap on the output force. Optuna pushed it to <strong>59× the default</strong>. That one hyperparameter had been dominating closed-loop behaviour and masking every algorithmic difference we'd ever compared. A human tuning by hand would almost certainly miss it.
+    </div>
+  </section>
+
+  <!-- ================= SLIDE 6 · CLOSING THE LOOP ================= -->
+  <section class="slide">
+    <h3>Closing the loop</h3>
+    <h2>Offline → virtual → real device</h2>
+    <p class="lead" style="margin-bottom: 1.2rem;">
+      A three-stage funnel. Each stage is slower and more realistic than the last; each stage eliminates most candidates so only the best reach the next.
+    </p>
+    <div class="grid-3">
+      <div class="card">
+        <h4>Stage 1 · Offline</h4>
+        <div class="big">Numeric sweep</div>
+        <p>Algorithm + synthetic device model + recorded contact trace. Pure numpy. Runs at roughly <strong>1000× real-time</strong>. This is what Optuna hammers.</p>
+        <p class="analogy"><strong>Role:</strong> eliminate 95% of candidates cheaply.</p>
+      </div>
+      <div class="card">
+        <h4>Stage 2 · Virtual sim</h4>
+        <div class="big">Full physics, virtual device</div>
+        <p>Top-N Optuna candidates run through the real simulation pipeline (Newton + Warp) with a virtual device model. Confirms the shortlist holds up under real physics.</p>
+        <p class="analogy"><strong>Role:</strong> catch modelling artefacts before real hardware.</p>
+      </div>
+      <div class="card">
+        <h4>Stage 3 · Real device</h4>
+        <div class="big">Hardware in the loop</div>
+        <p>The physical stylus is driven to follow the exact recorded trajectory while the tuned algorithm dispatches forces. Same trace, same run, every time. Deterministic A/B on real hardware — <em>without</em> a human.</p>
+        <p class="analogy"><strong>Role:</strong> final validation on the device that will ship.</p>
+      </div>
+    </div>
+
+    <div class="two-col" style="margin-top: 1.8rem;">
+      <div>
+        <h4 style="color: var(--accent);">Making the real-device stage safe</h4>
+        <ul>
+          <li>Hard force cap well below the device's peak torque.</li>
+          <li>Ramp-in from current pose — no sudden jumps on startup.</li>
+          <li>Tracking-error abort with configurable action: <code>zero</code> / <code>hold</code> / <code>continue</code>.</li>
+          <li>Contact force suppressed <em>during</em> ramp-in so phantom sim-reactions don't fight the position loop.</li>
+          <li>Dry-run scans the trace's kinematics <em>before</em> anything touches hardware.</li>
+        </ul>
+      </div>
+      <div>
+        <h4 style="color: var(--accent);">Next horizons</h4>
+        <ul>
+          <li><strong>Live-tweak.</strong> MCP server exposes the running sim to an agent; parameters adjust mid-session with a human on the stylus.</li>
+          <li><strong>Auto-generated algorithms.</strong> Agent composes new <code>compute_force()</code> variants from a library of primitives (passivity controllers, Kalman predictors, wave variables).</li>
+          <li><strong>Cross-asset transfer.</strong> Do cloth-tuned presets hold up on liver, on gallbladder, on fat? If not — overnight per-asset mini-studies.</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="takeaway">
+      <strong>Takeaway.</strong> Structured I/O + deterministic replay + a clean agent / optimizer / metric split turns an interactive simulation's qualitative tuning problem into overnight CI. The <code>newton-cli</code> pattern — <em>JSON in, JSON out, integer exit codes, stateless calls</em> — is the contract that makes it work. The technique isn't specific to haptics; it's what you reach for any time "quality" means a vector of trade-offs instead of a pass/fail.
+    </div>
+  </section>
+
+</div>
+
+<div class="hud">
+  <span id="counter">1 / 6</span>
+  <div class="bar"><span id="progress" style="width:16%"></span></div>
+</div>
+<div class="hint">
+  <kbd>←</kbd> <kbd>→</kbd> navigate · <kbd>F</kbd> fullscreen · <kbd>P</kbd> print / PDF
+</div>
+
+<script>
+  const slides = Array.from(document.querySelectorAll('.slide'));
+  const counter = document.getElementById('counter');
+  const progress = document.getElementById('progress');
+  let i = 0;
+
+  function show(n) {
+    i = Math.max(0, Math.min(slides.length - 1, n));
+    slides.forEach((s, idx) => {
+      s.classList.remove('active', 'prev');
+      if (idx === i) s.classList.add('active');
+      else if (idx < i) s.classList.add('prev');
+    });
+    counter.textContent = `${i + 1} / ${slides.length}`;
+    progress.style.width = `${((i + 1) / slides.length) * 100}%`;
+    location.hash = `#${i + 1}`;
+  }
+
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'ArrowRight' || e.key === ' ' || e.key === 'PageDown') { e.preventDefault(); show(i + 1); }
+    else if (e.key === 'ArrowLeft' || e.key === 'PageUp') { e.preventDefault(); show(i - 1); }
+    else if (e.key === 'Home') { show(0); }
+    else if (e.key === 'End') { show(slides.length - 1); }
+    else if (e.key === 'f' || e.key === 'F') {
+      if (!document.fullscreenElement) document.documentElement.requestFullscreen();
+      else document.exitFullscreen();
+    } else if (e.key === 'p' || e.key === 'P') {
+      window.print();
+    }
+  });
+
+  document.addEventListener('click', (e) => {
+    if (e.target.closest('a, pre, code, table, .hud, .hint, figure')) return;
+    const midpoint = window.innerWidth / 2;
+    show(e.clientX > midpoint ? i + 1 : i - 1);
+  });
+
+  const fromHash = parseInt((location.hash || '#1').slice(1), 10);
+  show(isNaN(fromHash) ? 0 : fromHash - 1);
+</script>
+
+</body>
+</html>

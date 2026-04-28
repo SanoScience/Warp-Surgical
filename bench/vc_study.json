@@ -1,0 +1,4011 @@
+{
+  "schema": "haptic-bench/v1",
+  "data": {
+    "algorithm": "virtual_coupling",
+    "n_trials": 100,
+    "objectives": [
+      "oscillation_peak",
+      "energy_injection_abs",
+      "jerk_rms",
+      "free_space_force_mean",
+      "contact_rise_time_ms"
+    ],
+    "pareto_front": [
+      {
+        "trial_number": 2,
+        "params": {
+          "spring_k": 0.7652618957932136,
+          "damper_b": 0.017185388973598163,
+          "vc_proxy_mass": 0.0054879077096900795,
+          "max_proxy_offset": 0.041965752586301024,
+          "deadband": 0.0038907837547492523,
+          "lowpass_alpha": 0.8765115408344782,
+          "slew_rate_limit": 48.93305527741492
+        },
+        "metrics": {
+          "fs_hz": 119.99999374151263,
+          "n_frames": 314,
+          "contact_frames": 244,
+          "oscillation_peak": 0.0007189598263326781,
+          "oscillation_rms": 0.0003308159114052389,
+          "energy_injection": -0.015161925926804543,
+          "jerk_rms": 7.001896381378174,
+          "contact_rise_time_ms": 33.33333507180214,
+          "free_space_force_mean": 0.0004742882738355547,
+          "penetration_max_mm": 7.146091938018799
+        },
+        "values": [
+          0.0007189598263326781,
+          0.015161925926804543,
+          7.001896381378174,
+          0.0004742882738355547,
+          33.33333507180214
+        ]
+      },
+      {
+        "trial_number": 4,
+        "params": {
+          "spring_k": 11.39857717241027,
+          "damper_b": 0.13157098861922908,
+          "vc_proxy_mass": 0.01690757133910145,
+          "max_proxy_offset": 0.0391632170928424,
+          "deadband": 0.002280751661082743,
+          "lowpass_alpha": 0.5900122514252161,
+          "slew_rate_limit": 1.0376110417741216
+        },
+        "metrics": {
+          "fs_hz": 119.99999374151263,
+          "n_frames": 314,
+          "contact_frames": 244,
+          "oscillation_peak": 0.0002774538193593355,
+          "oscillation_rms": 0.00010585745257016861,
+          "energy_injection": -0.01241756696254015,
+          "jerk_rms": 10.209803581237793,
+          "contact_rise_time_ms": 58.33333358168602,
+          "free_space_force_mean": 0.00012160999904153869,
+          "penetration_max_mm": 7.146091938018799
+        },
+        "values": [
+          0.0002774538193593355,
+          0.01241756696254015,
+          10.209803581237793,
+          0.00012160999904153869,
+          58.33333358168602
+        ]
+      },
+      {
+        "trial_number": 6,
+        "params": {
+          "spring_k": 32.677455203009146,
+          "damper_b": 0.014539408591817076,
+          "vc_proxy_mass": 0.10777137782723753,
+          "max_proxy_offset": 0.034190617741671654,
+          "deadband": 0.0010519128053692046,
+          "lowpass_alpha": 0.17247998277211063,
+          "slew_rate_limit": 15.839874711116774
+        },
+        "metrics": {
+          "fs_hz": 119.99999374151263,
+          "n_frames": 314,
+          "contact_frames": 244,
+          "oscillation_peak": 0.0003931965473932317,
+          "oscillation_rms": 0.0002935888516533966,
+          "energy_injection": -0.00021101994207128882,
+          "jerk_rms": 11.851749420166016,
+          "contact_rise_time_ms": 16.66666753590107,
+          "free_space_force_mean": 0.0007032115827314556,
+          "penetration_max_mm": 7.146091938018799
+        },
+        "values": [
+          0.0003931965473932317,
+          0.00021101994207128882,
+          11.851749420166016,
+          0.0007032115827314556,
+          16.66666753590107
+        ]
+      },
+      {
+        "trial_number": 11,
+        "params": {
+          "spring_k": 1.0273742285921992,
+          "damper_b": 0.06299027584324217,
+          "vc_proxy_mass": 0.008638243504108948,
+          "max_proxy_offset": 0.01726319261091085,
+          "deadband": 0.00207131497257335,
+          "lowpass_alpha": 0.11094012153134514,
+          "slew_rate_limit": 34.654358756563994
+        },
+        "metrics": {
+          "fs_hz": 119.99999374151263,
+          "n_frames": 314,
+          "contact_frames": 244,
+          "oscillation_peak": 0.00027481818031315343,
+          "oscillation_rms": 0.00011286387488397765,
+          "energy_injection": -0.03543850779533386,
+          "jerk_rms": 3.863283157348633,
+          "contact_rise_time_ms": 41.6666679084301,
+          "free_space_force_mean": 0.0001825421495595947,
+          "penetration_max_mm": 7.146091938018799
+        },
+        "values": [
+          0.00027481818031315343,
+          0.03543850779533386,
+          3.863283157348633,
+          0.0001825421495595947,
+          41.6666679084301
+        ]
+      },
+      {
+        "trial_number": 13,
+        "params": {
+          "spring_k": 27.265398644105638,
+          "damper_b": 0.022683939340690858,
+          "vc_proxy_mass": 0.13540179213578835,
+          "max_proxy_offset": 0.01589149246146565,
+          "deadband": 0.0009159568100355842,
+          "lowpass_alpha": 0.607187288069579,
+          "slew_rate_limit": 1.1033665547559284
+        },
+        "metrics": {
+          "fs_hz": 119.99999374151263,
+          "n_frames": 314,
+          "contact_frames": 244,
+          "oscillation_peak": 0.00013688384957283875,
+          "oscillation_rms": 6.420510945352332e-05,
+          "energy_injection": -0.004213385283946991,
+          "jerk_rms": 5.740384101867676,
+          "contact_rise_time_ms": 50.00000074505806,
+          "free_space_force_mean": 0.00012931668607052416,
+          "penetration_max_mm": 7.146091938018799
+        },
+        "values": [
+          0.00013688384957283875,
+          0.004213385283946991,
+          5.740384101867676,
+          0.00012931668607052416,
+          50.00000074505806
+        ]
+      },
+      {
+        "trial_number": 16,
+        "params": {
+          "spring_k": 33.04129355086612,
+          "damper_b": 0.06349995368627394,
+          "vc_proxy_mass": 0.21211219770832282,
+          "max_proxy_offset": 0.02103227556065526,
+          "deadband": 0.0044055159855558084,
+          "lowpass_alpha": 0.6022092290040658,
+          "slew_rate_limit": 44.09859455655715
+        },
+        "metrics": {
+          "fs_hz": 119.99999374151263,
+          "n_frames": 314,
+          "contact_frames": 244,
+          "oscillation_peak": 0.00039254682689010177,
+          "oscillation_rms": 0.00029358831834948366,
+          "energy_injection": -0.005429254844784737,
+          "jerk_rms": 9.639874458312988,
+          "contact_rise_time_ms": 16.66666753590107,
+          "free_space_force_mean": 0.0007032115827314556,
+          "penetration_max_mm": 7.146091938018799
+        },
+        "values": [
+          0.00039254682689010177,
+          0.005429254844784737,
+          9.639874458312988,
+          0.0007032115827314556,
+          16.66666753590107
+        ]
+      },
+      {
+        "trial_number": 24,
+        "params": {
+          "spring_k": 39.66881624109882,
+          "damper_b": 0.029055165314863966,
+          "vc_proxy_mass": 0.0550862510133805,
+          "max_proxy_offset": 0.004608223440284174,
+          "deadband": 0.0009999826244820004,
+          "lowpass_alpha": 0.06759570473758328,
+          "slew_rate_limit": 39.70551539753529
+        },
+        "metrics": {
+          "fs_hz": 119.99999374151263,
+          "n_frames": 314,
+          "contact_frames": 244,
+          "oscillation_peak": 0.0003256645765271871,
+          "oscillation_rms": 0.00023766944156119896,
+          "energy_injection": 0.0014110554475337267,
+          "jerk_rms": 21.270160675048828,
+          "contact_rise_time_ms": 25.00000223517418,
+          "free_space_force_mean": 0.0005366962286643684,
+          "penetration_max_mm": 7.146091938018799
+        },
+        "values": [
+          0.0003256645765271871,
+          0.0014110554475337267,
+          21.270160675048828,
+          0.0005366962286643684,
+          25.00000223517418
+        ]
+      },
+      {
+        "trial_number": 26,
+        "params": {
+          "spring_k": 15.883763812554653,
+          "damper_b": 0.04385969316856726,
+          "vc_proxy_mass": 0.3693158954393565,
+          "max_proxy_offset": 0.03147036588636301,
+          "deadband": 0.0026781640151247914,
+          "lowpass_alpha": 0.6104144775368424,
+          "slew_rate_limit": 36.533089272886805
+        },
+        "metrics": {
+          "fs_hz": 119.99999374151263,
+          "n_frames": 314,
+          "contact_frames": 244,
+          "oscillation_peak": 0.0003924326622985008,
+          "oscillation_rms": 0.0002935805687973118,
+          "energy_injection": -0.015069250017404556,
+          "jerk_rms": 6.681960105895996,
+          "contact_rise_time_ms": 16.66666753590107,
+          "free_space_force_mean": 0.0007032115827314556,
+          "penetration_max_mm": 7.146091938018799
+        },
+        "values": [
+          0.0003924326622985008,
+          0.015069250017404556,
+          6.681960105895996,
+          0.0007032115827314556,
+          16.66666753590107
+        ]
+      },
+      {
+        "trial_number": 29,
+        "params": {
+          "spring_k": 1.4665927981189015,
+          "damper_b": 0.011657546264200604,
+          "vc_proxy_mass": 0.006815053464694637,
+          "max_proxy_offset": 0.03461085312793123,
+          "deadband": 0.0022684842227802264,
+          "lowpass_alpha": 0.5597502505532861,
+          "slew_rate_limit": 44.84389752271307
+        },
+        "metrics": {
+          "fs_hz": 119.99999374151263,
+          "n_frames": 314,
+          "contact_frames": 244,
+          "oscillation_peak": 0.0006967515457247993,
+          "oscillation_rms": 0.00025964762518165693,
+          "energy_injection": -0.0073348344303667545,
+          "jerk_rms": 7.676891326904297,
+          "contact_rise_time_ms": 33.33333507180214,
+          "free_space_force_mean": 0.00030540834995917976,
+          "penetration_max_mm": 7.146091938018799
+        },
+        "values": [
+          0.0006967515457247993,
+          0.0073348344303667545,
+          7.676891326904297,
+          0.00030540834995917976,
+          33.33333507180214
+        ]
+      },
+      {
+        "trial_number": 30,
+        "params": {
+          "spring_k": 188.75191096346757,
+          "damper_b": 0.0384944797832454,
+          "vc_proxy_mass": 0.10595620881111734,
+          "max_proxy_offset": 0.01463947408338323,
+          "deadband": 0.0001032549973286434,
+          "lowpass_alpha": 0.7704597211443344,
+          "slew_rate_limit": 16.068855826041144
+        },
+        "metrics": {
+          "fs_hz": 119.99999374151263,
+          "n_frames": 314,
+          "contact_frames": 244,
+          "oscillation_peak": 0.00041422063942944947,
+          "oscillation_rms": 0.00029413844424967746,
+          "energy_injection": 2.7401605620980263e-05,
+          "jerk_rms": 31.096084594726562,
+          "contact_rise_time_ms": 16.66666753590107,
+          "free_space_force_mean": 0.0007032115827314556,
+          "penetration_max_mm": 7.146091938018799
+        },
+        "values": [
+          0.00041422063942944947,
+          2.7401605620980263e-05,
+          31.096084594726562,
+          0.0007032115827314556,
+          16.66666753590107
+        ]
+      },
+      {
+        "trial_number": 43,
+        "params": {
+          "spring_k": 51.65205444655892,
+          "damper_b": 0.07927728571487533,
+          "vc_proxy_mass": 0.007263948965857854,
+          "max_proxy_offset": 0.021547576227862755,
+          "deadband": 0.0011611707108547136,
+          "lowpass_alpha": 0.17586325302008382,
+          "slew_rate_limit": 2.7660163711625807
+        },
+        "metrics": {
+          "fs_hz": 119.99999374151263,
+          "n_frames": 314,
+          "contact_frames": 244,
+          "oscillation_peak": 0.0007261126306845836,
+          "oscillation_rms": 0.00031394685296100966,
+          "energy_injection": 0.028541404753923416,
+          "jerk_rms": 13.636862754821777,
+          "contact_rise_time_ms": 25.00000223517418,
+          "free_space_force_mean": 0.0003241824742872268,
+          "penetration_max_mm": 7.146091938018799
+        },
+        "values": [
+          0.0007261126306845836,
+          0.028541404753923416,
+          13.636862754821777,
+          0.0003241824742872268,
+          25.00000223517418
+        ]
+      },
+      {
+        "trial_number": 44,
+        "params": {
+          "spring_k": 38.63759353110179,
+          "damper_b": 0.010735996668407383,
+          "vc_proxy_mass": 0.17383271023977576,
+          "max_proxy_offset": 0.009053438979218002,
+          "deadband": 0.00039761041293377876,
+          "lowpass_alpha": 0.13512288252667512,
+          "slew_rate_limit": 33.63518558696033
+        },
+        "metrics": {
+          "fs_hz": 119.99999374151263,
+          "n_frames": 314,
+          "contact_frames": 244,
+          "oscillation_peak": 0.00039327811486568077,
+          "oscillation_rms": 0.0002935891625340952,
+          "energy_injection": -0.000175809720531106,
+          "jerk_rms": 9.957372665405273,
+          "contact_rise_time_ms": 16.66666753590107,
+          "free_space_force_mean": 0.0007032115827314556,
+          "penetration_max_mm": 7.146091938018799
+        },
+        "values": [
+          0.00039327811486568077,
+          0.000175809720531106,
+          9.957372665405273,
+          0.0007032115827314556,
+          16.66666753590107
+        ]
+      },
+      {
+        "trial_number": 47,
+        "params": {
+          "spring_k": 4.870378750301743,
+          "damper_b": 0.030826272414161353,
+          "vc_proxy_mass": 0.18882566764923356,
+          "max_proxy_offset": 0.004728707668795535,
+          "deadband": 0.0034849862086249366,
+          "lowpass_alpha": 0.7897606261440482,
+          "slew_rate_limit": 38.89263733625278
+        },
+        "metrics": {
+          "fs_hz": 119.99999374151263,
+          "n_frames": 314,
+          "contact_frames": 244,
+          "oscillation_peak": 0.0003924819986972244,
+          "oscillation_rms": 0.00029358079279060063,
+          "energy_injection": -0.011408225633203983,
+          "jerk_rms": 6.49354362487793,
+          "contact_rise_time_ms": 16.66666753590107,
+          "free_space_force_mean": 0.0007032115245237947,
+          "penetration_max_mm": 7.146091938018799
+        },
+        "values": [
+          0.0003924819986972244,
+          0.011408225633203983,
+          6.49354362487793,
+          0.0007032115245237947,
+          16.66666753590107
+        ]
+      },
+      {
+        "trial_number": 48,
+        "params": {
+          "spring_k": 2.3659364758322483,
+          "damper_b": 0.10207289830562587,
+          "vc_proxy_mass": 0.07484611709771337,
+          "max_proxy_offset": 0.015095451316374417,
+          "deadband": 0.0018542639960894437,
+          "lowpass_alpha": 0.23720156617635763,
+          "slew_rate_limit": 23.046808599424768
+        },
+        "metrics": {
+          "fs_hz": 119.99999374151263,
+          "n_frames": 314,
+          "contact_frames": 244,
+          "oscillation_peak": 0.000377293946780908,
+          "oscillation_rms": 0.0002825023420379267,
+          "energy_injection": -0.022755246609449387,
+          "jerk_rms": 6.574456214904785,
+          "contact_rise_time_ms": 16.66666753590107,
+          "free_space_force_mean": 0.0006681776721961796,
+          "penetration_max_mm": 7.146091938018799
+        },
+        "values": [
+          0.000377293946780908,
+          0.022755246609449387,
+          6.574456214904785,
+          0.0006681776721961796,
+          16.66666753590107
+        ]
+      },
+      {
+        "trial_number": 53,
+        "params": {
+          "spring_k": 4.870378750301743,
+          "damper_b": 0.030826272414161353,
+          "vc_proxy_mass": 0.18882566764923356,
+          "max_proxy_offset": 0.004728707668795535,
+          "deadband": 0.0034849862086249366,
+          "lowpass_alpha": 0.7897606261440482,
+          "slew_rate_limit": 38.89263733625278
+        },
+        "metrics": {
+          "fs_hz": 119.99999374151263,
+          "n_frames": 314,
+          "contact_frames": 244,
+          "oscillation_peak": 0.0003924819986972244,
+          "oscillation_rms": 0.00029358079279060063,
+          "energy_injection": -0.011408225633203983,
+          "jerk_rms": 6.49354362487793,
+          "contact_rise_time_ms": 16.66666753590107,
+          "free_space_force_mean": 0.0007032115245237947,
+          "penetration_max_mm": 7.146091938018799
+        },
+        "values": [
+          0.0003924819986972244,
+          0.011408225633203983,
+          6.49354362487793,
+          0.0007032115245237947,
+          16.66666753590107
+        ]
+      },
+      {
+        "trial_number": 56,
+        "params": {
+          "spring_k": 1.9126498740721087,
+          "damper_b": 0.0855251465722774,
+          "vc_proxy_mass": 0.35903153120109205,
+          "max_proxy_offset": 0.035811891292329576,
+          "deadband": 0.0009159568100355842,
+          "lowpass_alpha": 0.20645944867301713,
+          "slew_rate_limit": 1.1033665547559284
+        },
+        "metrics": {
+          "fs_hz": 119.99999374151263,
+          "n_frames": 314,
+          "contact_frames": 244,
+          "oscillation_peak": 6.953146394465146e-05,
+          "oscillation_rms": 5.6452287770240174e-05,
+          "energy_injection": -0.039045512676239014,
+          "jerk_rms": 2.249729633331299,
+          "contact_rise_time_ms": 50.00000074505806,
+          "free_space_force_mean": 0.00012931670062243938,
+          "penetration_max_mm": 7.146091938018799
+        },
+        "values": [
+          6.953146394465146e-05,
+          0.039045512676239014,
+          2.249729633331299,
+          0.00012931670062243938,
+          50.00000074505806
+        ]
+      },
+      {
+        "trial_number": 57,
+        "params": {
+          "spring_k": 1.0273742285921992,
+          "damper_b": 0.06299027584324217,
+          "vc_proxy_mass": 0.008638243504108948,
+          "max_proxy_offset": 0.035811891292329576,
+          "deadband": 0.00015919464765653925,
+          "lowpass_alpha": 0.20645944867301713,
+          "slew_rate_limit": 31.1117722348382
+        },
+        "metrics": {
+          "fs_hz": 119.99999374151263,
+          "n_frames": 314,
+          "contact_frames": 244,
+          "oscillation_peak": 0.000392066728585774,
+          "oscillation_rms": 0.00020838399572194812,
+          "energy_injection": -0.03530178219079971,
+          "jerk_rms": 5.9381890296936035,
+          "contact_rise_time_ms": 33.33333507180214,
+          "free_space_force_mean": 0.0003397107357159257,
+          "penetration_max_mm": 7.146091938018799
+        },
+        "values": [
+          0.000392066728585774,
+          0.03530178219079971,
+          5.9381890296936035,
+          0.0003397107357159257,
+          33.33333507180214
+        ]
+      },
+      {
+        "trial_number": 62,
+        "params": {
+          "spring_k": 2.3659364758322483,
+          "damper_b": 0.010735996668407383,
+          "vc_proxy_mass": 0.17383271023977576,
+          "max_proxy_offset": 0.009053438979218002,
+          "deadband": 0.0027190297503866317,
+          "lowpass_alpha": 0.4840658505634775,
+          "slew_rate_limit": 33.63518558696033
+        },
+        "metrics": {
+          "fs_hz": 119.99999374151263,
+          "n_frames": 314,
+          "contact_frames": 244,
+          "oscillation_peak": 0.0002001036496742358,
+          "oscillation_rms": 0.00017094121321806888,
+          "energy_injection": -0.02132047899067402,
+          "jerk_rms": 3.7203032970428467,
+          "contact_rise_time_ms": 25.00000223517418,
+          "free_space_force_mean": 0.00034135382156819105,
+          "penetration_max_mm": 7.146091938018799
+        },
+        "values": [
+          0.0002001036496742358,
+          0.02132047899067402,
+          3.7203032970428467,
+          0.00034135382156819105,
+          25.00000223517418
+        ]
+      },
+      {
+        "trial_number": 72,
+        "params": {
+          "spring_k": 32.677455203009146,
+          "damper_b": 0.014539408591817076,
+          "vc_proxy_mass": 0.10777137782723753,
+          "max_proxy_offset": 0.0433064563437821,
+          "deadband": 0.0010519128053692046,
+          "lowpass_alpha": 0.30681150997677886,
+          "slew_rate_limit": 6.660991684627267
+        },
+        "metrics": {
+          "fs_hz": 119.99999374151263,
+          "n_frames": 314,
+          "contact_frames": 244,
+          "oscillation_peak": 0.0003921378478041479,
+          "oscillation_rms": 0.00029357565332286225,
+          "energy_injection": -0.002437280723825097,
+          "jerk_rms": 12.038785934448242,
+          "contact_rise_time_ms": 16.66666753590107,
+          "free_space_force_mean": 0.0007032115245237947,
+          "penetration_max_mm": 7.146091938018799
+        },
+        "values": [
+          0.0003921378478041479,
+          0.002437280723825097,
+          12.038785934448242,
+          0.0007032115245237947,
+          16.66666753590107
+        ]
+      },
+      {
+        "trial_number": 73,
+        "params": {
+          "spring_k": 15.883763812554653,
+          "damper_b": 0.052032929232026,
+          "vc_proxy_mass": 0.3693158954393565,
+          "max_proxy_offset": 0.0065091445164052,
+          "deadband": 0.0028797324777808963,
+          "lowpass_alpha": 0.6104144775368424,
+          "slew_rate_limit": 15.996590727321049
+        },
+        "metrics": {
+          "fs_hz": 119.99999374151263,
+          "n_frames": 314,
+          "contact_frames": 244,
+          "oscillation_peak": 0.0003924294152462507,
+          "oscillation_rms": 0.0002935805591102892,
+          "energy_injection": -0.015176722779870033,
+          "jerk_rms": 6.678196430206299,
+          "contact_rise_time_ms": 16.66666753590107,
+          "free_space_force_mean": 0.0007032115827314556,
+          "penetration_max_mm": 7.146091938018799
+        },
+        "values": [
+          0.0003924294152462507,
+          0.015176722779870033,
+          6.678196430206299,
+          0.0007032115827314556,
+          16.66666753590107
+        ]
+      },
+      {
+        "trial_number": 78,
+        "params": {
+          "spring_k": 14.903936082235903,
+          "damper_b": 0.030826272414161353,
+          "vc_proxy_mass": 0.18882566764923356,
+          "max_proxy_offset": 0.0065091445164052,
+          "deadband": 0.0028797324777808963,
+          "lowpass_alpha": 0.7897606261440482,
+          "slew_rate_limit": 15.996590727321049
+        },
+        "metrics": {
+          "fs_hz": 119.99999374151263,
+          "n_frames": 314,
+          "contact_frames": 244,
+          "oscillation_peak": 0.0003924268451737712,
+          "oscillation_rms": 0.000293580076336383,
+          "energy_injection": -0.0055844285525381565,
+          "jerk_rms": 8.506487846374512,
+          "contact_rise_time_ms": 16.66666753590107,
+          "free_space_force_mean": 0.0007032115827314556,
+          "penetration_max_mm": 7.146091938018799
+        },
+        "values": [
+          0.0003924268451737712,
+          0.0055844285525381565,
+          8.506487846374512,
+          0.0007032115827314556,
+          16.66666753590107
+        ]
+      },
+      {
+        "trial_number": 87,
+        "params": {
+          "spring_k": 20.23459985435792,
+          "damper_b": 0.04220420654687052,
+          "vc_proxy_mass": 0.08567182098559827,
+          "max_proxy_offset": 0.03218712507496162,
+          "deadband": 0.003409101495517417,
+          "lowpass_alpha": 0.4285125456886932,
+          "slew_rate_limit": 43.72696953458485
+        },
+        "metrics": {
+          "fs_hz": 119.99999374151263,
+          "n_frames": 314,
+          "contact_frames": 244,
+          "oscillation_peak": 0.00039338315282491995,
+          "oscillation_rms": 0.0002935898316947998,
+          "energy_injection": -0.00013246946036815643,
+          "jerk_rms": 10.644326210021973,
+          "contact_rise_time_ms": 16.66666753590107,
+          "free_space_force_mean": 0.0007032114663161337,
+          "penetration_max_mm": 7.146091938018799
+        },
+        "values": [
+          0.00039338315282491995,
+          0.00013246946036815643,
+          10.644326210021973,
+          0.0007032114663161337,
+          16.66666753590107
+        ]
+      },
+      {
+        "trial_number": 89,
+        "params": {
+          "spring_k": 2.6386181984786625,
+          "damper_b": 0.38345406854475694,
+          "vc_proxy_mass": 0.008638243504108948,
+          "max_proxy_offset": 0.04275383880456852,
+          "deadband": 0.002586895535770571,
+          "lowpass_alpha": 0.11094012153134514,
+          "slew_rate_limit": 1.76190086468014
+        },
+        "metrics": {
+          "fs_hz": 119.99999374151263,
+          "n_frames": 314,
+          "contact_frames": 244,
+          "oscillation_peak": 0.0001755554371241592,
+          "oscillation_rms": 0.00010336360329290732,
+          "energy_injection": -0.0434744656085968,
+          "jerk_rms": 3.7608845233917236,
+          "contact_rise_time_ms": 41.6666679084301,
+          "free_space_force_mean": 0.00020649819634854794,
+          "penetration_max_mm": 7.146091938018799
+        },
+        "values": [
+          0.0001755554371241592,
+          0.0434744656085968,
+          3.7608845233917236,
+          0.00020649819634854794,
+          41.6666679084301
+        ]
+      },
+      {
+        "trial_number": 90,
+        "params": {
+          "spring_k": 107.60638254616775,
+          "damper_b": 0.0981834892451857,
+          "vc_proxy_mass": 0.03721344316437966,
+          "max_proxy_offset": 0.04803117064944673,
+          "deadband": 0.004030969945230429,
+          "lowpass_alpha": 0.3876004060483331,
+          "slew_rate_limit": 5.101321676883825
+        },
+        "metrics": {
+          "fs_hz": 119.99999374151263,
+          "n_frames": 314,
+          "contact_frames": 244,
+          "oscillation_peak": 0.0017376744575570047,
+          "oscillation_rms": 0.000605186701438597,
+          "energy_injection": 0.0002784482203423977,
+          "jerk_rms": 31.035715103149414,
+          "contact_rise_time_ms": 25.00000223517418,
+          "free_space_force_mean": 0.0005978847621008754,
+          "penetration_max_mm": 7.146091938018799
+        },
+        "values": [
+          0.0017376744575570047,
+          0.0002784482203423977,
+          31.035715103149414,
+          0.0005978847621008754,
+          25.00000223517418
+        ]
+      },
+      {
+        "trial_number": 91,
+        "params": {
+          "spring_k": 4.237822207550817,
+          "damper_b": 0.030826272414161353,
+          "vc_proxy_mass": 0.18882566764923356,
+          "max_proxy_offset": 0.007641529086177588,
+          "deadband": 0.0034849862086249366,
+          "lowpass_alpha": 0.7897606261440482,
+          "slew_rate_limit": 35.871298091510425
+        },
+        "metrics": {
+          "fs_hz": 119.99999374151263,
+          "n_frames": 314,
+          "contact_frames": 244,
+          "oscillation_peak": 0.0003924823313529917,
+          "oscillation_rms": 0.0002935808212421781,
+          "energy_injection": -0.012162805534899235,
+          "jerk_rms": 6.474952697753906,
+          "contact_rise_time_ms": 16.66666753590107,
+          "free_space_force_mean": 0.0007032115827314556,
+          "penetration_max_mm": 7.146091938018799
+        },
+        "values": [
+          0.0003924823313529917,
+          0.012162805534899235,
+          6.474952697753906,
+          0.0007032115827314556,
+          16.66666753590107
+        ]
+      },
+      {
+        "trial_number": 94,
+        "params": {
+          "spring_k": 15.883763812554653,
+          "damper_b": 0.33578025958563595,
+          "vc_proxy_mass": 0.3693158954393565,
+          "max_proxy_offset": 0.03147036588636301,
+          "deadband": 0.0004980746511063566,
+          "lowpass_alpha": 0.3878321009574578,
+          "slew_rate_limit": 47.02755406811537
+        },
+        "metrics": {
+          "fs_hz": 119.99999374151263,
+          "n_frames": 314,
+          "contact_frames": 244,
+          "oscillation_peak": 0.00039242092472084193,
+          "oscillation_rms": 0.00029358050194280686,
+          "energy_injection": -0.019266752526164055,
+          "jerk_rms": 6.842255115509033,
+          "contact_rise_time_ms": 16.66666753590107,
+          "free_space_force_mean": 0.0007032115827314556,
+          "penetration_max_mm": 7.146091938018799
+        },
+        "values": [
+          0.00039242092472084193,
+          0.019266752526164055,
+          6.842255115509033,
+          0.0007032115827314556,
+          16.66666753590107
+        ]
+      },
+      {
+        "trial_number": 95,
+        "params": {
+          "spring_k": 32.677455203009146,
+          "damper_b": 0.014539408591817076,
+          "vc_proxy_mass": 0.10777137782723753,
+          "max_proxy_offset": 0.034190617741671654,
+          "deadband": 0.0010519128053692046,
+          "lowpass_alpha": 0.17247998277211063,
+          "slew_rate_limit": 47.27054652060607
+        },
+        "metrics": {
+          "fs_hz": 119.99999374151263,
+          "n_frames": 314,
+          "contact_frames": 244,
+          "oscillation_peak": 0.0003931965473932317,
+          "oscillation_rms": 0.0002935888516533966,
+          "energy_injection": -0.00021101994207128882,
+          "jerk_rms": 11.851749420166016,
+          "contact_rise_time_ms": 16.66666753590107,
+          "free_space_force_mean": 0.0007032115827314556,
+          "penetration_max_mm": 7.146091938018799
+        },
+        "values": [
+          0.0003931965473932317,
+          0.00021101994207128882,
+          11.851749420166016,
+          0.0007032115827314556,
+          16.66666753590107
+        ]
+      },
+      {
+        "trial_number": 97,
+        "params": {
+          "spring_k": 91.50215503756303,
+          "damper_b": 0.18402445310508111,
+          "vc_proxy_mass": 0.4492542359703028,
+          "max_proxy_offset": 0.031032584947762204,
+          "deadband": 0.002270811984537759,
+          "lowpass_alpha": 0.8310118465345333,
+          "slew_rate_limit": 14.212067432562838
+        },
+        "metrics": {
+          "fs_hz": 119.99999374151263,
+          "n_frames": 314,
+          "contact_frames": 244,
+          "oscillation_peak": 0.00039314047537865814,
+          "oscillation_rms": 0.00029358993560590256,
+          "energy_injection": -0.005070327781140804,
+          "jerk_rms": 10.92485523223877,
+          "contact_rise_time_ms": 16.66666753590107,
+          "free_space_force_mean": 0.0007032115245237947,
+          "penetration_max_mm": 7.146091938018799
+        },
+        "values": [
+          0.00039314047537865814,
+          0.005070327781140804,
+          10.92485523223877,
+          0.0007032115245237947,
+          16.66666753590107
+        ]
+      },
+      {
+        "trial_number": 98,
+        "params": {
+          "spring_k": 1.4665927981189015,
+          "damper_b": 0.011657546264200604,
+          "vc_proxy_mass": 0.006815053464694637,
+          "max_proxy_offset": 0.017681642324876484,
+          "deadband": 0.0022684842227802264,
+          "lowpass_alpha": 0.5597502505532861,
+          "slew_rate_limit": 11.713932051024937
+        },
+        "metrics": {
+          "fs_hz": 119.99999374151263,
+          "n_frames": 314,
+          "contact_frames": 244,
+          "oscillation_peak": 0.0006967515457247993,
+          "oscillation_rms": 0.00025964762518165693,
+          "energy_injection": -0.0073348344303667545,
+          "jerk_rms": 7.676891326904297,
+          "contact_rise_time_ms": 33.33333507180214,
+          "free_space_force_mean": 0.00030540834995917976,
+          "penetration_max_mm": 7.146091938018799
+        },
+        "values": [
+          0.0006967515457247993,
+          0.0073348344303667545,
+          7.676891326904297,
+          0.00030540834995917976,
+          33.33333507180214
+        ]
+      }
+    ],
+    "all_trials": [
+      {
+        "number": 0,
+        "params": {
+          "spring_k": 13.39725012298356,
+          "damper_b": 0.8516764670113512,
+          "vc_proxy_mass": 0.08025955666793813,
+          "max_proxy_offset": 0.028154392783851047,
+          "deadband": 0.0021182739966945237,
+          "lowpass_alpha": 0.6635994074133234,
+          "slew_rate_limit": 21.935601842008356
+        },
+        "metrics": {
+          "fs_hz": 119.99999374151263,
+          "n_frames": 314,
+          "contact_frames": 244,
+          "oscillation_peak": 0.0004017068166974333,
+          "oscillation_rms": 0.0002936261558385019,
+          "energy_injection": -0.04329098016023636,
+          "jerk_rms": 13.639347076416016,
+          "contact_rise_time_ms": 16.66666753590107,
+          "free_space_force_mean": 0.0007032115245237947,
+          "penetration_max_mm": 7.146091938018799
+        },
+        "values": [
+          0.0004017068166974333,
+          0.04329098016023636,
+          13.639347076416016,
+          0.0007032115245237947,
+          16.66666753590107
+        ]
+      },
+      {
+        "number": 1,
+        "params": {
+          "spring_k": 104.57234595842478,
+          "damper_b": 3.989301725992403,
+          "vc_proxy_mass": 0.02923163060821707,
+          "max_proxy_offset": 0.0400028018279679,
+          "deadband": 0.0026444745987645223,
+          "lowpass_alpha": 0.5896423330392357,
+          "slew_rate_limit": 46.28727225080379
+        },
+        "metrics": {
+          "fs_hz": 119.99999374151263,
+          "n_frames": 314,
+          "contact_frames": 244,
+          "oscillation_peak": 0.0003993560233890011,
+          "oscillation_rms": 0.0002935682847606238,
+          "energy_injection": -0.04727795720100403,
+          "jerk_rms": 12.35503101348877,
+          "contact_rise_time_ms": 16.66666753590107,
+          "free_space_force_mean": 0.0007032115827314556,
+          "penetration_max_mm": 7.146091938018799
+        },
+        "values": [
+          0.0003993560233890011,
+          0.04727795720100403,
+          12.35503101348877,
+          0.0007032115827314556,
+          16.66666753590107
+        ]
+      },
+      {
+        "number": 2,
+        "params": {
+          "spring_k": 0.7652618957932136,
+          "damper_b": 0.017185388973598163,
+          "vc_proxy_mass": 0.0054879077096900795,
+          "max_proxy_offset": 0.041965752586301024,
+          "deadband": 0.0038907837547492523,
+          "lowpass_alpha": 0.8765115408344782,
+          "slew_rate_limit": 48.93305527741492
+        },
+        "metrics": {
+          "fs_hz": 119.99999374151263,
+          "n_frames": 314,
+          "contact_frames": 244,
+          "oscillation_peak": 0.0007189598263326781,
+          "oscillation_rms": 0.0003308159114052389,
+          "energy_injection": -0.015161925926804543,
+          "jerk_rms": 7.001896381378174,
+          "contact_rise_time_ms": 33.33333507180214,
+          "free_space_force_mean": 0.0004742882738355547,
+          "penetration_max_mm": 7.146091938018799
+        },
+        "values": [
+          0.0007189598263326781,
+          0.015161925926804543,
+          7.001896381378174,
+          0.0004742882738355547,
+          33.33333507180214
+        ]
+      },
+      {
+        "number": 3,
+        "params": {
+          "spring_k": 60.03831996603421,
+          "damper_b": 0.17600254847516114,
+          "vc_proxy_mass": 0.18198196783931941,
+          "max_proxy_offset": 0.007677172441708795,
+          "deadband": 0.003199605106637619,
+          "lowpass_alpha": 0.1861856230385941,
+          "slew_rate_limit": 47.23897896077423
+        },
+        "metrics": {
+          "fs_hz": 119.99999374151263,
+          "n_frames": 314,
+          "contact_frames": 244,
+          "oscillation_peak": 0.0003955113082004642,
+          "oscillation_rms": 0.0002936309771710107,
+          "energy_injection": -0.0036967338528484106,
+          "jerk_rms": 14.214234352111816,
+          "contact_rise_time_ms": 16.66666753590107,
+          "free_space_force_mean": 0.0007032115827314556,
+          "penetration_max_mm": 7.146091938018799
+        },
+        "values": [
+          0.0003955113082004642,
+          0.0036967338528484106,
+          14.214234352111816,
+          0.0007032115827314556,
+          16.66666753590107
+        ]
+      },
+      {
+        "number": 4,
+        "params": {
+          "spring_k": 11.39857717241027,
+          "damper_b": 0.13157098861922908,
+          "vc_proxy_mass": 0.01690757133910145,
+          "max_proxy_offset": 0.0391632170928424,
+          "deadband": 0.002280751661082743,
+          "lowpass_alpha": 0.5900122514252161,
+          "slew_rate_limit": 1.0376110417741216
+        },
+        "metrics": {
+          "fs_hz": 119.99999374151263,
+          "n_frames": 314,
+          "contact_frames": 244,
+          "oscillation_peak": 0.0002774538193593355,
+          "oscillation_rms": 0.00010585745257016861,
+          "energy_injection": -0.01241756696254015,
+          "jerk_rms": 10.209803581237793,
+          "contact_rise_time_ms": 58.33333358168602,
+          "free_space_force_mean": 0.00012160999904153869,
+          "penetration_max_mm": 7.146091938018799
+        },
+        "values": [
+          0.0002774538193593355,
+          0.01241756696254015,
+          10.209803581237793,
+          0.00012160999904153869,
+          58.33333358168602
+        ]
+      },
+      {
+        "number": 5,
+        "params": {
+          "spring_k": 20.23459985435792,
+          "damper_b": 0.44877431780743426,
+          "vc_proxy_mass": 0.08567182098559827,
+          "max_proxy_offset": 0.047299907768701965,
+          "deadband": 0.003409101495517417,
+          "lowpass_alpha": 0.39153250554509667,
+          "slew_rate_limit": 21.90789449458714
+        },
+        "metrics": {
+          "fs_hz": 119.99999374151263,
+          "n_frames": 314,
+          "contact_frames": 244,
+          "oscillation_peak": 0.000397734220164799,
+          "oscillation_rms": 0.0002940070586011426,
+          "energy_injection": -0.02299697883427143,
+          "jerk_rms": 13.021937370300293,
+          "contact_rise_time_ms": 16.66666753590107,
+          "free_space_force_mean": 0.0007032115245237947,
+          "penetration_max_mm": 7.146091938018799
+        },
+        "values": [
+          0.000397734220164799,
+          0.02299697883427143,
+          13.021937370300293,
+          0.0007032115245237947,
+          16.66666753590107
+        ]
+      },
+      {
+        "number": 6,
+        "params": {
+          "spring_k": 32.677455203009146,
+          "damper_b": 0.014539408591817076,
+          "vc_proxy_mass": 0.10777137782723753,
+          "max_proxy_offset": 0.034190617741671654,
+          "deadband": 0.0010519128053692046,
+          "lowpass_alpha": 0.17247998277211063,
+          "slew_rate_limit": 15.839874711116774
+        },
+        "metrics": {
+          "fs_hz": 119.99999374151263,
+          "n_frames": 314,
+          "contact_frames": 244,
+          "oscillation_peak": 0.0003931965473932317,
+          "oscillation_rms": 0.0002935888516533966,
+          "energy_injection": -0.00021101994207128882,
+          "jerk_rms": 11.851749420166016,
+          "contact_rise_time_ms": 16.66666753590107,
+          "free_space_force_mean": 0.0007032115827314556,
+          "penetration_max_mm": 7.146091938018799
+        },
+        "values": [
+          0.0003931965473932317,
+          0.00021101994207128882,
+          11.851749420166016,
+          0.0007032115827314556,
+          16.66666753590107
+        ]
+      },
+      {
+        "number": 7,
+        "params": {
+          "spring_k": 4.419440078285006,
+          "damper_b": 0.34589475764299155,
+          "vc_proxy_mass": 0.03768539149132193,
+          "max_proxy_offset": 0.04944194422684286,
+          "deadband": 0.0005102240537401404,
+          "lowpass_alpha": 0.24843291829009295,
+          "slew_rate_limit": 8.149344942461312
+        },
+        "metrics": {
+          "fs_hz": 119.99999374151263,
+          "n_frames": 314,
+          "contact_frames": 244,
+          "oscillation_peak": 0.000395419349110574,
+          "oscillation_rms": 0.0002936738039277217,
+          "energy_injection": -0.04253368079662323,
+          "jerk_rms": 8.76158332824707,
+          "contact_rise_time_ms": 16.66666753590107,
+          "free_space_force_mean": 0.0007032115245237947,
+          "penetration_max_mm": 7.146091938018799
+        },
+        "values": [
+          0.000395419349110574,
+          0.04253368079662323,
+          8.76158332824707,
+          0.0007032115245237947,
+          16.66666753590107
+        ]
+      },
+      {
+        "number": 8,
+        "params": {
+          "spring_k": 25.02632314891454,
+          "damper_b": 0.048264347321622006,
+          "vc_proxy_mass": 0.04281456639409116,
+          "max_proxy_offset": 0.013732428416076931,
+          "deadband": 0.0007948479182275986,
+          "lowpass_alpha": 0.15485638410608987,
+          "slew_rate_limit": 32.85084651431715
+        },
+        "metrics": {
+          "fs_hz": 119.99999374151263,
+          "n_frames": 314,
+          "contact_frames": 244,
+          "oscillation_peak": 0.0004134421688552837,
+          "oscillation_rms": 0.0002942412666520326,
+          "energy_injection": -0.002554055768996477,
+          "jerk_rms": 22.068099975585938,
+          "contact_rise_time_ms": 16.66666753590107,
+          "free_space_force_mean": 0.0007032115245237947,
+          "penetration_max_mm": 7.146091938018799
+        },
+        "values": [
+          0.0004134421688552837,
+          0.002554055768996477,
+          22.068099975585938,
+          0.0007032115245237947,
+          16.66666753590107
+        ]
+      },
+      {
+        "number": 9,
+        "params": {
+          "spring_k": 1.1442747994941822,
+          "damper_b": 0.03392890920541565,
+          "vc_proxy_mass": 0.027316203889747776,
+          "max_proxy_offset": 0.04140767503270089,
+          "deadband": 0.00048550637896530637,
+          "lowpass_alpha": 0.8460476621238637,
+          "slew_rate_limit": 4.8953105539087565
+        },
+        "metrics": {
+          "fs_hz": 119.99999374151263,
+          "n_frames": 314,
+          "contact_frames": 244,
+          "oscillation_peak": 0.00029581015067943695,
+          "oscillation_rms": 0.0002432969450560932,
+          "energy_injection": -0.022532060742378235,
+          "jerk_rms": 6.669430732727051,
+          "contact_rise_time_ms": 25.00000223517418,
+          "free_space_force_mean": 0.0005737398169003427,
+          "penetration_max_mm": 7.146091938018799
+        },
+        "values": [
+          0.00029581015067943695,
+          0.022532060742378235,
+          6.669430732727051,
+          0.0005737398169003427,
+          25.00000223517418
+        ]
+      },
+      {
+        "number": 10,
+        "params": {
+          "spring_k": 173.69051841156596,
+          "damper_b": 0.18402445310508111,
+          "vc_proxy_mass": 0.4492542359703028,
+          "max_proxy_offset": 0.031032584947762204,
+          "deadband": 0.0036963178969915086,
+          "lowpass_alpha": 0.08722840264160464,
+          "slew_rate_limit": 14.212067432562838
+        },
+        "metrics": {
+          "fs_hz": 119.99999374151263,
+          "n_frames": 314,
+          "contact_frames": 244,
+          "oscillation_peak": 0.0004024237987114452,
+          "oscillation_rms": 0.0002937354876170359,
+          "energy_injection": -0.002124626189470291,
+          "jerk_rms": 18.933794021606445,
+          "contact_rise_time_ms": 16.66666753590107,
+          "free_space_force_mean": 0.0007032115827314556,
+          "penetration_max_mm": 7.146091938018799
+        },
+        "values": [
+          0.0004024237987114452,
+          0.002124626189470291,
+          18.933794021606445,
+          0.0007032115827314556,
+          16.66666753590107
+        ]
+      },
+      {
+        "number": 11,
+        "params": {
+          "spring_k": 1.0273742285921992,
+          "damper_b": 0.06299027584324217,
+          "vc_proxy_mass": 0.008638243504108948,
+          "max_proxy_offset": 0.01726319261091085,
+          "deadband": 0.00207131497257335,
+          "lowpass_alpha": 0.11094012153134514,
+          "slew_rate_limit": 34.654358756563994
+        },
+        "metrics": {
+          "fs_hz": 119.99999374151263,
+          "n_frames": 314,
+          "contact_frames": 244,
+          "oscillation_peak": 0.00027481818031315343,
+          "oscillation_rms": 0.00011286387488397765,
+          "energy_injection": -0.03543850779533386,
+          "jerk_rms": 3.863283157348633,
+          "contact_rise_time_ms": 41.6666679084301,
+          "free_space_force_mean": 0.0001825421495595947,
+          "penetration_max_mm": 7.146091938018799
+        },
+        "values": [
+          0.00027481818031315343,
+          0.03543850779533386,
+          3.863283157348633,
+          0.0001825421495595947,
+          41.6666679084301
+        ]
+      },
+      {
+        "number": 12,
+        "params": {
+          "spring_k": 14.903936082235903,
+          "damper_b": 0.052032929232026,
+          "vc_proxy_mass": 0.05565012078365318,
+          "max_proxy_offset": 0.0065091445164052,
+          "deadband": 0.0028797324777808963,
+          "lowpass_alpha": 0.9328313876974034,
+          "slew_rate_limit": 15.996590727321049
+        },
+        "metrics": {
+          "fs_hz": 119.99999374151263,
+          "n_frames": 314,
+          "contact_frames": 244,
+          "oscillation_peak": 0.0003946726476316145,
+          "oscillation_rms": 0.00029360664119973845,
+          "energy_injection": -0.0038780178874731064,
+          "jerk_rms": 14.209080696105957,
+          "contact_rise_time_ms": 16.66666753590107,
+          "free_space_force_mean": 0.0007032115827314556,
+          "penetration_max_mm": 7.146091938018799
+        },
+        "values": [
+          0.0003946726476316145,
+          0.0038780178874731064,
+          14.209080696105957,
+          0.0007032115827314556,
+          16.66666753590107
+        ]
+      },
+      {
+        "number": 13,
+        "params": {
+          "spring_k": 27.265398644105638,
+          "damper_b": 0.022683939340690858,
+          "vc_proxy_mass": 0.13540179213578835,
+          "max_proxy_offset": 0.01589149246146565,
+          "deadband": 0.0009159568100355842,
+          "lowpass_alpha": 0.607187288069579,
+          "slew_rate_limit": 1.1033665547559284
+        },
+        "metrics": {
+          "fs_hz": 119.99999374151263,
+          "n_frames": 314,
+          "contact_frames": 244,
+          "oscillation_peak": 0.00013688384957283875,
+          "oscillation_rms": 6.420510945352332e-05,
+          "energy_injection": -0.004213385283946991,
+          "jerk_rms": 5.740384101867676,
+          "contact_rise_time_ms": 50.00000074505806,
+          "free_space_force_mean": 0.00012931668607052416,
+          "penetration_max_mm": 7.146091938018799
+        },
+        "values": [
+          0.00013688384957283875,
+          0.004213385283946991,
+          5.740384101867676,
+          0.00012931668607052416,
+          50.00000074505806
+        ]
+      },
+      {
+        "number": 14,
+        "params": {
+          "spring_k": 71.76648728412191,
+          "damper_b": 0.010296104680709295,
+          "vc_proxy_mass": 0.1133973950010555,
+          "max_proxy_offset": 0.014960382713223913,
+          "deadband": 0.0036759701106129743,
+          "lowpass_alpha": 0.9640791178615663,
+          "slew_rate_limit": 12.512781861645905
+        },
+        "metrics": {
+          "fs_hz": 119.99999374151263,
+          "n_frames": 314,
+          "contact_frames": 244,
+          "oscillation_peak": 0.0004013244322804975,
+          "oscillation_rms": 0.0002938932651806702,
+          "energy_injection": -0.0031062483321875334,
+          "jerk_rms": 21.958208084106445,
+          "contact_rise_time_ms": 16.66666753590107,
+          "free_space_force_mean": 0.0007032115827314556,
+          "penetration_max_mm": 7.146091938018799
+        },
+        "values": [
+          0.0004013244322804975,
+          0.0031062483321875334,
+          21.958208084106445,
+          0.0007032115827314556,
+          16.66666753590107
+        ]
+      },
+      {
+        "number": 15,
+        "params": {
+          "spring_k": 15.782142229002085,
+          "damper_b": 0.3961899126454628,
+          "vc_proxy_mass": 0.06973869494036398,
+          "max_proxy_offset": 0.01270791836674968,
+          "deadband": 0.004763745057584925,
+          "lowpass_alpha": 0.47476910968674596,
+          "slew_rate_limit": 42.33579275630928
+        },
+        "metrics": {
+          "fs_hz": 119.99999374151263,
+          "n_frames": 314,
+          "contact_frames": 244,
+          "oscillation_peak": 0.00039401403358382223,
+          "oscillation_rms": 0.00029413229357328077,
+          "energy_injection": -0.025966519489884377,
+          "jerk_rms": 13.33925724029541,
+          "contact_rise_time_ms": 16.66666753590107,
+          "free_space_force_mean": 0.0007032115245237947,
+          "penetration_max_mm": 7.146091938018799
+        },
+        "values": [
+          0.00039401403358382223,
+          0.025966519489884377,
+          13.33925724029541,
+          0.0007032115245237947,
+          16.66666753590107
+        ]
+      },
+      {
+        "number": 16,
+        "params": {
+          "spring_k": 33.04129355086612,
+          "damper_b": 0.06349995368627394,
+          "vc_proxy_mass": 0.21211219770832282,
+          "max_proxy_offset": 0.02103227556065526,
+          "deadband": 0.0044055159855558084,
+          "lowpass_alpha": 0.6022092290040658,
+          "slew_rate_limit": 44.09859455655715
+        },
+        "metrics": {
+          "fs_hz": 119.99999374151263,
+          "n_frames": 314,
+          "contact_frames": 244,
+          "oscillation_peak": 0.00039254682689010177,
+          "oscillation_rms": 0.00029358831834948366,
+          "energy_injection": -0.005429254844784737,
+          "jerk_rms": 9.639874458312988,
+          "contact_rise_time_ms": 16.66666753590107,
+          "free_space_force_mean": 0.0007032115827314556,
+          "penetration_max_mm": 7.146091938018799
+        },
+        "values": [
+          0.00039254682689010177,
+          0.005429254844784737,
+          9.639874458312988,
+          0.0007032115827314556,
+          16.66666753590107
+        ]
+      },
+      {
+        "number": 17,
+        "params": {
+          "spring_k": 31.69412362657665,
+          "damper_b": 0.9066497512846361,
+          "vc_proxy_mass": 0.05030588204794855,
+          "max_proxy_offset": 0.04789201446671475,
+          "deadband": 0.003219950996148187,
+          "lowpass_alpha": 0.45266229613027065,
+          "slew_rate_limit": 30.359021384983425
+        },
+        "metrics": {
+          "fs_hz": 119.99999374151263,
+          "n_frames": 314,
+          "contact_frames": 244,
+          "oscillation_peak": 0.0004063521729670251,
+          "oscillation_rms": 0.00029382679996211344,
+          "energy_injection": -0.03991489112377167,
+          "jerk_rms": 15.875624656677246,
+          "contact_rise_time_ms": 16.66666753590107,
+          "free_space_force_mean": 0.0007032115245237947,
+          "penetration_max_mm": 7.146091938018799
+        },
+        "values": [
+          0.0004063521729670251,
+          0.03991489112377167,
+          15.875624656677246,
+          0.0007032115245237947,
+          16.66666753590107
+        ]
+      },
+      {
+        "number": 18,
+        "params": {
+          "spring_k": 0.5609341200933244,
+          "damper_b": 0.06515404512027279,
+          "vc_proxy_mass": 0.10454832501776948,
+          "max_proxy_offset": 0.015923725146101315,
+          "deadband": 0.0030900771449942077,
+          "lowpass_alpha": 0.4573302658984778,
+          "slew_rate_limit": 6.860155804700266
+        },
+        "metrics": {
+          "fs_hz": 119.99999374151263,
+          "n_frames": 314,
+          "contact_frames": 244,
+          "oscillation_peak": 0.00041181743452276464,
+          "oscillation_rms": 0.00030208754681747106,
+          "energy_injection": -0.04268232733011246,
+          "jerk_rms": 7.045959949493408,
+          "contact_rise_time_ms": 16.66666753590107,
+          "free_space_force_mean": 0.0007032115827314556,
+          "penetration_max_mm": 7.146091938018799
+        },
+        "values": [
+          0.00041181743452276464,
+          0.04268232733011246,
+          7.045959949493408,
+          0.0007032115827314556,
+          16.66666753590107
+        ]
+      },
+      {
+        "number": 19,
+        "params": {
+          "spring_k": 2.9861973850577526,
+          "damper_b": 0.34539671082051826,
+          "vc_proxy_mass": 0.07598284083036189,
+          "max_proxy_offset": 0.029567611944779783,
+          "deadband": 0.003266004099285668,
+          "lowpass_alpha": 0.6694981065016045,
+          "slew_rate_limit": 21.627779928155302
+        },
+        "metrics": {
+          "fs_hz": 119.99999374151263,
+          "n_frames": 314,
+          "contact_frames": 244,
+          "oscillation_peak": 0.0003950681494819699,
+          "oscillation_rms": 0.00029361436087814175,
+          "energy_injection": -0.04342953860759735,
+          "jerk_rms": 10.765471458435059,
+          "contact_rise_time_ms": 16.66666753590107,
+          "free_space_force_mean": 0.0007032115245237947,
+          "penetration_max_mm": 7.146091938018799
+        },
+        "values": [
+          0.0003950681494819699,
+          0.04342953860759735,
+          10.765471458435059,
+          0.0007032115245237947,
+          16.66666753590107
+        ]
+      },
+      {
+        "number": 20,
+        "params": {
+          "spring_k": 107.60638254616775,
+          "damper_b": 0.0981834892451857,
+          "vc_proxy_mass": 0.03721344316437966,
+          "max_proxy_offset": 0.044812321040752265,
+          "deadband": 0.004030969945230429,
+          "lowpass_alpha": 0.718694154363348,
+          "slew_rate_limit": 5.101321676883825
+        },
+        "metrics": {
+          "fs_hz": 119.99999374151263,
+          "n_frames": 314,
+          "contact_frames": 244,
+          "oscillation_peak": 0.001842947762496537,
+          "oscillation_rms": 0.0006868917749082244,
+          "energy_injection": -0.0005466750590130687,
+          "jerk_rms": 31.244821548461914,
+          "contact_rise_time_ms": 25.00000223517418,
+          "free_space_force_mean": 0.0005978847621008754,
+          "penetration_max_mm": 7.146091938018799
+        },
+        "values": [
+          0.001842947762496537,
+          0.0005466750590130687,
+          31.244821548461914,
+          0.0005978847621008754,
+          25.00000223517418
+        ]
+      },
+      {
+        "number": 21,
+        "params": {
+          "spring_k": 123.45791161863758,
+          "damper_b": 0.8466732588856246,
+          "vc_proxy_mass": 0.4973521703632787,
+          "max_proxy_offset": 0.0091735186235837,
+          "deadband": 0.0043406302868410716,
+          "lowpass_alpha": 0.20436828794255607,
+          "slew_rate_limit": 30.816422257763826
+        },
+        "metrics": {
+          "fs_hz": 119.99999374151263,
+          "n_frames": 314,
+          "contact_frames": 244,
+          "oscillation_peak": 0.00039680474813995304,
+          "oscillation_rms": 0.00029366414563811096,
+          "energy_injection": -0.00358748622238636,
+          "jerk_rms": 15.00977897644043,
+          "contact_rise_time_ms": 16.66666753590107,
+          "free_space_force_mean": 0.0007032115827314556,
+          "penetration_max_mm": 7.146091938018799
+        },
+        "values": [
+          0.00039680474813995304,
+          0.00358748622238636,
+          15.00977897644043,
+          0.0007032115827314556,
+          16.66666753590107
+        ]
+      },
+      {
+        "number": 22,
+        "params": {
+          "spring_k": 1.0499219802721504,
+          "damper_b": 1.9442350777316753,
+          "vc_proxy_mass": 0.20587704295710252,
+          "max_proxy_offset": 0.02931683545350048,
+          "deadband": 0.0020359164861299983,
+          "lowpass_alpha": 0.11570864568238115,
+          "slew_rate_limit": 34.90169577991372
+        },
+        "metrics": {
+          "fs_hz": 119.99999374151263,
+          "n_frames": 314,
+          "contact_frames": 244,
+          "oscillation_peak": 0.0003969149368094701,
+          "oscillation_rms": 0.00029400040644950203,
+          "energy_injection": -0.04417344927787781,
+          "jerk_rms": 6.873175144195557,
+          "contact_rise_time_ms": 16.66666753590107,
+          "free_space_force_mean": 0.0007032115827314556,
+          "penetration_max_mm": 7.146091938018799
+        },
+        "values": [
+          0.0003969149368094701,
+          0.04417344927787781,
+          6.873175144195557,
+          0.0007032115827314556,
+          16.66666753590107
+        ]
+      },
+      {
+        "number": 23,
+        "params": {
+          "spring_k": 7.570338052382357,
+          "damper_b": 0.8888048267731737,
+          "vc_proxy_mass": 0.27023068131481043,
+          "max_proxy_offset": 0.048825032240138524,
+          "deadband": 0.004279016711963055,
+          "lowpass_alpha": 0.06112837997575188,
+          "slew_rate_limit": 18.062905417470358
+        },
+        "metrics": {
+          "fs_hz": 119.99999374151263,
+          "n_frames": 314,
+          "contact_frames": 244,
+          "oscillation_peak": 0.0003924652849152692,
+          "oscillation_rms": 0.0002935807293684105,
+          "energy_injection": -0.039922844618558884,
+          "jerk_rms": 6.694981098175049,
+          "contact_rise_time_ms": 16.66666753590107,
+          "free_space_force_mean": 0.0007032115827314556,
+          "penetration_max_mm": 7.146091938018799
+        },
+        "values": [
+          0.0003924652849152692,
+          0.039922844618558884,
+          6.694981098175049,
+          0.0007032115827314556,
+          16.66666753590107
+        ]
+      },
+      {
+        "number": 24,
+        "params": {
+          "spring_k": 39.66881624109882,
+          "damper_b": 0.029055165314863966,
+          "vc_proxy_mass": 0.0550862510133805,
+          "max_proxy_offset": 0.004608223440284174,
+          "deadband": 0.0009999826244820004,
+          "lowpass_alpha": 0.06759570473758328,
+          "slew_rate_limit": 39.70551539753529
+        },
+        "metrics": {
+          "fs_hz": 119.99999374151263,
+          "n_frames": 314,
+          "contact_frames": 244,
+          "oscillation_peak": 0.0003256645765271871,
+          "oscillation_rms": 0.00023766944156119896,
+          "energy_injection": 0.0014110554475337267,
+          "jerk_rms": 21.270160675048828,
+          "contact_rise_time_ms": 25.00000223517418,
+          "free_space_force_mean": 0.0005366962286643684,
+          "penetration_max_mm": 7.146091938018799
+        },
+        "values": [
+          0.0003256645765271871,
+          0.0014110554475337267,
+          21.270160675048828,
+          0.0005366962286643684,
+          25.00000223517418
+        ]
+      },
+      {
+        "number": 25,
+        "params": {
+          "spring_k": 1.9126498740721087,
+          "damper_b": 0.0855251465722774,
+          "vc_proxy_mass": 0.35903153120109205,
+          "max_proxy_offset": 0.035811891292329576,
+          "deadband": 0.00015919464765653925,
+          "lowpass_alpha": 0.20645944867301713,
+          "slew_rate_limit": 31.1117722348382
+        },
+        "metrics": {
+          "fs_hz": 119.99999374151263,
+          "n_frames": 314,
+          "contact_frames": 244,
+          "oscillation_peak": 0.00024291653217990036,
+          "oscillation_rms": 0.0002131332214001982,
+          "energy_injection": -0.04027823731303215,
+          "jerk_rms": 4.763864994049072,
+          "contact_rise_time_ms": 25.00000223517418,
+          "free_space_force_mean": 0.00048536184476688504,
+          "penetration_max_mm": 7.146091938018799
+        },
+        "values": [
+          0.00024291653217990036,
+          0.04027823731303215,
+          4.763864994049072,
+          0.00048536184476688504,
+          25.00000223517418
+        ]
+      },
+      {
+        "number": 26,
+        "params": {
+          "spring_k": 15.883763812554653,
+          "damper_b": 0.04385969316856726,
+          "vc_proxy_mass": 0.3693158954393565,
+          "max_proxy_offset": 0.03147036588636301,
+          "deadband": 0.0026781640151247914,
+          "lowpass_alpha": 0.6104144775368424,
+          "slew_rate_limit": 36.533089272886805
+        },
+        "metrics": {
+          "fs_hz": 119.99999374151263,
+          "n_frames": 314,
+          "contact_frames": 244,
+          "oscillation_peak": 0.0003924326622985008,
+          "oscillation_rms": 0.0002935805687973118,
+          "energy_injection": -0.015069250017404556,
+          "jerk_rms": 6.681960105895996,
+          "contact_rise_time_ms": 16.66666753590107,
+          "free_space_force_mean": 0.0007032115827314556,
+          "penetration_max_mm": 7.146091938018799
+        },
+        "values": [
+          0.0003924326622985008,
+          0.015069250017404556,
+          6.681960105895996,
+          0.0007032115827314556,
+          16.66666753590107
+        ]
+      },
+      {
+        "number": 27,
+        "params": {
+          "spring_k": 3.2409295943970613,
+          "damper_b": 0.11879186536249428,
+          "vc_proxy_mass": 0.01314188015148118,
+          "max_proxy_offset": 0.010937264282256135,
+          "deadband": 0.004721861949919668,
+          "lowpass_alpha": 0.7525732552968232,
+          "slew_rate_limit": 24.573894550016597
+        },
+        "metrics": {
+          "fs_hz": 119.99999374151263,
+          "n_frames": 314,
+          "contact_frames": 244,
+          "oscillation_peak": 0.001435470001273824,
+          "oscillation_rms": 0.000629068646276827,
+          "energy_injection": -0.036236830055713654,
+          "jerk_rms": 14.734883308410645,
+          "contact_rise_time_ms": 16.66666753590107,
+          "free_space_force_mean": 0.0007032115827314556,
+          "penetration_max_mm": 7.146091938018799
+        },
+        "values": [
+          0.001435470001273824,
+          0.036236830055713654,
+          14.734883308410645,
+          0.0007032115827314556,
+          16.66666753590107
+        ]
+      },
+      {
+        "number": 28,
+        "params": {
+          "spring_k": 1.953064154255094,
+          "damper_b": 0.04858481067429735,
+          "vc_proxy_mass": 0.006531731516589177,
+          "max_proxy_offset": 0.022851998026789798,
+          "deadband": 0.0015589794099705129,
+          "lowpass_alpha": 0.7115263143746865,
+          "slew_rate_limit": 18.9498167806948
+        },
+        "metrics": {
+          "fs_hz": 119.99999374151263,
+          "n_frames": 314,
+          "contact_frames": 244,
+          "oscillation_peak": 0.000956783470670714,
+          "oscillation_rms": 0.0004726842862603993,
+          "energy_injection": -0.027276266366243362,
+          "jerk_rms": 12.200682640075684,
+          "contact_rise_time_ms": 16.66666753590107,
+          "free_space_force_mean": 0.0007032115827314556,
+          "penetration_max_mm": 7.146091938018799
+        },
+        "values": [
+          0.000956783470670714,
+          0.027276266366243362,
+          12.200682640075684,
+          0.0007032115827314556,
+          16.66666753590107
+        ]
+      },
+      {
+        "number": 29,
+        "params": {
+          "spring_k": 1.4665927981189015,
+          "damper_b": 0.011657546264200604,
+          "vc_proxy_mass": 0.006815053464694637,
+          "max_proxy_offset": 0.03461085312793123,
+          "deadband": 0.0022684842227802264,
+          "lowpass_alpha": 0.5597502505532861,
+          "slew_rate_limit": 44.84389752271307
+        },
+        "metrics": {
+          "fs_hz": 119.99999374151263,
+          "n_frames": 314,
+          "contact_frames": 244,
+          "oscillation_peak": 0.0006967515457247993,
+          "oscillation_rms": 0.00025964762518165693,
+          "energy_injection": -0.0073348344303667545,
+          "jerk_rms": 7.676891326904297,
+          "contact_rise_time_ms": 33.33333507180214,
+          "free_space_force_mean": 0.00030540834995917976,
+          "penetration_max_mm": 7.146091938018799
+        },
+        "values": [
+          0.0006967515457247993,
+          0.0073348344303667545,
+          7.676891326904297,
+          0.00030540834995917976,
+          33.33333507180214
+        ]
+      },
+      {
+        "number": 30,
+        "params": {
+          "spring_k": 188.75191096346757,
+          "damper_b": 0.0384944797832454,
+          "vc_proxy_mass": 0.10595620881111734,
+          "max_proxy_offset": 0.01463947408338323,
+          "deadband": 0.0001032549973286434,
+          "lowpass_alpha": 0.7704597211443344,
+          "slew_rate_limit": 16.068855826041144
+        },
+        "metrics": {
+          "fs_hz": 119.99999374151263,
+          "n_frames": 314,
+          "contact_frames": 244,
+          "oscillation_peak": 0.00041422063942944947,
+          "oscillation_rms": 0.00029413844424967746,
+          "energy_injection": 2.7401605620980263e-05,
+          "jerk_rms": 31.096084594726562,
+          "contact_rise_time_ms": 16.66666753590107,
+          "free_space_force_mean": 0.0007032115827314556,
+          "penetration_max_mm": 7.146091938018799
+        },
+        "values": [
+          0.00041422063942944947,
+          2.7401605620980263e-05,
+          31.096084594726562,
+          0.0007032115827314556,
+          16.66666753590107
+        ]
+      },
+      {
+        "number": 31,
+        "params": {
+          "spring_k": 4.974690444516563,
+          "damper_b": 0.3871241301432137,
+          "vc_proxy_mass": 0.22965024591565808,
+          "max_proxy_offset": 0.03219112849237514,
+          "deadband": 0.0043632532772369765,
+          "lowpass_alpha": 0.30986493307485397,
+          "slew_rate_limit": 39.92253701223693
+        },
+        "metrics": {
+          "fs_hz": 119.99999374151263,
+          "n_frames": 314,
+          "contact_frames": 244,
+          "oscillation_peak": 0.00039257093634012606,
+          "oscillation_rms": 0.0002935817711745315,
+          "energy_injection": -0.03241676092147827,
+          "jerk_rms": 7.462948799133301,
+          "contact_rise_time_ms": 16.66666753590107,
+          "free_space_force_mean": 0.0007032115245237947,
+          "penetration_max_mm": 7.146091938018799
+        },
+        "values": [
+          0.00039257093634012606,
+          0.03241676092147827,
+          7.462948799133301,
+          0.0007032115245237947,
+          16.66666753590107
+        ]
+      },
+      {
+        "number": 32,
+        "params": {
+          "spring_k": 1.520568074738844,
+          "damper_b": 3.7286884936277027,
+          "vc_proxy_mass": 0.11856228402394571,
+          "max_proxy_offset": 0.012344368501450806,
+          "deadband": 0.004736852952444621,
+          "lowpass_alpha": 0.7443130164316499,
+          "slew_rate_limit": 12.771687965491788
+        },
+        "metrics": {
+          "fs_hz": 119.99999374151263,
+          "n_frames": 314,
+          "contact_frames": 244,
+          "oscillation_peak": 0.0004208775068996376,
+          "oscillation_rms": 0.00032277004923947936,
+          "energy_injection": -0.047856371849775314,
+          "jerk_rms": 13.430397987365723,
+          "contact_rise_time_ms": 16.66666753590107,
+          "free_space_force_mean": 0.0007032115827314556,
+          "penetration_max_mm": 7.146091938018799
+        },
+        "values": [
+          0.0004208775068996376,
+          0.047856371849775314,
+          13.430397987365723,
+          0.0007032115827314556,
+          16.66666753590107
+        ]
+      },
+      {
+        "number": 33,
+        "params": {
+          "spring_k": 1.7948186196948257,
+          "damper_b": 0.2503849281689215,
+          "vc_proxy_mass": 0.005627240030763936,
+          "max_proxy_offset": 0.011958563621173252,
+          "deadband": 0.0021234273437575313,
+          "lowpass_alpha": 0.40546148131751425,
+          "slew_rate_limit": 23.232413675804054
+        },
+        "metrics": {
+          "fs_hz": 119.99999374151263,
+          "n_frames": 314,
+          "contact_frames": 244,
+          "oscillation_peak": 0.0009233795971272159,
+          "oscillation_rms": 0.00042355784970386583,
+          "energy_injection": -0.046369750052690506,
+          "jerk_rms": 10.701020240783691,
+          "contact_rise_time_ms": 16.66666753590107,
+          "free_space_force_mean": 0.0007032115827314556,
+          "penetration_max_mm": 7.146091938018799
+        },
+        "values": [
+          0.0009233795971272159,
+          0.046369750052690506,
+          10.701020240783691,
+          0.0007032115827314556,
+          16.66666753590107
+        ]
+      },
+      {
+        "number": 34,
+        "params": {
+          "spring_k": 2.6386181984786625,
+          "damper_b": 0.38345406854475694,
+          "vc_proxy_mass": 0.2671045070071753,
+          "max_proxy_offset": 0.007641529086177588,
+          "deadband": 0.002586895535770571,
+          "lowpass_alpha": 0.17546470102789563,
+          "slew_rate_limit": 35.871298091510425
+        },
+        "metrics": {
+          "fs_hz": 119.99999374151263,
+          "n_frames": 314,
+          "contact_frames": 244,
+          "oscillation_peak": 0.00039246171854016756,
+          "oscillation_rms": 0.00029358071757405073,
+          "energy_injection": -0.04002424329519272,
+          "jerk_rms": 6.9779510498046875,
+          "contact_rise_time_ms": 16.66666753590107,
+          "free_space_force_mean": 0.0007032115827314556,
+          "penetration_max_mm": 7.146091938018799
+        },
+        "values": [
+          0.00039246171854016756,
+          0.04002424329519272,
+          6.9779510498046875,
+          0.0007032115827314556,
+          16.66666753590107
+        ]
+      },
+      {
+        "number": 35,
+        "params": {
+          "spring_k": 5.364646518584311,
+          "damper_b": 0.33578025958563595,
+          "vc_proxy_mass": 0.011628660107311195,
+          "max_proxy_offset": 0.008952692448482107,
+          "deadband": 0.002440281403244773,
+          "lowpass_alpha": 0.3878321009574578,
+          "slew_rate_limit": 47.02755406811537
+        },
+        "metrics": {
+          "fs_hz": 119.99999374151263,
+          "n_frames": 314,
+          "contact_frames": 244,
+          "oscillation_peak": 0.0006947256591859716,
+          "oscillation_rms": 0.00037512358287913015,
+          "energy_injection": -0.04519695043563843,
+          "jerk_rms": 12.262397766113281,
+          "contact_rise_time_ms": 16.66666753590107,
+          "free_space_force_mean": 0.0007032115827314556,
+          "penetration_max_mm": 7.146091938018799
+        },
+        "values": [
+          0.0006947256591859716,
+          0.04519695043563843,
+          12.262397766113281,
+          0.0007032115827314556,
+          16.66666753590107
+        ]
+      },
+      {
+        "number": 36,
+        "params": {
+          "spring_k": 49.022135677868306,
+          "damper_b": 1.0486260766708937,
+          "vc_proxy_mass": 0.3209293849662294,
+          "max_proxy_offset": 0.00600427690121689,
+          "deadband": 0.002760962349612033,
+          "lowpass_alpha": 0.6052522655079804,
+          "slew_rate_limit": 48.10062528950673
+        },
+        "metrics": {
+          "fs_hz": 119.99999374151263,
+          "n_frames": 314,
+          "contact_frames": 244,
+          "oscillation_peak": 0.00039941276634667164,
+          "oscillation_rms": 0.0002936509614190679,
+          "energy_injection": -0.015164232812821865,
+          "jerk_rms": 12.511835098266602,
+          "contact_rise_time_ms": 16.66666753590107,
+          "free_space_force_mean": 0.0007032115827314556,
+          "penetration_max_mm": 7.146091938018799
+        },
+        "values": [
+          0.00039941276634667164,
+          0.015164232812821865,
+          12.511835098266602,
+          0.0007032115827314556,
+          16.66666753590107
+        ]
+      },
+      {
+        "number": 37,
+        "params": {
+          "spring_k": 2.878428163925364,
+          "damper_b": 0.04466729502866204,
+          "vc_proxy_mass": 0.007935200212193082,
+          "max_proxy_offset": 0.0027886222203907618,
+          "deadband": 0.004647646583960953,
+          "lowpass_alpha": 0.6864207192613646,
+          "slew_rate_limit": 39.279130309954574
+        },
+        "metrics": {
+          "fs_hz": 119.99999374151263,
+          "n_frames": 314,
+          "contact_frames": 244,
+          "oscillation_peak": 0.0014256468657732964,
+          "oscillation_rms": 0.0006383663328979999,
+          "energy_injection": -0.018455123528838158,
+          "jerk_rms": 13.448297500610352,
+          "contact_rise_time_ms": 16.66666753590107,
+          "free_space_force_mean": 0.0007032115827314556,
+          "penetration_max_mm": 7.146091938018799
+        },
+        "values": [
+          0.0014256468657732964,
+          0.018455123528838158,
+          13.448297500610352,
+          0.0007032115827314556,
+          16.66666753590107
+        ]
+      },
+      {
+        "number": 38,
+        "params": {
+          "spring_k": 2.704261223714262,
+          "damper_b": 0.38256342662924536,
+          "vc_proxy_mass": 0.0067124418523909005,
+          "max_proxy_offset": 0.0253101246048619,
+          "deadband": 0.004887475698722234,
+          "lowpass_alpha": 0.8826799830507612,
+          "slew_rate_limit": 16.9741316966586
+        },
+        "metrics": {
+          "fs_hz": 119.99999374151263,
+          "n_frames": 314,
+          "contact_frames": 244,
+          "oscillation_peak": 0.0009309945013139185,
+          "oscillation_rms": 0.0004950941116961168,
+          "energy_injection": -0.04778331145644188,
+          "jerk_rms": 15.407613754272461,
+          "contact_rise_time_ms": 16.66666753590107,
+          "free_space_force_mean": 0.0007032115827314556,
+          "penetration_max_mm": 7.146091938018799
+        },
+        "values": [
+          0.0009309945013139185,
+          0.04778331145644188,
+          15.407613754272461,
+          0.0007032115827314556,
+          16.66666753590107
+        ]
+      },
+      {
+        "number": 39,
+        "params": {
+          "spring_k": 158.86683092472606,
+          "damper_b": 0.04220420654687052,
+          "vc_proxy_mass": 0.39592018995315326,
+          "max_proxy_offset": 0.047186129825911936,
+          "deadband": 0.003996012936761958,
+          "lowpass_alpha": 0.6489255400234516,
+          "slew_rate_limit": 43.72696953458485
+        },
+        "metrics": {
+          "fs_hz": 119.99999374151263,
+          "n_frames": 314,
+          "contact_frames": 244,
+          "oscillation_peak": 0.0004148827212924966,
+          "oscillation_rms": 0.00029427609512470065,
+          "energy_injection": -0.007912501692771912,
+          "jerk_rms": 21.4304141998291,
+          "contact_rise_time_ms": 16.66666753590107,
+          "free_space_force_mean": 0.0007032115827314556,
+          "penetration_max_mm": 7.146091938018799
+        },
+        "values": [
+          0.0004148827212924966,
+          0.007912501692771912,
+          21.4304141998291,
+          0.0007032115827314556,
+          16.66666753590107
+        ]
+      },
+      {
+        "number": 40,
+        "params": {
+          "spring_k": 2.893519165508684,
+          "damper_b": 1.9555692117463708,
+          "vc_proxy_mass": 0.08604455406887793,
+          "max_proxy_offset": 0.0026353691724271757,
+          "deadband": 0.001736167589661098,
+          "lowpass_alpha": 0.19073381790075677,
+          "slew_rate_limit": 49.09328655193083
+        },
+        "metrics": {
+          "fs_hz": 119.99999374151263,
+          "n_frames": 314,
+          "contact_frames": 244,
+          "oscillation_peak": 0.0004057279269360226,
+          "oscillation_rms": 0.000294726881876538,
+          "energy_injection": -0.04509421065449715,
+          "jerk_rms": 7.728639602661133,
+          "contact_rise_time_ms": 16.66666753590107,
+          "free_space_force_mean": 0.0007032115245237947,
+          "penetration_max_mm": 7.146091938018799
+        },
+        "values": [
+          0.0004057279269360226,
+          0.04509421065449715,
+          7.728639602661133,
+          0.0007032115245237947,
+          16.66666753590107
+        ]
+      },
+      {
+        "number": 41,
+        "params": {
+          "spring_k": 8.784524154213559,
+          "damper_b": 0.22001099032059526,
+          "vc_proxy_mass": 0.09504188410094426,
+          "max_proxy_offset": 0.01969206109422164,
+          "deadband": 0.0006845013584279947,
+          "lowpass_alpha": 0.8310118465345333,
+          "slew_rate_limit": 9.573410803947622
+        },
+        "metrics": {
+          "fs_hz": 119.99999374151263,
+          "n_frames": 314,
+          "contact_frames": 244,
+          "oscillation_peak": 0.0005020941586925344,
+          "oscillation_rms": 0.0003144370174379665,
+          "energy_injection": -0.018236367031931877,
+          "jerk_rms": 12.696115493774414,
+          "contact_rise_time_ms": 16.66666753590107,
+          "free_space_force_mean": 0.0007032115827314556,
+          "penetration_max_mm": 7.146091938018799
+        },
+        "values": [
+          0.0005020941586925344,
+          0.018236367031931877,
+          12.696115493774414,
+          0.0007032115827314556,
+          16.66666753590107
+        ]
+      },
+      {
+        "number": 42,
+        "params": {
+          "spring_k": 10.701697520178715,
+          "damper_b": 0.040311126307181595,
+          "vc_proxy_mass": 0.007846192758988796,
+          "max_proxy_offset": 0.0433851928362408,
+          "deadband": 0.004864597445115652,
+          "lowpass_alpha": 0.9627929251598502,
+          "slew_rate_limit": 45.33711941113683
+        },
+        "metrics": {
+          "fs_hz": 119.99999374151263,
+          "n_frames": 314,
+          "contact_frames": 244,
+          "oscillation_peak": 0.0013938805366811066,
+          "oscillation_rms": 0.0006657177134349813,
+          "energy_injection": -0.0030870018526911736,
+          "jerk_rms": 28.337448120117188,
+          "contact_rise_time_ms": 16.66666753590107,
+          "free_space_force_mean": 0.0007032115827314556,
+          "penetration_max_mm": 7.146091938018799
+        },
+        "values": [
+          0.0013938805366811066,
+          0.0030870018526911736,
+          28.337448120117188,
+          0.0007032115827314556,
+          16.66666753590107
+        ]
+      },
+      {
+        "number": 43,
+        "params": {
+          "spring_k": 51.65205444655892,
+          "damper_b": 0.07927728571487533,
+          "vc_proxy_mass": 0.007263948965857854,
+          "max_proxy_offset": 0.021547576227862755,
+          "deadband": 0.0011611707108547136,
+          "lowpass_alpha": 0.17586325302008382,
+          "slew_rate_limit": 2.7660163711625807
+        },
+        "metrics": {
+          "fs_hz": 119.99999374151263,
+          "n_frames": 314,
+          "contact_frames": 244,
+          "oscillation_peak": 0.0007261126306845836,
+          "oscillation_rms": 0.00031394685296100966,
+          "energy_injection": 0.028541404753923416,
+          "jerk_rms": 13.636862754821777,
+          "contact_rise_time_ms": 25.00000223517418,
+          "free_space_force_mean": 0.0003241824742872268,
+          "penetration_max_mm": 7.146091938018799
+        },
+        "values": [
+          0.0007261126306845836,
+          0.028541404753923416,
+          13.636862754821777,
+          0.0003241824742872268,
+          25.00000223517418
+        ]
+      },
+      {
+        "number": 44,
+        "params": {
+          "spring_k": 38.63759353110179,
+          "damper_b": 0.010735996668407383,
+          "vc_proxy_mass": 0.17383271023977576,
+          "max_proxy_offset": 0.009053438979218002,
+          "deadband": 0.00039761041293377876,
+          "lowpass_alpha": 0.13512288252667512,
+          "slew_rate_limit": 33.63518558696033
+        },
+        "metrics": {
+          "fs_hz": 119.99999374151263,
+          "n_frames": 314,
+          "contact_frames": 244,
+          "oscillation_peak": 0.00039327811486568077,
+          "oscillation_rms": 0.0002935891625340952,
+          "energy_injection": -0.000175809720531106,
+          "jerk_rms": 9.957372665405273,
+          "contact_rise_time_ms": 16.66666753590107,
+          "free_space_force_mean": 0.0007032115827314556,
+          "penetration_max_mm": 7.146091938018799
+        },
+        "values": [
+          0.00039327811486568077,
+          0.000175809720531106,
+          9.957372665405273,
+          0.0007032115827314556,
+          16.66666753590107
+        ]
+      },
+      {
+        "number": 45,
+        "params": {
+          "spring_k": 2.174854483786306,
+          "damper_b": 0.13646566824896972,
+          "vc_proxy_mass": 0.06511897965215208,
+          "max_proxy_offset": 0.0433064563437821,
+          "deadband": 0.0036352213135566413,
+          "lowpass_alpha": 0.30681150997677886,
+          "slew_rate_limit": 6.660991684627267
+        },
+        "metrics": {
+          "fs_hz": 119.99999374151263,
+          "n_frames": 314,
+          "contact_frames": 244,
+          "oscillation_peak": 0.0003925339540770623,
+          "oscillation_rms": 0.00029358154056142213,
+          "energy_injection": -0.030886543914675713,
+          "jerk_rms": 7.483821868896484,
+          "contact_rise_time_ms": 16.66666753590107,
+          "free_space_force_mean": 0.0007032115245237947,
+          "penetration_max_mm": 7.146091938018799
+        },
+        "values": [
+          0.0003925339540770623,
+          0.030886543914675713,
+          7.483821868896484,
+          0.0007032115245237947,
+          16.66666753590107
+        ]
+      },
+      {
+        "number": 46,
+        "params": {
+          "spring_k": 0.6967184446868651,
+          "damper_b": 0.06516368982716607,
+          "vc_proxy_mass": 0.016718846207032387,
+          "max_proxy_offset": 0.023894747206423025,
+          "deadband": 0.003416406677738402,
+          "lowpass_alpha": 0.7108441733569143,
+          "slew_rate_limit": 14.247590444450115
+        },
+        "metrics": {
+          "fs_hz": 119.99999374151263,
+          "n_frames": 314,
+          "contact_frames": 244,
+          "oscillation_peak": 0.0008613464051261633,
+          "oscillation_rms": 0.00043384308350092915,
+          "energy_injection": -0.040951840579509735,
+          "jerk_rms": 10.190943717956543,
+          "contact_rise_time_ms": 16.66666753590107,
+          "free_space_force_mean": 0.0007032115245237947,
+          "penetration_max_mm": 7.146091938018799
+        },
+        "values": [
+          0.0008613464051261633,
+          0.040951840579509735,
+          10.190943717956543,
+          0.0007032115245237947,
+          16.66666753590107
+        ]
+      },
+      {
+        "number": 47,
+        "params": {
+          "spring_k": 4.870378750301743,
+          "damper_b": 0.030826272414161353,
+          "vc_proxy_mass": 0.18882566764923356,
+          "max_proxy_offset": 0.004728707668795535,
+          "deadband": 0.0034849862086249366,
+          "lowpass_alpha": 0.7897606261440482,
+          "slew_rate_limit": 38.89263733625278
+        },
+        "metrics": {
+          "fs_hz": 119.99999374151263,
+          "n_frames": 314,
+          "contact_frames": 244,
+          "oscillation_peak": 0.0003924819986972244,
+          "oscillation_rms": 0.00029358079279060063,
+          "energy_injection": -0.011408225633203983,
+          "jerk_rms": 6.49354362487793,
+          "contact_rise_time_ms": 16.66666753590107,
+          "free_space_force_mean": 0.0007032115245237947,
+          "penetration_max_mm": 7.146091938018799
+        },
+        "values": [
+          0.0003924819986972244,
+          0.011408225633203983,
+          6.49354362487793,
+          0.0007032115245237947,
+          16.66666753590107
+        ]
+      },
+      {
+        "number": 48,
+        "params": {
+          "spring_k": 2.3659364758322483,
+          "damper_b": 0.10207289830562587,
+          "vc_proxy_mass": 0.07484611709771337,
+          "max_proxy_offset": 0.015095451316374417,
+          "deadband": 0.0018542639960894437,
+          "lowpass_alpha": 0.23720156617635763,
+          "slew_rate_limit": 23.046808599424768
+        },
+        "metrics": {
+          "fs_hz": 119.99999374151263,
+          "n_frames": 314,
+          "contact_frames": 244,
+          "oscillation_peak": 0.000377293946780908,
+          "oscillation_rms": 0.0002825023420379267,
+          "energy_injection": -0.022755246609449387,
+          "jerk_rms": 6.574456214904785,
+          "contact_rise_time_ms": 16.66666753590107,
+          "free_space_force_mean": 0.0006681776721961796,
+          "penetration_max_mm": 7.146091938018799
+        },
+        "values": [
+          0.000377293946780908,
+          0.022755246609449387,
+          6.574456214904785,
+          0.0006681776721961796,
+          16.66666753590107
+        ]
+      },
+      {
+        "number": 49,
+        "params": {
+          "spring_k": 0.6532116000563204,
+          "damper_b": 1.440871005050171,
+          "vc_proxy_mass": 0.007126608447651661,
+          "max_proxy_offset": 0.02690408714391325,
+          "deadband": 0.0015340504977259806,
+          "lowpass_alpha": 0.5986658013898067,
+          "slew_rate_limit": 47.97572370758792
+        },
+        "metrics": {
+          "fs_hz": 119.99999374151263,
+          "n_frames": 314,
+          "contact_frames": 244,
+          "oscillation_peak": 0.00044929107398207344,
+          "oscillation_rms": 0.00031480080310679716,
+          "energy_injection": -0.04753759503364563,
+          "jerk_rms": 12.374054908752441,
+          "contact_rise_time_ms": 16.66666753590107,
+          "free_space_force_mean": 0.0007032115827314556,
+          "penetration_max_mm": 7.146091938018799
+        },
+        "values": [
+          0.00044929107398207344,
+          0.04753759503364563,
+          12.374054908752441,
+          0.0007032115827314556,
+          16.66666753590107
+        ]
+      },
+      {
+        "number": 50,
+        "params": {
+          "spring_k": 23.92117504345221,
+          "damper_b": 0.048264347321622006,
+          "vc_proxy_mass": 0.016718846207032387,
+          "max_proxy_offset": 0.003697396916263564,
+          "deadband": 0.003416406677738402,
+          "lowpass_alpha": 0.15485638410608987,
+          "slew_rate_limit": 21.577081731452257
+        },
+        "metrics": {
+          "fs_hz": 119.99999374151263,
+          "n_frames": 314,
+          "contact_frames": 244,
+          "oscillation_peak": 0.0009025623430891887,
+          "oscillation_rms": 0.0004644564688564881,
+          "energy_injection": 0.0075080604292452335,
+          "jerk_rms": 25.666187286376953,
+          "contact_rise_time_ms": 16.66666753590107,
+          "free_space_force_mean": 0.0007032115827314556,
+          "penetration_max_mm": 7.146091938018799
+        },
+        "values": [
+          0.0009025623430891887,
+          0.0075080604292452335,
+          25.666187286376953,
+          0.0007032115827314556,
+          16.66666753590107
+        ]
+      },
+      {
+        "number": 51,
+        "params": {
+          "spring_k": 4.870378750301743,
+          "damper_b": 0.06515404512027279,
+          "vc_proxy_mass": 0.05236049082702959,
+          "max_proxy_offset": 0.004728707668795535,
+          "deadband": 0.0034849862086249366,
+          "lowpass_alpha": 0.4573302658984778,
+          "slew_rate_limit": 6.860155804700266
+        },
+        "metrics": {
+          "fs_hz": 119.99999374151263,
+          "n_frames": 314,
+          "contact_frames": 244,
+          "oscillation_peak": 0.000409612037214321,
+          "oscillation_rms": 0.0003161933569658572,
+          "energy_injection": -0.005903077777475119,
+          "jerk_rms": 9.478880882263184,
+          "contact_rise_time_ms": 16.66666753590107,
+          "free_space_force_mean": 0.0007032115827314556,
+          "penetration_max_mm": 7.146091938018799
+        },
+        "values": [
+          0.000409612037214321,
+          0.005903077777475119,
+          9.478880882263184,
+          0.0007032115827314556,
+          16.66666753590107
+        ]
+      },
+      {
+        "number": 52,
+        "params": {
+          "spring_k": 12.420412268965057,
+          "damper_b": 0.3961899126454628,
+          "vc_proxy_mass": 0.06973869494036398,
+          "max_proxy_offset": 0.01270791836674968,
+          "deadband": 0.001736167589661098,
+          "lowpass_alpha": 0.47476910968674596,
+          "slew_rate_limit": 49.09328655193083
+        },
+        "metrics": {
+          "fs_hz": 119.99999374151263,
+          "n_frames": 314,
+          "contact_frames": 244,
+          "oscillation_peak": 0.00039711768644001014,
+          "oscillation_rms": 0.00029374041694002565,
+          "energy_injection": -0.02886301465332508,
+          "jerk_rms": 13.705547332763672,
+          "contact_rise_time_ms": 16.66666753590107,
+          "free_space_force_mean": 0.0007032115827314556,
+          "penetration_max_mm": 7.146091938018799
+        },
+        "values": [
+          0.00039711768644001014,
+          0.02886301465332508,
+          13.705547332763672,
+          0.0007032115827314556,
+          16.66666753590107
+        ]
+      },
+      {
+        "number": 53,
+        "params": {
+          "spring_k": 4.870378750301743,
+          "damper_b": 0.030826272414161353,
+          "vc_proxy_mass": 0.18882566764923356,
+          "max_proxy_offset": 0.004728707668795535,
+          "deadband": 0.0034849862086249366,
+          "lowpass_alpha": 0.7897606261440482,
+          "slew_rate_limit": 38.89263733625278
+        },
+        "metrics": {
+          "fs_hz": 119.99999374151263,
+          "n_frames": 314,
+          "contact_frames": 244,
+          "oscillation_peak": 0.0003924819986972244,
+          "oscillation_rms": 0.00029358079279060063,
+          "energy_injection": -0.011408225633203983,
+          "jerk_rms": 6.49354362487793,
+          "contact_rise_time_ms": 16.66666753590107,
+          "free_space_force_mean": 0.0007032115245237947,
+          "penetration_max_mm": 7.146091938018799
+        },
+        "values": [
+          0.0003924819986972244,
+          0.011408225633203983,
+          6.49354362487793,
+          0.0007032115245237947,
+          16.66666753590107
+        ]
+      },
+      {
+        "number": 54,
+        "params": {
+          "spring_k": 8.784524154213559,
+          "damper_b": 0.22001099032059526,
+          "vc_proxy_mass": 0.09504188410094426,
+          "max_proxy_offset": 0.03470684050898422,
+          "deadband": 0.0013879804886588304,
+          "lowpass_alpha": 0.23720156617635763,
+          "slew_rate_limit": 9.573410803947622
+        },
+        "metrics": {
+          "fs_hz": 119.99999374151263,
+          "n_frames": 314,
+          "contact_frames": 244,
+          "oscillation_peak": 0.0003926519094997338,
+          "oscillation_rms": 0.00029360342886038733,
+          "energy_injection": -0.01577058807015419,
+          "jerk_rms": 10.585357666015625,
+          "contact_rise_time_ms": 16.66666753590107,
+          "free_space_force_mean": 0.0007032115827314556,
+          "penetration_max_mm": 7.146091938018799
+        },
+        "values": [
+          0.0003926519094997338,
+          0.01577058807015419,
+          10.585357666015625,
+          0.0007032115827314556,
+          16.66666753590107
+        ]
+      },
+      {
+        "number": 55,
+        "params": {
+          "spring_k": 60.03831996603421,
+          "damper_b": 0.17600254847516114,
+          "vc_proxy_mass": 0.18198196783931941,
+          "max_proxy_offset": 0.007677172441708795,
+          "deadband": 0.003199605106637619,
+          "lowpass_alpha": 0.17241753719300418,
+          "slew_rate_limit": 35.871298091510425
+        },
+        "metrics": {
+          "fs_hz": 119.99999374151263,
+          "n_frames": 314,
+          "contact_frames": 244,
+          "oscillation_peak": 0.00039505237130331016,
+          "oscillation_rms": 0.0002936242116944375,
+          "energy_injection": -0.003481996711343527,
+          "jerk_rms": 14.165661811828613,
+          "contact_rise_time_ms": 16.66666753590107,
+          "free_space_force_mean": 0.0007032115827314556,
+          "penetration_max_mm": 7.146091938018799
+        },
+        "values": [
+          0.00039505237130331016,
+          0.003481996711343527,
+          14.165661811828613,
+          0.0007032115827314556,
+          16.66666753590107
+        ]
+      },
+      {
+        "number": 56,
+        "params": {
+          "spring_k": 1.9126498740721087,
+          "damper_b": 0.0855251465722774,
+          "vc_proxy_mass": 0.35903153120109205,
+          "max_proxy_offset": 0.035811891292329576,
+          "deadband": 0.0009159568100355842,
+          "lowpass_alpha": 0.20645944867301713,
+          "slew_rate_limit": 1.1033665547559284
+        },
+        "metrics": {
+          "fs_hz": 119.99999374151263,
+          "n_frames": 314,
+          "contact_frames": 244,
+          "oscillation_peak": 6.953146394465146e-05,
+          "oscillation_rms": 5.6452287770240174e-05,
+          "energy_injection": -0.039045512676239014,
+          "jerk_rms": 2.249729633331299,
+          "contact_rise_time_ms": 50.00000074505806,
+          "free_space_force_mean": 0.00012931670062243938,
+          "penetration_max_mm": 7.146091938018799
+        },
+        "values": [
+          6.953146394465146e-05,
+          0.039045512676239014,
+          2.249729633331299,
+          0.00012931670062243938,
+          50.00000074505806
+        ]
+      },
+      {
+        "number": 57,
+        "params": {
+          "spring_k": 1.0273742285921992,
+          "damper_b": 0.06299027584324217,
+          "vc_proxy_mass": 0.008638243504108948,
+          "max_proxy_offset": 0.035811891292329576,
+          "deadband": 0.00015919464765653925,
+          "lowpass_alpha": 0.20645944867301713,
+          "slew_rate_limit": 31.1117722348382
+        },
+        "metrics": {
+          "fs_hz": 119.99999374151263,
+          "n_frames": 314,
+          "contact_frames": 244,
+          "oscillation_peak": 0.000392066728585774,
+          "oscillation_rms": 0.00020838399572194812,
+          "energy_injection": -0.03530178219079971,
+          "jerk_rms": 5.9381890296936035,
+          "contact_rise_time_ms": 33.33333507180214,
+          "free_space_force_mean": 0.0003397107357159257,
+          "penetration_max_mm": 7.146091938018799
+        },
+        "values": [
+          0.000392066728585774,
+          0.03530178219079971,
+          5.9381890296936035,
+          0.0003397107357159257,
+          33.33333507180214
+        ]
+      },
+      {
+        "number": 58,
+        "params": {
+          "spring_k": 5.2569720966871545,
+          "damper_b": 3.8133823997838325,
+          "vc_proxy_mass": 0.008638243504108948,
+          "max_proxy_offset": 0.015095451316374417,
+          "deadband": 0.0018542639960894437,
+          "lowpass_alpha": 0.11094012153134514,
+          "slew_rate_limit": 34.654358756563994
+        },
+        "metrics": {
+          "fs_hz": 119.99999374151263,
+          "n_frames": 314,
+          "contact_frames": 244,
+          "oscillation_peak": NaN,
+          "oscillation_rms": NaN,
+          "energy_injection": NaN,
+          "jerk_rms": NaN,
+          "contact_rise_time_ms": 0.0,
+          "free_space_force_mean": 0.0007032115245237947,
+          "penetration_max_mm": 7.146091938018799
+        },
+        "values": []
+      },
+      {
+        "number": 59,
+        "params": {
+          "spring_k": 8.784524154213559,
+          "damper_b": 0.03199341973374452,
+          "vc_proxy_mass": 0.006531731516589177,
+          "max_proxy_offset": 0.01969206109422164,
+          "deadband": 0.0006845013584279947,
+          "lowpass_alpha": 0.7115263143746865,
+          "slew_rate_limit": 9.573410803947622
+        },
+        "metrics": {
+          "fs_hz": 119.99999374151263,
+          "n_frames": 314,
+          "contact_frames": 244,
+          "oscillation_peak": 0.0015017936595760697,
+          "oscillation_rms": 0.0007150034150162822,
+          "energy_injection": -0.002022631699219346,
+          "jerk_rms": 26.23788833618164,
+          "contact_rise_time_ms": 16.66666753590107,
+          "free_space_force_mean": 0.0007032115827314556,
+          "penetration_max_mm": 7.146091938018799
+        },
+        "values": [
+          0.0015017936595760697,
+          0.002022631699219346,
+          26.23788833618164,
+          0.0007032115827314556,
+          16.66666753590107
+        ]
+      },
+      {
+        "number": 60,
+        "params": {
+          "spring_k": 112.5098346063786,
+          "damper_b": 0.8466732588856246,
+          "vc_proxy_mass": 0.06511897965215208,
+          "max_proxy_offset": 0.0091735186235837,
+          "deadband": 0.0043406302868410716,
+          "lowpass_alpha": 0.20436828794255607,
+          "slew_rate_limit": 30.816422257763826
+        },
+        "metrics": {
+          "fs_hz": 119.99999374151263,
+          "n_frames": 314,
+          "contact_frames": 244,
+          "oscillation_peak": 0.0004071453401910755,
+          "oscillation_rms": 0.0002944030447491676,
+          "energy_injection": -0.013019065372645855,
+          "jerk_rms": 22.952913284301758,
+          "contact_rise_time_ms": 16.66666753590107,
+          "free_space_force_mean": 0.0007032115245237947,
+          "penetration_max_mm": 7.146091938018799
+        },
+        "values": [
+          0.0004071453401910755,
+          0.013019065372645855,
+          22.952913284301758,
+          0.0007032115245237947,
+          16.66666753590107
+        ]
+      },
+      {
+        "number": 61,
+        "params": {
+          "spring_k": 60.03831996603421,
+          "damper_b": 0.17600254847516114,
+          "vc_proxy_mass": 0.18198196783931941,
+          "max_proxy_offset": 0.007677172441708795,
+          "deadband": 0.003199605106637619,
+          "lowpass_alpha": 0.1861856230385941,
+          "slew_rate_limit": 47.23897896077423
+        },
+        "metrics": {
+          "fs_hz": 119.99999374151263,
+          "n_frames": 314,
+          "contact_frames": 244,
+          "oscillation_peak": 0.0003955113082004642,
+          "oscillation_rms": 0.0002936309771710107,
+          "energy_injection": -0.0036967338528484106,
+          "jerk_rms": 14.214234352111816,
+          "contact_rise_time_ms": 16.66666753590107,
+          "free_space_force_mean": 0.0007032115827314556,
+          "penetration_max_mm": 7.146091938018799
+        },
+        "values": [
+          0.0003955113082004642,
+          0.0036967338528484106,
+          14.214234352111816,
+          0.0007032115827314556,
+          16.66666753590107
+        ]
+      },
+      {
+        "number": 62,
+        "params": {
+          "spring_k": 2.3659364758322483,
+          "damper_b": 0.010735996668407383,
+          "vc_proxy_mass": 0.17383271023977576,
+          "max_proxy_offset": 0.009053438979218002,
+          "deadband": 0.0027190297503866317,
+          "lowpass_alpha": 0.4840658505634775,
+          "slew_rate_limit": 33.63518558696033
+        },
+        "metrics": {
+          "fs_hz": 119.99999374151263,
+          "n_frames": 314,
+          "contact_frames": 244,
+          "oscillation_peak": 0.0002001036496742358,
+          "oscillation_rms": 0.00017094121321806888,
+          "energy_injection": -0.02132047899067402,
+          "jerk_rms": 3.7203032970428467,
+          "contact_rise_time_ms": 25.00000223517418,
+          "free_space_force_mean": 0.00034135382156819105,
+          "penetration_max_mm": 7.146091938018799
+        },
+        "values": [
+          0.0002001036496742358,
+          0.02132047899067402,
+          3.7203032970428467,
+          0.00034135382156819105,
+          25.00000223517418
+        ]
+      },
+      {
+        "number": 63,
+        "params": {
+          "spring_k": 13.39725012298356,
+          "damper_b": 0.8516764670113512,
+          "vc_proxy_mass": 0.08025955666793813,
+          "max_proxy_offset": 0.028154392783851047,
+          "deadband": 0.0021182739966945237,
+          "lowpass_alpha": 0.8879393397183951,
+          "slew_rate_limit": 21.935601842008356
+        },
+        "metrics": {
+          "fs_hz": 119.99999374151263,
+          "n_frames": 314,
+          "contact_frames": 244,
+          "oscillation_peak": 0.00041001810684902404,
+          "oscillation_rms": 0.00029372128287145216,
+          "energy_injection": -0.04350738227367401,
+          "jerk_rms": 15.326004028320312,
+          "contact_rise_time_ms": 16.66666753590107,
+          "free_space_force_mean": 0.0007032115827314556,
+          "penetration_max_mm": 7.146091938018799
+        },
+        "values": [
+          0.00041001810684902404,
+          0.04350738227367401,
+          15.326004028320312,
+          0.0007032115827314556,
+          16.66666753590107
+        ]
+      },
+      {
+        "number": 64,
+        "params": {
+          "spring_k": 7.570338052382357,
+          "damper_b": 0.8888048267731737,
+          "vc_proxy_mass": 0.07598284083036189,
+          "max_proxy_offset": 0.029567611944779783,
+          "deadband": 0.004279016711963055,
+          "lowpass_alpha": 0.6694981065016045,
+          "slew_rate_limit": 18.062905417470358
+        },
+        "metrics": {
+          "fs_hz": 119.99999374151263,
+          "n_frames": 314,
+          "contact_frames": 244,
+          "oscillation_peak": 0.00040378298099852806,
+          "oscillation_rms": 0.00029361591701555973,
+          "energy_injection": -0.045728497207164764,
+          "jerk_rms": 12.401225090026855,
+          "contact_rise_time_ms": 16.66666753590107,
+          "free_space_force_mean": 0.0007032115827314556,
+          "penetration_max_mm": 7.146091938018799
+        },
+        "values": [
+          0.00040378298099852806,
+          0.045728497207164764,
+          12.401225090026855,
+          0.0007032115827314556,
+          16.66666753590107
+        ]
+      },
+      {
+        "number": 65,
+        "params": {
+          "spring_k": 20.23459985435792,
+          "damper_b": 0.44877431780743426,
+          "vc_proxy_mass": 0.04132167597712964,
+          "max_proxy_offset": 0.02103227556065526,
+          "deadband": 0.0044055159855558084,
+          "lowpass_alpha": 0.6022092290040658,
+          "slew_rate_limit": 36.23596506691601
+        },
+        "metrics": {
+          "fs_hz": 119.99999374151263,
+          "n_frames": 314,
+          "contact_frames": 244,
+          "oscillation_peak": 0.0007393913778845732,
+          "oscillation_rms": 0.0004654325755877854,
+          "energy_injection": -0.02967439778149128,
+          "jerk_rms": 17.42987632751465,
+          "contact_rise_time_ms": 16.66666753590107,
+          "free_space_force_mean": 0.0007032115827314556,
+          "penetration_max_mm": 7.146091938018799
+        },
+        "values": [
+          0.0007393913778845732,
+          0.02967439778149128,
+          17.42987632751465,
+          0.0007032115827314556,
+          16.66666753590107
+        ]
+      },
+      {
+        "number": 66,
+        "params": {
+          "spring_k": 5.460819596947324,
+          "damper_b": 1.440871005050171,
+          "vc_proxy_mass": 0.10777137782723753,
+          "max_proxy_offset": 0.034190617741671654,
+          "deadband": 0.0015340504977259806,
+          "lowpass_alpha": 0.5986658013898067,
+          "slew_rate_limit": 15.839874711116774
+        },
+        "metrics": {
+          "fs_hz": 119.99999374151263,
+          "n_frames": 314,
+          "contact_frames": 244,
+          "oscillation_peak": 0.00039601158089554395,
+          "oscillation_rms": 0.0002936064073755431,
+          "energy_injection": -0.046853967010974884,
+          "jerk_rms": 12.410322189331055,
+          "contact_rise_time_ms": 16.66666753590107,
+          "free_space_force_mean": 0.0007032115245237947,
+          "penetration_max_mm": 7.146091938018799
+        },
+        "values": [
+          0.00039601158089554395,
+          0.046853967010974884,
+          12.410322189331055,
+          0.0007032115245237947,
+          16.66666753590107
+        ]
+      },
+      {
+        "number": 67,
+        "params": {
+          "spring_k": 4.419440078285006,
+          "damper_b": 0.34589475764299155,
+          "vc_proxy_mass": 0.03768539149132193,
+          "max_proxy_offset": 0.04944194422684286,
+          "deadband": 0.0005102240537401404,
+          "lowpass_alpha": 0.24843291829009295,
+          "slew_rate_limit": 8.149344942461312
+        },
+        "metrics": {
+          "fs_hz": 119.99999374151263,
+          "n_frames": 314,
+          "contact_frames": 244,
+          "oscillation_peak": 0.000395419349110574,
+          "oscillation_rms": 0.0002936738039277217,
+          "energy_injection": -0.04253368079662323,
+          "jerk_rms": 8.76158332824707,
+          "contact_rise_time_ms": 16.66666753590107,
+          "free_space_force_mean": 0.0007032115245237947,
+          "penetration_max_mm": 7.146091938018799
+        },
+        "values": [
+          0.000395419349110574,
+          0.04253368079662323,
+          8.76158332824707,
+          0.0007032115245237947,
+          16.66666753590107
+        ]
+      },
+      {
+        "number": 68,
+        "params": {
+          "spring_k": 107.60638254616775,
+          "damper_b": 0.38345406854475694,
+          "vc_proxy_mass": 0.03721344316437966,
+          "max_proxy_offset": 0.044812321040752265,
+          "deadband": 0.004030969945230429,
+          "lowpass_alpha": 0.9088421732559099,
+          "slew_rate_limit": 35.871298091510425
+        },
+        "metrics": {
+          "fs_hz": 119.99999374151263,
+          "n_frames": 314,
+          "contact_frames": 244,
+          "oscillation_peak": 0.0004454905397888999,
+          "oscillation_rms": 0.00029528187178841435,
+          "energy_injection": -0.0015888689085841179,
+          "jerk_rms": 31.90869140625,
+          "contact_rise_time_ms": 16.66666753590107,
+          "free_space_force_mean": 0.0007032115827314556,
+          "penetration_max_mm": 7.146091938018799
+        },
+        "values": [
+          0.0004454905397888999,
+          0.0015888689085841179,
+          31.90869140625,
+          0.0007032115827314556,
+          16.66666753590107
+        ]
+      },
+      {
+        "number": 69,
+        "params": {
+          "spring_k": 33.04129355086612,
+          "damper_b": 0.7283780199401633,
+          "vc_proxy_mass": 0.12537591421855346,
+          "max_proxy_offset": 0.017730579274741705,
+          "deadband": 0.003783893213684446,
+          "lowpass_alpha": 0.23720156617635763,
+          "slew_rate_limit": 44.09859455655715
+        },
+        "metrics": {
+          "fs_hz": 119.99999374151263,
+          "n_frames": 314,
+          "contact_frames": 244,
+          "oscillation_peak": 0.0003930669451837172,
+          "oscillation_rms": 0.00029359741723141786,
+          "energy_injection": -0.022712821140885353,
+          "jerk_rms": 12.614688873291016,
+          "contact_rise_time_ms": 16.66666753590107,
+          "free_space_force_mean": 0.0007032115827314556,
+          "penetration_max_mm": 7.146091938018799
+        },
+        "values": [
+          0.0003930669451837172,
+          0.022712821140885353,
+          12.614688873291016,
+          0.0007032115827314556,
+          16.66666753590107
+        ]
+      },
+      {
+        "number": 70,
+        "params": {
+          "spring_k": 49.022135677868306,
+          "damper_b": 1.0486260766708937,
+          "vc_proxy_mass": 0.0550862510133805,
+          "max_proxy_offset": 0.004608223440284174,
+          "deadband": 0.002760962349612033,
+          "lowpass_alpha": 0.06759570473758328,
+          "slew_rate_limit": 39.70551539753529
+        },
+        "metrics": {
+          "fs_hz": 119.99999374151263,
+          "n_frames": 314,
+          "contact_frames": 244,
+          "oscillation_peak": 0.00039268390610546963,
+          "oscillation_rms": 0.0002935834127563984,
+          "energy_injection": -0.04323602467775345,
+          "jerk_rms": 8.574018478393555,
+          "contact_rise_time_ms": 16.66666753590107,
+          "free_space_force_mean": 0.0007032115827314556,
+          "penetration_max_mm": 7.146091938018799
+        },
+        "values": [
+          0.00039268390610546963,
+          0.04323602467775345,
+          8.574018478393555,
+          0.0007032115827314556,
+          16.66666753590107
+        ]
+      },
+      {
+        "number": 71,
+        "params": {
+          "spring_k": 60.03831996603421,
+          "damper_b": 0.5208464513758064,
+          "vc_proxy_mass": 0.04281456639409116,
+          "max_proxy_offset": 0.007677172441708795,
+          "deadband": 0.0007948479182275986,
+          "lowpass_alpha": 0.15485638410608987,
+          "slew_rate_limit": 47.23897896077423
+        },
+        "metrics": {
+          "fs_hz": 119.99999374151263,
+          "n_frames": 314,
+          "contact_frames": 244,
+          "oscillation_peak": 0.000522883120939529,
+          "oscillation_rms": 0.00032616808015984236,
+          "energy_injection": -0.01695885695517063,
+          "jerk_rms": 21.34343910217285,
+          "contact_rise_time_ms": 16.66666753590107,
+          "free_space_force_mean": 0.0007032115827314556,
+          "penetration_max_mm": 7.146091938018799
+        },
+        "values": [
+          0.000522883120939529,
+          0.01695885695517063,
+          21.34343910217285,
+          0.0007032115827314556,
+          16.66666753590107
+        ]
+      },
+      {
+        "number": 72,
+        "params": {
+          "spring_k": 32.677455203009146,
+          "damper_b": 0.014539408591817076,
+          "vc_proxy_mass": 0.10777137782723753,
+          "max_proxy_offset": 0.0433064563437821,
+          "deadband": 0.0010519128053692046,
+          "lowpass_alpha": 0.30681150997677886,
+          "slew_rate_limit": 6.660991684627267
+        },
+        "metrics": {
+          "fs_hz": 119.99999374151263,
+          "n_frames": 314,
+          "contact_frames": 244,
+          "oscillation_peak": 0.0003921378478041479,
+          "oscillation_rms": 0.00029357565332286225,
+          "energy_injection": -0.002437280723825097,
+          "jerk_rms": 12.038785934448242,
+          "contact_rise_time_ms": 16.66666753590107,
+          "free_space_force_mean": 0.0007032115245237947,
+          "penetration_max_mm": 7.146091938018799
+        },
+        "values": [
+          0.0003921378478041479,
+          0.002437280723825097,
+          12.038785934448242,
+          0.0007032115245237947,
+          16.66666753590107
+        ]
+      },
+      {
+        "number": 73,
+        "params": {
+          "spring_k": 15.883763812554653,
+          "damper_b": 0.052032929232026,
+          "vc_proxy_mass": 0.3693158954393565,
+          "max_proxy_offset": 0.0065091445164052,
+          "deadband": 0.0028797324777808963,
+          "lowpass_alpha": 0.6104144775368424,
+          "slew_rate_limit": 15.996590727321049
+        },
+        "metrics": {
+          "fs_hz": 119.99999374151263,
+          "n_frames": 314,
+          "contact_frames": 244,
+          "oscillation_peak": 0.0003924294152462507,
+          "oscillation_rms": 0.0002935805591102892,
+          "energy_injection": -0.015176722779870033,
+          "jerk_rms": 6.678196430206299,
+          "contact_rise_time_ms": 16.66666753590107,
+          "free_space_force_mean": 0.0007032115827314556,
+          "penetration_max_mm": 7.146091938018799
+        },
+        "values": [
+          0.0003924294152462507,
+          0.015176722779870033,
+          6.678196430206299,
+          0.0007032115827314556,
+          16.66666753590107
+        ]
+      },
+      {
+        "number": 74,
+        "params": {
+          "spring_k": 8.784524154213559,
+          "damper_b": 0.22001099032059526,
+          "vc_proxy_mass": 0.006531731516589177,
+          "max_proxy_offset": 0.022851998026789798,
+          "deadband": 0.0006845013584279947,
+          "lowpass_alpha": 0.27801925971072405,
+          "slew_rate_limit": 18.9498167806948
+        },
+        "metrics": {
+          "fs_hz": 119.99999374151263,
+          "n_frames": 314,
+          "contact_frames": 244,
+          "oscillation_peak": 0.00045169637700022717,
+          "oscillation_rms": 0.0003079394038324472,
+          "energy_injection": -0.04476310312747955,
+          "jerk_rms": 12.385171890258789,
+          "contact_rise_time_ms": 16.66666753590107,
+          "free_space_force_mean": 0.0007032115245237947,
+          "penetration_max_mm": 7.146091938018799
+        },
+        "values": [
+          0.00045169637700022717,
+          0.04476310312747955,
+          12.385171890258789,
+          0.0007032115245237947,
+          16.66666753590107
+        ]
+      },
+      {
+        "number": 75,
+        "params": {
+          "spring_k": 60.03831996603421,
+          "damper_b": 0.38345406854475694,
+          "vc_proxy_mass": 0.18198196783931941,
+          "max_proxy_offset": 0.00970586347929231,
+          "deadband": 0.002586895535770571,
+          "lowpass_alpha": 0.17546470102789563,
+          "slew_rate_limit": 35.871298091510425
+        },
+        "metrics": {
+          "fs_hz": 119.99999374151263,
+          "n_frames": 314,
+          "contact_frames": 244,
+          "oscillation_peak": 0.00039326621411715453,
+          "oscillation_rms": 0.0002936112909607112,
+          "energy_injection": -0.0053830454126000404,
+          "jerk_rms": 15.41368293762207,
+          "contact_rise_time_ms": 16.66666753590107,
+          "free_space_force_mean": 0.0007032115827314556,
+          "penetration_max_mm": 7.146091938018799
+        },
+        "values": [
+          0.00039326621411715453,
+          0.0053830454126000404,
+          15.41368293762207,
+          0.0007032115827314556,
+          16.66666753590107
+        ]
+      },
+      {
+        "number": 76,
+        "params": {
+          "spring_k": 1.9126498740721087,
+          "damper_b": 0.0855251465722774,
+          "vc_proxy_mass": 0.016718846207032387,
+          "max_proxy_offset": 0.035811891292329576,
+          "deadband": 0.00015919464765653925,
+          "lowpass_alpha": 0.7108441733569143,
+          "slew_rate_limit": 14.247590444450115
+        },
+        "metrics": {
+          "fs_hz": 119.99999374151263,
+          "n_frames": 314,
+          "contact_frames": 244,
+          "oscillation_peak": 0.0015576249618643341,
+          "oscillation_rms": 0.0006240066350695994,
+          "energy_injection": -0.03414081409573555,
+          "jerk_rms": 12.643092155456543,
+          "contact_rise_time_ms": 16.66666753590107,
+          "free_space_force_mean": 0.0007032115827314556,
+          "penetration_max_mm": 7.146091938018799
+        },
+        "values": [
+          0.0015576249618643341,
+          0.03414081409573555,
+          12.643092155456543,
+          0.0007032115827314556,
+          16.66666753590107
+        ]
+      },
+      {
+        "number": 77,
+        "params": {
+          "spring_k": 60.03831996603421,
+          "damper_b": 0.17600254847516114,
+          "vc_proxy_mass": 0.07598284083036189,
+          "max_proxy_offset": 0.007677172441708795,
+          "deadband": 0.003266004099285668,
+          "lowpass_alpha": 0.1861856230385941,
+          "slew_rate_limit": 39.839934578414855
+        },
+        "metrics": {
+          "fs_hz": 119.99999374151263,
+          "n_frames": 314,
+          "contact_frames": 244,
+          "oscillation_peak": 0.0004124231106959818,
+          "oscillation_rms": 0.0002939717241705651,
+          "energy_injection": -0.004103159997612238,
+          "jerk_rms": 22.97599220275879,
+          "contact_rise_time_ms": 16.66666753590107,
+          "free_space_force_mean": 0.0007032115827314556,
+          "penetration_max_mm": 7.146091938018799
+        },
+        "values": [
+          0.0004124231106959818,
+          0.004103159997612238,
+          22.97599220275879,
+          0.0007032115827314556,
+          16.66666753590107
+        ]
+      },
+      {
+        "number": 78,
+        "params": {
+          "spring_k": 14.903936082235903,
+          "damper_b": 0.030826272414161353,
+          "vc_proxy_mass": 0.18882566764923356,
+          "max_proxy_offset": 0.0065091445164052,
+          "deadband": 0.0028797324777808963,
+          "lowpass_alpha": 0.7897606261440482,
+          "slew_rate_limit": 15.996590727321049
+        },
+        "metrics": {
+          "fs_hz": 119.99999374151263,
+          "n_frames": 314,
+          "contact_frames": 244,
+          "oscillation_peak": 0.0003924268451737712,
+          "oscillation_rms": 0.000293580076336383,
+          "energy_injection": -0.0055844285525381565,
+          "jerk_rms": 8.506487846374512,
+          "contact_rise_time_ms": 16.66666753590107,
+          "free_space_force_mean": 0.0007032115827314556,
+          "penetration_max_mm": 7.146091938018799
+        },
+        "values": [
+          0.0003924268451737712,
+          0.0055844285525381565,
+          8.506487846374512,
+          0.0007032115827314556,
+          16.66666753590107
+        ]
+      },
+      {
+        "number": 79,
+        "params": {
+          "spring_k": 188.75191096346757,
+          "damper_b": 0.04385969316856726,
+          "vc_proxy_mass": 0.4142888169692719,
+          "max_proxy_offset": 0.03147036588636301,
+          "deadband": 0.0026781640151247914,
+          "lowpass_alpha": 0.6104144775368424,
+          "slew_rate_limit": 22.96112748027614
+        },
+        "metrics": {
+          "fs_hz": 119.99999374151263,
+          "n_frames": 314,
+          "contact_frames": 244,
+          "oscillation_peak": 0.00042090740158140673,
+          "oscillation_rms": 0.0002946423995862592,
+          "energy_injection": -0.0060617136768996716,
+          "jerk_rms": 21.217836380004883,
+          "contact_rise_time_ms": 16.66666753590107,
+          "free_space_force_mean": 0.0007032115827314556,
+          "penetration_max_mm": 7.146091938018799
+        },
+        "values": [
+          0.00042090740158140673,
+          0.0060617136768996716,
+          21.217836380004883,
+          0.0007032115827314556,
+          16.66666753590107
+        ]
+      },
+      {
+        "number": 80,
+        "params": {
+          "spring_k": 2.878428163925364,
+          "damper_b": 1.9555692117463708,
+          "vc_proxy_mass": 0.08604455406887793,
+          "max_proxy_offset": 0.0027886222203907618,
+          "deadband": 0.001736167589661098,
+          "lowpass_alpha": 0.6864207192613646,
+          "slew_rate_limit": 29.590109849651878
+        },
+        "metrics": {
+          "fs_hz": 119.99999374151263,
+          "n_frames": 314,
+          "contact_frames": 244,
+          "oscillation_peak": 0.0004115675314599724,
+          "oscillation_rms": 0.0002948341795993834,
+          "energy_injection": -0.047637421637773514,
+          "jerk_rms": 13.263679504394531,
+          "contact_rise_time_ms": 16.66666753590107,
+          "free_space_force_mean": 0.0007032115245237947,
+          "penetration_max_mm": 7.146091938018799
+        },
+        "values": [
+          0.0004115675314599724,
+          0.047637421637773514,
+          13.263679504394531,
+          0.0007032115245237947,
+          16.66666753590107
+        ]
+      },
+      {
+        "number": 81,
+        "params": {
+          "spring_k": 60.03831996603421,
+          "damper_b": 2.065226498325585,
+          "vc_proxy_mass": 0.18198196783931941,
+          "max_proxy_offset": 0.023946725760985138,
+          "deadband": 0.003199605106637619,
+          "lowpass_alpha": 0.1861856230385941,
+          "slew_rate_limit": 47.23897896077423
+        },
+        "metrics": {
+          "fs_hz": 119.99999374151263,
+          "n_frames": 314,
+          "contact_frames": 244,
+          "oscillation_peak": 0.0003943071356789895,
+          "oscillation_rms": 0.0002936163540575837,
+          "energy_injection": -0.037056319415569305,
+          "jerk_rms": 11.206488609313965,
+          "contact_rise_time_ms": 16.66666753590107,
+          "free_space_force_mean": 0.0007032115827314556,
+          "penetration_max_mm": 7.146091938018799
+        },
+        "values": [
+          0.0003943071356789895,
+          0.037056319415569305,
+          11.206488609313965,
+          0.0007032115827314556,
+          16.66666753590107
+        ]
+      },
+      {
+        "number": 82,
+        "params": {
+          "spring_k": 0.7652618957932136,
+          "damper_b": 3.7074957415237084,
+          "vc_proxy_mass": 0.07087161483450587,
+          "max_proxy_offset": 0.01589149246146565,
+          "deadband": 0.0009159568100355842,
+          "lowpass_alpha": 0.607187288069579,
+          "slew_rate_limit": 41.056279322995614
+        },
+        "metrics": {
+          "fs_hz": 119.99999374151263,
+          "n_frames": 314,
+          "contact_frames": 244,
+          "oscillation_peak": 0.0004631880073650474,
+          "oscillation_rms": 0.00031985243965942413,
+          "energy_injection": -0.04756593331694603,
+          "jerk_rms": 12.468749046325684,
+          "contact_rise_time_ms": 16.66666753590107,
+          "free_space_force_mean": 0.0007032115827314556,
+          "penetration_max_mm": 7.146091938018799
+        },
+        "values": [
+          0.0004631880073650474,
+          0.04756593331694603,
+          12.468749046325684,
+          0.0007032115827314556,
+          16.66666753590107
+        ]
+      },
+      {
+        "number": 83,
+        "params": {
+          "spring_k": 33.04129355086612,
+          "damper_b": 3.989301725992403,
+          "vc_proxy_mass": 0.02923163060821707,
+          "max_proxy_offset": 0.02103227556065526,
+          "deadband": 0.0026444745987645223,
+          "lowpass_alpha": 0.6022092290040658,
+          "slew_rate_limit": 45.45130154879565
+        },
+        "metrics": {
+          "fs_hz": 119.99999374151263,
+          "n_frames": 314,
+          "contact_frames": 244,
+          "oscillation_peak": 0.00040509595955419056,
+          "oscillation_rms": 0.00029478293624030186,
+          "energy_injection": -0.04748145863413811,
+          "jerk_rms": 12.859810829162598,
+          "contact_rise_time_ms": 16.66666753590107,
+          "free_space_force_mean": 0.0007032115245237947,
+          "penetration_max_mm": 7.146091938018799
+        },
+        "values": [
+          0.00040509595955419056,
+          0.04748145863413811,
+          12.859810829162598,
+          0.0007032115245237947,
+          16.66666753590107
+        ]
+      },
+      {
+        "number": 84,
+        "params": {
+          "spring_k": 14.903936082235903,
+          "damper_b": 0.052032929232026,
+          "vc_proxy_mass": 0.05565012078365318,
+          "max_proxy_offset": 0.0065091445164052,
+          "deadband": 0.0028797324777808963,
+          "lowpass_alpha": 0.6022092290040658,
+          "slew_rate_limit": 44.09859455655715
+        },
+        "metrics": {
+          "fs_hz": 119.99999374151263,
+          "n_frames": 314,
+          "contact_frames": 244,
+          "oscillation_peak": 0.0003944984502209998,
+          "oscillation_rms": 0.0002935800948477039,
+          "energy_injection": -0.002752657514065504,
+          "jerk_rms": 13.994375228881836,
+          "contact_rise_time_ms": 16.66666753590107,
+          "free_space_force_mean": 0.0007032115827314556,
+          "penetration_max_mm": 7.146091938018799
+        },
+        "values": [
+          0.0003944984502209998,
+          0.002752657514065504,
+          13.994375228881836,
+          0.0007032115827314556,
+          16.66666753590107
+        ]
+      },
+      {
+        "number": 85,
+        "params": {
+          "spring_k": 1.1442747994941822,
+          "damper_b": 0.03392890920541565,
+          "vc_proxy_mass": 0.21211219770832282,
+          "max_proxy_offset": 0.02103227556065526,
+          "deadband": 0.00048550637896530637,
+          "lowpass_alpha": 0.6022092290040658,
+          "slew_rate_limit": 44.09859455655715
+        },
+        "metrics": {
+          "fs_hz": 119.99999374151263,
+          "n_frames": 314,
+          "contact_frames": 244,
+          "oscillation_peak": 0.00032986196017200953,
+          "oscillation_rms": 0.0002577144585455112,
+          "energy_injection": -0.04051067680120468,
+          "jerk_rms": 5.794515609741211,
+          "contact_rise_time_ms": 25.00000223517418,
+          "free_space_force_mean": 0.0006064567132852972,
+          "penetration_max_mm": 7.146091938018799
+        },
+        "values": [
+          0.00032986196017200953,
+          0.04051067680120468,
+          5.794515609741211,
+          0.0006064567132852972,
+          25.00000223517418
+        ]
+      },
+      {
+        "number": 86,
+        "params": {
+          "spring_k": 66.22346570080914,
+          "damper_b": 0.06349995368627394,
+          "vc_proxy_mass": 0.07484611709771337,
+          "max_proxy_offset": 0.02103227556065526,
+          "deadband": 0.0018542639960894437,
+          "lowpass_alpha": 0.20144374027650813,
+          "slew_rate_limit": 44.09859455655715
+        },
+        "metrics": {
+          "fs_hz": 119.99999374151263,
+          "n_frames": 314,
+          "contact_frames": 244,
+          "oscillation_peak": 0.0004093490350052506,
+          "oscillation_rms": 0.00029388572776907224,
+          "energy_injection": -0.004374535288661718,
+          "jerk_rms": 24.833576202392578,
+          "contact_rise_time_ms": 16.66666753590107,
+          "free_space_force_mean": 0.0007032115245237947,
+          "penetration_max_mm": 7.146091938018799
+        },
+        "values": [
+          0.0004093490350052506,
+          0.004374535288661718,
+          24.833576202392578,
+          0.0007032115245237947,
+          16.66666753590107
+        ]
+      },
+      {
+        "number": 87,
+        "params": {
+          "spring_k": 20.23459985435792,
+          "damper_b": 0.04220420654687052,
+          "vc_proxy_mass": 0.08567182098559827,
+          "max_proxy_offset": 0.03218712507496162,
+          "deadband": 0.003409101495517417,
+          "lowpass_alpha": 0.4285125456886932,
+          "slew_rate_limit": 43.72696953458485
+        },
+        "metrics": {
+          "fs_hz": 119.99999374151263,
+          "n_frames": 314,
+          "contact_frames": 244,
+          "oscillation_peak": 0.00039338315282491995,
+          "oscillation_rms": 0.0002935898316947998,
+          "energy_injection": -0.00013246946036815643,
+          "jerk_rms": 10.644326210021973,
+          "contact_rise_time_ms": 16.66666753590107,
+          "free_space_force_mean": 0.0007032114663161337,
+          "penetration_max_mm": 7.146091938018799
+        },
+        "values": [
+          0.00039338315282491995,
+          0.00013246946036815643,
+          10.644326210021973,
+          0.0007032114663161337,
+          16.66666753590107
+        ]
+      },
+      {
+        "number": 88,
+        "params": {
+          "spring_k": 39.66881624109882,
+          "damper_b": 0.014765915418782732,
+          "vc_proxy_mass": 0.0550862510133805,
+          "max_proxy_offset": 0.02235354809071241,
+          "deadband": 0.0044055159855558084,
+          "lowpass_alpha": 0.2957498635449373,
+          "slew_rate_limit": 44.09859455655715
+        },
+        "metrics": {
+          "fs_hz": 119.99999374151263,
+          "n_frames": 314,
+          "contact_frames": 244,
+          "oscillation_peak": 0.0006308350269414377,
+          "oscillation_rms": 0.0003787563530885543,
+          "energy_injection": -0.0015022484585642815,
+          "jerk_rms": 22.021060943603516,
+          "contact_rise_time_ms": 16.66666753590107,
+          "free_space_force_mean": 0.0007032115827314556,
+          "penetration_max_mm": 7.146091938018799
+        },
+        "values": [
+          0.0006308350269414377,
+          0.0015022484585642815,
+          22.021060943603516,
+          0.0007032115827314556,
+          16.66666753590107
+        ]
+      },
+      {
+        "number": 89,
+        "params": {
+          "spring_k": 2.6386181984786625,
+          "damper_b": 0.38345406854475694,
+          "vc_proxy_mass": 0.008638243504108948,
+          "max_proxy_offset": 0.04275383880456852,
+          "deadband": 0.002586895535770571,
+          "lowpass_alpha": 0.11094012153134514,
+          "slew_rate_limit": 1.76190086468014
+        },
+        "metrics": {
+          "fs_hz": 119.99999374151263,
+          "n_frames": 314,
+          "contact_frames": 244,
+          "oscillation_peak": 0.0001755554371241592,
+          "oscillation_rms": 0.00010336360329290732,
+          "energy_injection": -0.0434744656085968,
+          "jerk_rms": 3.7608845233917236,
+          "contact_rise_time_ms": 41.6666679084301,
+          "free_space_force_mean": 0.00020649819634854794,
+          "penetration_max_mm": 7.146091938018799
+        },
+        "values": [
+          0.0001755554371241592,
+          0.0434744656085968,
+          3.7608845233917236,
+          0.00020649819634854794,
+          41.6666679084301
+        ]
+      },
+      {
+        "number": 90,
+        "params": {
+          "spring_k": 107.60638254616775,
+          "damper_b": 0.0981834892451857,
+          "vc_proxy_mass": 0.03721344316437966,
+          "max_proxy_offset": 0.04803117064944673,
+          "deadband": 0.004030969945230429,
+          "lowpass_alpha": 0.3876004060483331,
+          "slew_rate_limit": 5.101321676883825
+        },
+        "metrics": {
+          "fs_hz": 119.99999374151263,
+          "n_frames": 314,
+          "contact_frames": 244,
+          "oscillation_peak": 0.0017376744575570047,
+          "oscillation_rms": 0.000605186701438597,
+          "energy_injection": 0.0002784482203423977,
+          "jerk_rms": 31.035715103149414,
+          "contact_rise_time_ms": 25.00000223517418,
+          "free_space_force_mean": 0.0005978847621008754,
+          "penetration_max_mm": 7.146091938018799
+        },
+        "values": [
+          0.0017376744575570047,
+          0.0002784482203423977,
+          31.035715103149414,
+          0.0005978847621008754,
+          25.00000223517418
+        ]
+      },
+      {
+        "number": 91,
+        "params": {
+          "spring_k": 4.237822207550817,
+          "damper_b": 0.030826272414161353,
+          "vc_proxy_mass": 0.18882566764923356,
+          "max_proxy_offset": 0.007641529086177588,
+          "deadband": 0.0034849862086249366,
+          "lowpass_alpha": 0.7897606261440482,
+          "slew_rate_limit": 35.871298091510425
+        },
+        "metrics": {
+          "fs_hz": 119.99999374151263,
+          "n_frames": 314,
+          "contact_frames": 244,
+          "oscillation_peak": 0.0003924823313529917,
+          "oscillation_rms": 0.0002935808212421781,
+          "energy_injection": -0.012162805534899235,
+          "jerk_rms": 6.474952697753906,
+          "contact_rise_time_ms": 16.66666753590107,
+          "free_space_force_mean": 0.0007032115827314556,
+          "penetration_max_mm": 7.146091938018799
+        },
+        "values": [
+          0.0003924823313529917,
+          0.012162805534899235,
+          6.474952697753906,
+          0.0007032115827314556,
+          16.66666753590107
+        ]
+      },
+      {
+        "number": 92,
+        "params": {
+          "spring_k": 0.5513885556845509,
+          "damper_b": 0.0384944797832454,
+          "vc_proxy_mass": 0.011733691207300685,
+          "max_proxy_offset": 0.01463947408338323,
+          "deadband": 0.0001032549973286434,
+          "lowpass_alpha": 0.7704597211443344,
+          "slew_rate_limit": 8.149344942461312
+        },
+        "metrics": {
+          "fs_hz": 119.99999374151263,
+          "n_frames": 314,
+          "contact_frames": 244,
+          "oscillation_peak": 0.0008521001845276118,
+          "oscillation_rms": 0.00045466709430121865,
+          "energy_injection": -0.03403988108038902,
+          "jerk_rms": 9.411330223083496,
+          "contact_rise_time_ms": 16.66666753590107,
+          "free_space_force_mean": 0.0007032115827314556,
+          "penetration_max_mm": 7.146091938018799
+        },
+        "values": [
+          0.0008521001845276118,
+          0.03403988108038902,
+          9.411330223083496,
+          0.0007032115827314556,
+          16.66666753590107
+        ]
+      },
+      {
+        "number": 93,
+        "params": {
+          "spring_k": 5.534409593859478,
+          "damper_b": 3.2220305995463483,
+          "vc_proxy_mass": 0.21211219770832282,
+          "max_proxy_offset": 0.02103227556065526,
+          "deadband": 0.0026444745987645223,
+          "lowpass_alpha": 0.5896423330392357,
+          "slew_rate_limit": 46.28727225080379
+        },
+        "metrics": {
+          "fs_hz": 119.99999374151263,
+          "n_frames": 314,
+          "contact_frames": 244,
+          "oscillation_peak": 0.00039823008095978707,
+          "oscillation_rms": 0.00029358625658653265,
+          "energy_injection": -0.04728527367115021,
+          "jerk_rms": 12.433613777160645,
+          "contact_rise_time_ms": 16.66666753590107,
+          "free_space_force_mean": 0.0007032115827314556,
+          "penetration_max_mm": 7.146091938018799
+        },
+        "values": [
+          0.00039823008095978707,
+          0.04728527367115021,
+          12.433613777160645,
+          0.0007032115827314556,
+          16.66666753590107
+        ]
+      },
+      {
+        "number": 94,
+        "params": {
+          "spring_k": 15.883763812554653,
+          "damper_b": 0.33578025958563595,
+          "vc_proxy_mass": 0.3693158954393565,
+          "max_proxy_offset": 0.03147036588636301,
+          "deadband": 0.0004980746511063566,
+          "lowpass_alpha": 0.3878321009574578,
+          "slew_rate_limit": 47.02755406811537
+        },
+        "metrics": {
+          "fs_hz": 119.99999374151263,
+          "n_frames": 314,
+          "contact_frames": 244,
+          "oscillation_peak": 0.00039242092472084193,
+          "oscillation_rms": 0.00029358050194280686,
+          "energy_injection": -0.019266752526164055,
+          "jerk_rms": 6.842255115509033,
+          "contact_rise_time_ms": 16.66666753590107,
+          "free_space_force_mean": 0.0007032115827314556,
+          "penetration_max_mm": 7.146091938018799
+        },
+        "values": [
+          0.00039242092472084193,
+          0.019266752526164055,
+          6.842255115509033,
+          0.0007032115827314556,
+          16.66666753590107
+        ]
+      },
+      {
+        "number": 95,
+        "params": {
+          "spring_k": 32.677455203009146,
+          "damper_b": 0.014539408591817076,
+          "vc_proxy_mass": 0.10777137782723753,
+          "max_proxy_offset": 0.034190617741671654,
+          "deadband": 0.0010519128053692046,
+          "lowpass_alpha": 0.17247998277211063,
+          "slew_rate_limit": 47.27054652060607
+        },
+        "metrics": {
+          "fs_hz": 119.99999374151263,
+          "n_frames": 314,
+          "contact_frames": 244,
+          "oscillation_peak": 0.0003931965473932317,
+          "oscillation_rms": 0.0002935888516533966,
+          "energy_injection": -0.00021101994207128882,
+          "jerk_rms": 11.851749420166016,
+          "contact_rise_time_ms": 16.66666753590107,
+          "free_space_force_mean": 0.0007032115827314556,
+          "penetration_max_mm": 7.146091938018799
+        },
+        "values": [
+          0.0003931965473932317,
+          0.00021101994207128882,
+          11.851749420166016,
+          0.0007032115827314556,
+          16.66666753590107
+        ]
+      },
+      {
+        "number": 96,
+        "params": {
+          "spring_k": 2.174854483786306,
+          "damper_b": 0.13646566824896972,
+          "vc_proxy_mass": 0.06511897965215208,
+          "max_proxy_offset": 0.021547576227862755,
+          "deadband": 0.0036352213135566413,
+          "lowpass_alpha": 0.30681150997677886,
+          "slew_rate_limit": 6.660991684627267
+        },
+        "metrics": {
+          "fs_hz": 119.99999374151263,
+          "n_frames": 314,
+          "contact_frames": 244,
+          "oscillation_peak": 0.0003925339540770623,
+          "oscillation_rms": 0.00029358154056142213,
+          "energy_injection": -0.030886543914675713,
+          "jerk_rms": 7.483821868896484,
+          "contact_rise_time_ms": 16.66666753590107,
+          "free_space_force_mean": 0.0007032115245237947,
+          "penetration_max_mm": 7.146091938018799
+        },
+        "values": [
+          0.0003925339540770623,
+          0.030886543914675713,
+          7.483821868896484,
+          0.0007032115245237947,
+          16.66666753590107
+        ]
+      },
+      {
+        "number": 97,
+        "params": {
+          "spring_k": 91.50215503756303,
+          "damper_b": 0.18402445310508111,
+          "vc_proxy_mass": 0.4492542359703028,
+          "max_proxy_offset": 0.031032584947762204,
+          "deadband": 0.002270811984537759,
+          "lowpass_alpha": 0.8310118465345333,
+          "slew_rate_limit": 14.212067432562838
+        },
+        "metrics": {
+          "fs_hz": 119.99999374151263,
+          "n_frames": 314,
+          "contact_frames": 244,
+          "oscillation_peak": 0.00039314047537865814,
+          "oscillation_rms": 0.00029358993560590256,
+          "energy_injection": -0.005070327781140804,
+          "jerk_rms": 10.92485523223877,
+          "contact_rise_time_ms": 16.66666753590107,
+          "free_space_force_mean": 0.0007032115245237947,
+          "penetration_max_mm": 7.146091938018799
+        },
+        "values": [
+          0.00039314047537865814,
+          0.005070327781140804,
+          10.92485523223877,
+          0.0007032115245237947,
+          16.66666753590107
+        ]
+      },
+      {
+        "number": 98,
+        "params": {
+          "spring_k": 1.4665927981189015,
+          "damper_b": 0.011657546264200604,
+          "vc_proxy_mass": 0.006815053464694637,
+          "max_proxy_offset": 0.017681642324876484,
+          "deadband": 0.0022684842227802264,
+          "lowpass_alpha": 0.5597502505532861,
+          "slew_rate_limit": 11.713932051024937
+        },
+        "metrics": {
+          "fs_hz": 119.99999374151263,
+          "n_frames": 314,
+          "contact_frames": 244,
+          "oscillation_peak": 0.0006967515457247993,
+          "oscillation_rms": 0.00025964762518165693,
+          "energy_injection": -0.0073348344303667545,
+          "jerk_rms": 7.676891326904297,
+          "contact_rise_time_ms": 33.33333507180214,
+          "free_space_force_mean": 0.00030540834995917976,
+          "penetration_max_mm": 7.146091938018799
+        },
+        "values": [
+          0.0006967515457247993,
+          0.0073348344303667545,
+          7.676891326904297,
+          0.00030540834995917976,
+          33.33333507180214
+        ]
+      },
+      {
+        "number": 99,
+        "params": {
+          "spring_k": 173.69051841156596,
+          "damper_b": 0.18402445310508111,
+          "vc_proxy_mass": 0.4492542359703028,
+          "max_proxy_offset": 0.031032584947762204,
+          "deadband": 0.003072323532384372,
+          "lowpass_alpha": 0.1861856230385941,
+          "slew_rate_limit": 47.23897896077423
+        },
+        "metrics": {
+          "fs_hz": 119.99999374151263,
+          "n_frames": 314,
+          "contact_frames": 244,
+          "oscillation_peak": 0.0003999634550956464,
+          "oscillation_rms": 0.00029368930233166375,
+          "energy_injection": -0.005238902289420366,
+          "jerk_rms": 19.059823989868164,
+          "contact_rise_time_ms": 16.66666753590107,
+          "free_space_force_mean": 0.0007032115827314556,
+          "penetration_max_mm": 7.146091938018799
+        },
+        "values": [
+          0.0003999634550956464,
+          0.005238902289420366,
+          19.059823989868164,
+          0.0007032115827314556,
+          16.66666753590107
+        ]
+      }
+    ]
+  }
+}

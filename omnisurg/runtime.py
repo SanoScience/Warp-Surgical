@@ -10,6 +10,11 @@ from newton._src.geometry.kernels import triangle_closest_point
 
 from omnisurg.config import BoundsConfig, HapticConfig, SceneConfig, SimulationConfig, ViewerConfig
 from omnisurg.grasper_runtime import load_kinematic_grasper
+from omnisurg.haptic_bench.algorithms import (
+    HapticAlgorithm,
+    HapticStepInput,
+    create as create_haptic_algorithm,
+)
 from omnisurg.haptic_feedback import (
     DEFAULT_HAPTIC_PRESET_FILENAME,
     HapticFeedbackDiagnostics,
@@ -37,6 +42,7 @@ from omnisurg.physics.systems import (
     VolumeConstraintSystem,
 )
 from omnisurg.rendering.bridge import RenderBridge
+from omnisurg.rendering.slang import TISSUE_DEBUG_MODE_LABELS
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -222,6 +228,17 @@ def collide_triangles_vs_spheres(
     wp.atomic_add(delta_counter, t3, 1)
     wp.atomic_add(reaction_accumulator, 0, -total_correction)
     wp.atomic_add(reaction_counter, 0, 1)
+
+
+@wp.kernel
+def fill_tissue_vertex_blend_colors(
+    vertex_colors: wp.array(dtype=wp.vec4f),
+    damage: wp.float32,
+    coag: wp.float32,
+    blood: wp.float32,
+):
+    tid = wp.tid()
+    vertex_colors[tid] = wp.vec4f(damage, coag, blood, 0.0)
 
 
 @wp.kernel
@@ -662,6 +679,23 @@ class Runtime:
         scene = build_scene(asset, scene_config, haptic_config, self.device)
 
         self.model = scene.model
+        self.vertex_colors = wp.zeros(self.model.particle_count, dtype=wp.vec4f, device=self.device)
+        self.tissue_blend_damage = 0.0
+        self.tissue_blend_coag = 0.0
+        self.tissue_blend_blood = 0.0
+        self._tissue_blend_dirty = False
+        self.tissue_debug_mode = 0
+        self.tissue_normal_strength = 0.65
+        self.tissue_specular_scale = 0.35
+        self.tissue_roughness_bias = 0.45
+        self.tissue_ambient = 0.22
+        self.tissue_rim_strength = 0.12
+        self.tissue_wetness = 0.0
+        self.tissue_wet_spec_scale = 1.0
+        self.tissue_wet_roughness = 0.18
+        self.tissue_subsurface_color = (0.8, 0.22, 0.16)
+        self.tissue_subsurface_strength = 0.0
+        self.tissue_blood_wetness = 1.0
         self.mesh_ranges = scene.mesh_ranges
         self.surface_indices = scene.surface_tri_indices
         self.surface_meshes = scene.surface_meshes
@@ -738,6 +772,7 @@ class Runtime:
 
         self._extra_key_press_hooks: list = []
         self.renderer = RenderBridge(viewer_config, self.model, self.device)
+        self._sync_tissue_material_params()
         self.renderer.set_input_callbacks(on_key_press=self._on_key_press)
         self.renderer.register_ui_callback(self.gui, position="side")
         self.graspers = {
@@ -817,14 +852,12 @@ class Runtime:
         self._haptic_new_preset_name = "custom"
         self._haptic_feedback_available = False
         self._force_feedback_compute_always = False
-        self._haptic_feedback_state_initialized = False
-        self._haptic_device_position_prev = np.zeros(3, dtype=np.float32)
-        self._haptic_proxy_position = np.zeros(3, dtype=np.float32)
-        self._haptic_lowpass_state = np.zeros(3, dtype=np.float32)
-        self._haptic_force_command = np.zeros(3, dtype=np.float32)
         self._haptic_force_commands = {
             PRIMARY_CONTROLLER_ID: np.zeros(3, dtype=np.float32),
         }
+        self._haptic_algorithm: HapticAlgorithm = create_haptic_algorithm(
+            self.haptic_feedback_settings.algorithm, self.haptic_feedback_settings
+        )
 
         self._refresh_haptic_presets(show_status=False)
         default_index = self._find_haptic_preset_index(filename=DEFAULT_HAPTIC_PRESET_FILENAME)
@@ -954,17 +987,18 @@ class Runtime:
         return self._save_haptic_preset_to_path(path, display_name)
 
     def _reset_haptic_force_state(self, device_position: np.ndarray | None = None):
-        if device_position is None:
-            base = np.zeros(3, dtype=np.float32)
-            self._haptic_feedback_state_initialized = False
-        else:
-            base = np.asarray(device_position, dtype=np.float32).copy()
-            self._haptic_feedback_state_initialized = True
-        self._haptic_device_position_prev = base.copy()
-        self._haptic_proxy_position = base.copy()
-        self._haptic_lowpass_state = np.zeros(3, dtype=np.float32)
-        self._haptic_force_command = np.zeros(3, dtype=np.float32)
+        self._haptic_algorithm.reset(device_position)
         self._haptic_force_commands[PRIMARY_CONTROLLER_ID] = np.zeros(3, dtype=np.float32)
+
+    def _ensure_haptic_algorithm(self) -> None:
+        desired = self.haptic_feedback_settings.algorithm
+        current_name = getattr(self._haptic_algorithm, "ALGORITHM_NAME", None)
+        if current_name != desired:
+            self._haptic_algorithm = create_haptic_algorithm(
+                desired, self.haptic_feedback_settings
+            )
+        else:
+            self._haptic_algorithm.update_settings(self.haptic_feedback_settings)
 
     def _supports_haptic_force_feedback(self, source: InputRig | InputSource | None) -> bool:
         if source is None:
@@ -998,7 +1032,13 @@ class Runtime:
         diagnostics.avg_reaction_offset = reaction.copy()
         diagnostics.force_feedback_available = bool(self._haptic_feedback_available)
 
-        device_position = np.asarray(state.scaled_position, dtype=np.float32).copy() if state.sample_present else zero.copy()
+        self._ensure_haptic_algorithm()
+
+        device_position = (
+            np.asarray(state.scaled_position, dtype=np.float32).copy()
+            if state.sample_present
+            else zero.copy()
+        )
         compute_allowed = self._haptic_feedback_available or self._force_feedback_compute_always
         if (
             not settings.enabled
@@ -1015,71 +1055,22 @@ class Runtime:
             diagnostics.slew_active = False
             return
 
-        if not self._haptic_feedback_state_initialized:
-            self._reset_haptic_force_state(device_position)
+        step_input = HapticStepInput(
+            device_position=device_position,
+            avg_reaction_offset=reaction,
+            contact_count=int(contact_count),
+            dt=max(self.sim_config.frame_dt, 1.0e-6),
+        )
+        result = self._haptic_algorithm.compute(step_input)
 
-        reaction_scale = max(0.0, float(settings.reaction_scale))
-        proxy_follow = float(np.clip(settings.proxy_follow, 0.0, 1.0))
-        max_proxy_offset = max(0.0, float(settings.max_proxy_offset))
-        spring_k = max(0.0, float(settings.spring_k))
-        damper_b = max(0.0, float(settings.damper_b))
-        deadband = max(0.0, float(settings.deadband))
-        lowpass_alpha = float(np.clip(settings.lowpass_alpha, 0.0, 1.0))
-        max_force = max(0.0, float(settings.max_force))
-        slew_rate_limit = max(0.0, float(settings.slew_rate_limit))
-        dt = max(self.sim_config.frame_dt, 1.0e-6)
+        self._haptic_force_commands[PRIMARY_CONTROLLER_ID] = result.force.copy()
 
-        proxy_target = device_position + reaction_scale * reaction
-        proxy_offset = proxy_target - device_position
-        proxy_offset_mag = float(np.linalg.norm(proxy_offset))
-        if max_proxy_offset > 0.0 and proxy_offset_mag > max_proxy_offset:
-            proxy_offset *= max_proxy_offset / max(proxy_offset_mag, 1.0e-8)
-        proxy_target = device_position + proxy_offset
-
-        proxy_prev = self._haptic_proxy_position.copy()
-        device_prev = self._haptic_device_position_prev.copy()
-        self._haptic_proxy_position = proxy_prev + proxy_follow * (proxy_target - proxy_prev)
-
-        device_velocity = (device_position - device_prev) / dt
-        proxy_velocity = (self._haptic_proxy_position - proxy_prev) / dt
-        raw_force = spring_k * (self._haptic_proxy_position - device_position) + damper_b * (proxy_velocity - device_velocity)
-
-        deadband_force = raw_force.copy()
-        if float(np.linalg.norm(deadband_force)) < deadband:
-            deadband_force.fill(0.0)
-
-        filtered_force = lowpass_alpha * deadband_force + (1.0 - lowpass_alpha) * self._haptic_lowpass_state
-        self._haptic_lowpass_state = filtered_force.copy()
-
-        final_force = filtered_force.copy()
-        clamp_active = False
-        filtered_force_mag = float(np.linalg.norm(final_force))
-        if max_force <= 0.0:
-            clamp_active = filtered_force_mag > 0.0
-            final_force.fill(0.0)
-        elif filtered_force_mag > max_force:
-            final_force *= max_force / max(filtered_force_mag, 1.0e-8)
-            clamp_active = True
-
-        slew_active = False
-        if slew_rate_limit > 0.0:
-            max_delta = slew_rate_limit * dt
-            delta = final_force - self._haptic_force_command
-            delta_mag = float(np.linalg.norm(delta))
-            if delta_mag > max_delta and delta_mag > 1.0e-8:
-                final_force = self._haptic_force_command + delta * (max_delta / delta_mag)
-                slew_active = True
-
-        self._haptic_force_command = final_force.astype(np.float32, copy=True)
-        self._haptic_force_commands[PRIMARY_CONTROLLER_ID] = self._haptic_force_command.copy()
-        self._haptic_device_position_prev = device_position.copy()
-
-        diagnostics.proxy_offset = (self._haptic_proxy_position - device_position).astype(np.float32, copy=True)
-        diagnostics.raw_force = raw_force.astype(np.float32, copy=True)
-        diagnostics.filtered_force = filtered_force.astype(np.float32, copy=True)
-        diagnostics.final_force = self._haptic_force_command.copy()
-        diagnostics.clamp_active = clamp_active
-        diagnostics.slew_active = slew_active
+        diagnostics.proxy_offset = result.proxy_offset
+        diagnostics.raw_force = result.raw_force
+        diagnostics.filtered_force = result.filtered_force
+        diagnostics.final_force = result.force
+        diagnostics.clamp_active = result.clamp_active
+        diagnostics.slew_active = result.slew_active
 
     def get_haptic_force_commands(self) -> dict[str, np.ndarray]:
         return {
@@ -1105,6 +1096,12 @@ class Runtime:
             return np.zeros(3, dtype=np.float32), 0
 
         return weighted_sum / float(total_count), total_count
+
+    def _needs_haptic_reaction_readback(self) -> bool:
+        state = self.controller_states.get(PRIMARY_CONTROLLER_ID)
+        if state is None or not state.sample_present:
+            return False
+        return bool(self._haptic_feedback_available or self._force_feedback_compute_always)
 
     def _render_haptics_ui(self, ui):
         if not _ui_section_expanded(ui, "Haptics"):
@@ -1375,6 +1372,7 @@ class Runtime:
         grasper_truncation_safety = float(np.clip(self._pending_grasper_truncation_safety, 0.5, 1.0))
         grasper_truncate_prediction = bool(self._pending_grasper_truncate_prediction)
         rebuild_graph = False
+        sync_grasper_collision_settings = False
 
         if substeps != self.sim_substeps:
             self.sim_substeps = substeps
@@ -1416,33 +1414,40 @@ class Runtime:
             self.scene_config.enable_grasper_collisions = enable_grasper_collisions
             self._apply_grasper_collision_mode(self.grasper_collision_mode)
             rebuild_graph = True
+            sync_grasper_collision_settings = True
 
         if grasper_collision_mode != self.grasper_collision_mode:
             self._apply_grasper_collision_mode(grasper_collision_mode)
             self.sim_config.grasper_collision_mode = self.grasper_collision_mode
             rebuild_graph = True
+            sync_grasper_collision_settings = True
 
         if grasper_collision_motion_samples != self.grasper_collision_motion_samples:
             self.grasper_collision_motion_samples = grasper_collision_motion_samples
             self.sim_config.grasper_collision_motion_samples = grasper_collision_motion_samples
             rebuild_graph = True
+            sync_grasper_collision_settings = True
 
         if _float_changed(grasper_collision_margin, self.grasper_collision_margin):
             self.grasper_collision_margin = grasper_collision_margin
             self.sim_config.grasper_collision_margin = grasper_collision_margin
             rebuild_graph = True
+            sync_grasper_collision_settings = True
 
         if _float_changed(grasper_truncation_safety, self.grasper_truncation_safety):
             self.grasper_truncation_safety = grasper_truncation_safety
             self.sim_config.grasper_truncation_safety = grasper_truncation_safety
             rebuild_graph = True
+            sync_grasper_collision_settings = True
 
         if grasper_truncate_prediction != self.grasper_truncate_prediction:
             self.grasper_truncate_prediction = grasper_truncate_prediction
             self.sim_config.grasper_truncate_prediction = grasper_truncate_prediction
             rebuild_graph = True
+            sync_grasper_collision_settings = True
 
-        self._sync_grasper_collision_settings()
+        if sync_grasper_collision_settings:
+            self._sync_grasper_collision_settings()
 
         if rebuild_graph:
             self._capture_graph()
@@ -1569,6 +1574,101 @@ class Runtime:
         self.textures_enabled = not self.textures_enabled
         print(f"Textures {'on' if self.textures_enabled else 'off'}")
 
+    def _set_tissue_blend_channel(self, attr: str, value: float) -> None:
+        clamped = float(np.clip(value, 0.0, 1.0))
+        if _float_changed(getattr(self, attr), clamped):
+            setattr(self, attr, clamped)
+            self._tissue_blend_dirty = True
+
+    def _reset_tissue_blend_channels(self) -> None:
+        if (
+            _float_changed(self.tissue_blend_damage, 0.0)
+            or _float_changed(self.tissue_blend_coag, 0.0)
+            or _float_changed(self.tissue_blend_blood, 0.0)
+        ):
+            self.tissue_blend_damage = 0.0
+            self.tissue_blend_coag = 0.0
+            self.tissue_blend_blood = 0.0
+            self._tissue_blend_dirty = True
+
+    def _sync_tissue_blend_vertex_colors(self) -> None:
+        if not self._tissue_blend_dirty or len(self.vertex_colors) == 0:
+            return
+
+        wp.launch(
+            fill_tissue_vertex_blend_colors,
+            dim=len(self.vertex_colors),
+            inputs=[
+                self.vertex_colors,
+                np.float32(self.tissue_blend_damage),
+                np.float32(self.tissue_blend_coag),
+                np.float32(self.tissue_blend_blood),
+            ],
+            device=self.device,
+        )
+        self._tissue_blend_dirty = False
+
+    def _sync_tissue_material_params(self) -> None:
+        renderer = getattr(self, "renderer", None)
+        if renderer is None:
+            return
+        renderer.set_tissue_material_params(
+            debug_mode=self.tissue_debug_mode,
+            normal_strength=self.tissue_normal_strength,
+            specular_scale=self.tissue_specular_scale,
+            roughness_bias=self.tissue_roughness_bias,
+            ambient=self.tissue_ambient,
+            rim_strength=self.tissue_rim_strength,
+            wetness=self.tissue_wetness,
+            wet_spec_scale=self.tissue_wet_spec_scale,
+            wet_roughness=self.tissue_wet_roughness,
+            subsurface_color=self.tissue_subsurface_color,
+            subsurface_strength=self.tissue_subsurface_strength,
+            blood_wetness=self.tissue_blood_wetness,
+        )
+
+    def _set_tissue_debug_mode(self, value: int) -> None:
+        mode = int(np.clip(value, 0, len(TISSUE_DEBUG_MODE_LABELS) - 1))
+        if mode != self.tissue_debug_mode:
+            self.tissue_debug_mode = mode
+            self._sync_tissue_material_params()
+
+    def _set_tissue_material_float(self, attr: str, value: float, min_value: float, max_value: float) -> None:
+        clamped = float(np.clip(value, min_value, max_value))
+        if _float_changed(getattr(self, attr), clamped):
+            setattr(self, attr, clamped)
+            self._sync_tissue_material_params()
+
+    def _render_tissue_debug_ui(self, ui) -> None:
+        max_debug_mode = len(TISSUE_DEBUG_MODE_LABELS) - 1
+        current_mode = int(np.clip(self.tissue_debug_mode, 0, max_debug_mode))
+        if current_mode != self.tissue_debug_mode:
+            self.tissue_debug_mode = current_mode
+            self._sync_tissue_material_params()
+
+        combo = getattr(ui, "combo", None)
+        if callable(combo):
+            changed, debug_mode = combo(
+                "Tissue Debug View",
+                current_mode,
+                TISSUE_DEBUG_MODE_LABELS,
+            )
+        else:
+            changed, debug_mode = ui.slider_int(
+                "Tissue Debug View",
+                current_mode,
+                0,
+                max_debug_mode,
+            )
+
+        if changed:
+            self._set_tissue_debug_mode(debug_mode)
+            current_mode = self.tissue_debug_mode
+
+        ui.text(f"Active: {TISSUE_DEBUG_MODE_LABELS[current_mode]}")
+        if current_mode != 0 and ui.button("Show Final Tissue"):
+            self._set_tissue_debug_mode(0)
+
     def gui(self, ui):
         ui.text("Solver")
         changed, substeps = ui.slider_int("Substeps", self._pending_substeps, 1, 64)
@@ -1670,6 +1770,69 @@ class Runtime:
         if changed:
             self.show_tissue = show_tissue
 
+        ui.text("Tissue Blend")
+        changed, damage_blend = ui.slider_float("Damage Blend", self.tissue_blend_damage, 0.0, 1.0, "%.2f")
+        if changed:
+            self._set_tissue_blend_channel("tissue_blend_damage", damage_blend)
+
+        changed, coag_blend = ui.slider_float("Coag Blend", self.tissue_blend_coag, 0.0, 1.0, "%.2f")
+        if changed:
+            self._set_tissue_blend_channel("tissue_blend_coag", coag_blend)
+
+        changed, blood_blend = ui.slider_float("Blood Blend", self.tissue_blend_blood, 0.0, 1.0, "%.2f")
+        if changed:
+            self._set_tissue_blend_channel("tissue_blend_blood", blood_blend)
+
+        if ui.button("Reset Tissue Blend"):
+            self._reset_tissue_blend_channels()
+
+        ui.text("Tissue Material")
+        self._render_tissue_debug_ui(ui)
+
+        changed, normal_strength = ui.slider_float(
+            "Normal Strength",
+            self.tissue_normal_strength,
+            0.0,
+            2.0,
+            "%.2f",
+        )
+        if changed:
+            self._set_tissue_material_float("tissue_normal_strength", normal_strength, 0.0, 2.0)
+
+        changed, specular_scale = ui.slider_float(
+            "Specular Scale",
+            self.tissue_specular_scale,
+            0.0,
+            2.0,
+            "%.2f",
+        )
+        if changed:
+            self._set_tissue_material_float("tissue_specular_scale", specular_scale, 0.0, 2.0)
+
+        changed, roughness_bias = ui.slider_float(
+            "Roughness Bias",
+            self.tissue_roughness_bias,
+            0.0,
+            1.0,
+            "%.2f",
+        )
+        if changed:
+            self._set_tissue_material_float("tissue_roughness_bias", roughness_bias, 0.0, 1.0)
+
+        changed, ambient = ui.slider_float("Ambient", self.tissue_ambient, 0.0, 1.0, "%.2f")
+        if changed:
+            self._set_tissue_material_float("tissue_ambient", ambient, 0.0, 1.0)
+
+        changed, rim_strength = ui.slider_float(
+            "Rim Strength",
+            self.tissue_rim_strength,
+            0.0,
+            1.0,
+            "%.2f",
+        )
+        if changed:
+            self._set_tissue_material_float("tissue_rim_strength", rim_strength, 0.0, 1.0)
+
         changed, sky_enabled = ui.checkbox("Sky", self.sky_enabled)
         if changed:
             self.sky_enabled = sky_enabled
@@ -1739,7 +1902,10 @@ class Runtime:
             else:
                 self._simulate_step()
 
-        reaction_offset, contact_count = self._get_combined_haptic_reaction()
+        if self._needs_haptic_reaction_readback():
+            reaction_offset, contact_count = self._get_combined_haptic_reaction()
+        else:
+            reaction_offset, contact_count = np.zeros(3, dtype=np.float32), 0
         self._update_haptic_force_feedback(reaction_offset, contact_count)
         self._trim_profile_samples()
         self.sim_time += self.sim_config.frame_dt
@@ -1767,6 +1933,7 @@ class Runtime:
 
                 grasper.update_render_geometry()
 
+            self._sync_tissue_blend_vertex_colors()
             self.renderer.begin_frame(self.sim_time)
             if self.show_tissue:
                 if self.surface_meshes:
@@ -1779,6 +1946,7 @@ class Runtime:
                             color=None if texture else MESH_COLORS.get(mesh_name, MESH_COLORS["tissue"]),
                             uvs=self.uvs if texture else None,
                             texture=texture,
+                            vertex_colors=self.vertex_colors if texture else None,
                         )
                 else:
                     texture = self.mesh_textures.get("tissue") if self.textures_enabled else None
@@ -1789,6 +1957,7 @@ class Runtime:
                         color=MESH_COLORS["tissue"] if texture is None else None,
                         uvs=self.uvs if texture else None,
                         texture=texture,
+                        vertex_colors=self.vertex_colors if texture else None,
                     )
 
             if self.show_grasper_mesh:

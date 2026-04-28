@@ -1,0 +1,35 @@
+{
+  "schema": "haptic-bench/v1",
+  "data": {
+    "algorithm": "spring_damper",
+    "settings": {
+      "enabled": true,
+      "reaction_scale": 97.82499694824219,
+      "proxy_follow": 0.4970000088214874,
+      "max_proxy_offset": 0.21570000052452087,
+      "spring_k": 14.492799758911133,
+      "damper_b": 0.10869999974966049,
+      "deadband": 0.002199999988079071,
+      "lowpass_alpha": 0.3009999990463257,
+      "max_force": 3.3333001136779785,
+      "slew_rate_limit": 532.6090087890625,
+      "vc_proxy_mass": 0.05,
+      "tdpc_alpha": 1.0,
+      "algorithm": "spring_damper"
+    },
+    "device_params": null,
+    "contact_trace": "traces\\cloth_regular_mid.npz",
+    "metrics": {
+      "fs_hz": 119.99999374151263,
+      "n_frames": 314,
+      "contact_frames": 244,
+      "oscillation_peak": 0.010754005022249264,
+      "oscillation_rms": 0.0048124201929339245,
+      "energy_injection": -0.8788488507270813,
+      "jerk_rms": 132.58367919921875,
+      "contact_rise_time_ms": 499.9999701976776,
+      "free_space_force_mean": 0.004832098726183176,
+      "penetration_max_mm": 7.146091938018799
+    }
+  }
+}

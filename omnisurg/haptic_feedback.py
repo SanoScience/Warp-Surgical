@@ -29,6 +29,9 @@ class HapticFeedbackSettings:
     lowpass_alpha: float = 0.35
     max_force: float = 0.05
     slew_rate_limit: float = 0.75
+    vc_proxy_mass: float = 0.05
+    tdpc_alpha: float = 1.0
+    algorithm: str = "spring_damper"
 
 
 @dataclass
@@ -74,6 +77,10 @@ def settings_almost_equal(a: HapticFeedbackSettings, b: HapticFeedbackSettings, 
             if bool(left) != bool(right):
                 return False
             continue
+        if isinstance(left, str):
+            if str(left) != str(right):
+                return False
+            continue
         if abs(float(left) - float(right)) > atol:
             return False
     return True
@@ -103,13 +110,22 @@ def _coerce_float(value, field_name: str) -> float:
     return numeric
 
 
+def _coerce_str(value, field_name: str) -> str:
+    if not isinstance(value, str) or not value:
+        raise ValueError(f'Preset field "{field_name}" must be a non-empty string')
+    return value
+
+
 def settings_from_dict(payload: dict) -> HapticFeedbackSettings:
     defaults = HapticFeedbackSettings()
     kwargs = {}
     for spec in fields(HapticFeedbackSettings):
-        raw_value = payload.get(spec.name, getattr(defaults, spec.name))
-        if isinstance(getattr(defaults, spec.name), bool):
+        default_value = getattr(defaults, spec.name)
+        raw_value = payload.get(spec.name, default_value)
+        if isinstance(default_value, bool):
             kwargs[spec.name] = _coerce_bool(raw_value, spec.name)
+        elif isinstance(default_value, str):
+            kwargs[spec.name] = _coerce_str(raw_value, spec.name)
         else:
             kwargs[spec.name] = _coerce_float(raw_value, spec.name)
     return HapticFeedbackSettings(**kwargs)

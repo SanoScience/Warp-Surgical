@@ -4,6 +4,7 @@ import warp as wp
 
 from omnisurg.config import ViewerConfig
 from omnisurg.rendering.headless import HeadlessRenderer
+from omnisurg.rendering.slang import SLANG_RENDER_BACKENDS, SlangRenderer
 from omnisurg.rendering.surgsim import SurgSimCompatRenderer
 from omnisurg.rendering.textures import enable_persistent_gl_textures
 
@@ -276,6 +277,8 @@ class RenderBridge:
             self._renderer = newton.viewer.ViewerRTX()
             self._renderer.set_model(model)
             self._renderer.set_camera(wp.vec3f(*viewer_config.camera_pos), 0, -90)
+        elif self._backend in SLANG_RENDER_BACKENDS:
+            self._renderer = SlangRenderer(viewer_config, model, device)
         else:
             self._renderer = newton.viewer.ViewerGL(vsync=viewer_config.vsync)
             self._renderer.set_model(model)
@@ -386,6 +389,13 @@ class RenderBridge:
         if callable(log_fn):
             log_fn(name, float(value))
 
+    def set_tissue_material_params(self, **params) -> None:
+        if self._backend not in SLANG_RENDER_BACKENDS:
+            return
+        set_params = getattr(self._renderer, "set_tissue_material_params", None)
+        if callable(set_params):
+            set_params(**params)
+
     def draw_mesh(
         self,
         name: str,
@@ -394,8 +404,22 @@ class RenderBridge:
         color: tuple[float, float, float] | None = None,
         uvs: wp.array | None = None,
         texture: str | None = None,
+        vertex_colors: wp.array | None = None,
     ):
         if self._backend == "headless":
+            return
+
+        if self._backend in SLANG_RENDER_BACKENDS:
+            self._renderer.draw_mesh(
+                name=name,
+                particle_q=particle_q,
+                surface_indices=surface_indices,
+                color=color,
+                uvs=uvs,
+                texture=texture,
+                vertex_colors=vertex_colors,
+            )
+            self._mesh_created.add(name)
             return
 
         textured = uvs is not None and texture is not None
@@ -452,11 +476,24 @@ class RenderBridge:
         if self._backend == "headless":
             return
 
+        if self._backend in SLANG_RENDER_BACKENDS:
+            self._renderer.draw_points(name, points, radii, colors)
+            return
+
         radii, colors = self._normalize_point_inputs(name, points, radii, colors)
         self._renderer.log_points(name, points, radii, colors)
 
     def draw_haptic_sphere(self, position: wp.array, radius: float | None = None):
         if self._backend == "headless":
+            return
+
+        if self._backend in SLANG_RENDER_BACKENDS:
+            self._renderer.draw_points(
+                "haptic_sphere",
+                position,
+                0.025 if radius is None else radius,
+                (0.8, 0.2, 0.2),
+            )
             return
 
         haptic_radius = self.gpu.haptic_radius if radius is None else radius

@@ -1,0 +1,55 @@
+{
+  "schema": "haptic-bench/v1",
+  "data": {
+    "rows": [
+      {
+        "path": "bench\\baseline.json",
+        "algorithm": "spring_damper",
+        "metrics": {
+          "fs_hz": 119.99999374151263,
+          "n_frames": 314,
+          "contact_frames": 244,
+          "oscillation_peak": 0.010754005022249264,
+          "oscillation_rms": 0.0048124201929339245,
+          "energy_injection": -0.8788488507270813,
+          "jerk_rms": 132.58367919921875,
+          "contact_rise_time_ms": 499.9999701976776,
+          "free_space_force_mean": 0.004832098726183176,
+          "penetration_max_mm": 7.146091938018799
+        }
+      },
+      {
+        "path": "bench\\vc.json",
+        "algorithm": "virtual_coupling",
+        "metrics": {
+          "fs_hz": 119.99999374151263,
+          "n_frames": 314,
+          "contact_frames": 244,
+          "oscillation_peak": 0.0024099261261032595,
+          "oscillation_rms": 0.0009097478980029664,
+          "energy_injection": -0.9115344882011414,
+          "jerk_rms": 66.61430358886719,
+          "contact_rise_time_ms": 566.6666626930237,
+          "free_space_force_mean": 0.0017296802252531052,
+          "penetration_max_mm": 7.146091938018799
+        }
+      },
+      {
+        "path": "bench\\tdpc.json",
+        "algorithm": "virtual_coupling_tdpc",
+        "metrics": {
+          "fs_hz": 119.99999374151263,
+          "n_frames": 314,
+          "contact_frames": 244,
+          "oscillation_peak": 0.0024099261261032595,
+          "oscillation_rms": 0.0009097478980029664,
+          "energy_injection": -0.9115344882011414,
+          "jerk_rms": 66.61430358886719,
+          "contact_rise_time_ms": 566.6666626930237,
+          "free_space_force_mean": 0.0017296802252531052,
+          "penetration_max_mm": 7.146091938018799
+        }
+      }
+    ]
+  }
+}

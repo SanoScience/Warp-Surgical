@@ -3,6 +3,7 @@ import shutil
 import subprocess
 import sys
 import unittest
+from collections import defaultdict
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
@@ -30,6 +31,7 @@ from omnisurg.haptics import BimanualReplayRig, ReplayInputSource
 from omnisurg.instruments.grasper import load_kinematic_grasper
 from omnisurg.input.sources import MultiSourceRig
 from omnisurg.rendering.bridge import RenderBridge
+from omnisurg.rendering.slang import SlangRenderer, TISSUE_DEBUG_MODE_LABELS, TissueMaterialParams, _SlangImmediateUi
 from omnisurg.input.follou import MiniMouController
 from omnisurg.input.sources import LiveHapticSource, LiveMiniMouSource
 from omnisurg.mesh.vtk_export import export_asset_dir_to_vtk
@@ -79,6 +81,142 @@ def _prepare_test_subdir(name: str) -> Path:
     shutil.rmtree(path, ignore_errors=True)
     path.mkdir(parents=True, exist_ok=True)
     return path
+
+
+class _FakeSlangUiWidget:
+    def __init__(self, parent=None):
+        self.parent = parent
+        self.visible = True
+
+
+class _FakeSlangUiText(_FakeSlangUiWidget):
+    def __init__(self, parent, text=""):
+        super().__init__(parent)
+        self.text = text
+
+
+class _FakeSlangUiGroup(_FakeSlangUiWidget):
+    def __init__(self, parent, label=""):
+        super().__init__(parent)
+        self.label = label
+
+
+class _FakeSlangUiButton(_FakeSlangUiWidget):
+    def __init__(self, parent, label="", callback=None):
+        super().__init__(parent)
+        self.label = label
+        self.callback = callback
+
+
+class _FakeSlangUiValue(_FakeSlangUiWidget):
+    def __init__(self, parent, label="", value=None, callback=None):
+        super().__init__(parent)
+        self.label = label
+        self.value = value
+        self.callback = callback
+
+
+class _FakeSlangUiSlider(_FakeSlangUiValue):
+    def __init__(self, parent, label="", value=0.0, callback=None, min=0.0, max=1.0, format="%.3f"):
+        super().__init__(parent, label, value, callback)
+        self.min = min
+        self.max = max
+        self.format = format
+
+
+class _FakeSlangUiCombo(_FakeSlangUiValue):
+    def __init__(self, parent, label="", value=0, callback=None, items=None):
+        super().__init__(parent, label, value, callback)
+        self.items = [] if items is None else list(items)
+
+
+class _FakeSlangUiWindow(_FakeSlangUiWidget):
+    def __init__(self, parent, title="", position=None, size=None):
+        super().__init__(parent)
+        self.title = title
+        self.position = position
+        self.size = size
+
+
+class _FakeSlangUiModule:
+    def __init__(self):
+        self.created = defaultdict(int)
+
+    def Text(self, parent, text=""):
+        self.created["Text"] += 1
+        return _FakeSlangUiText(parent, text)
+
+    def Group(self, parent, label=""):
+        self.created["Group"] += 1
+        return _FakeSlangUiGroup(parent, label)
+
+    def Window(self, parent, title="", position=None, size=None):
+        self.created["Window"] += 1
+        return _FakeSlangUiWindow(parent, title, position, size)
+
+    def CheckBox(self, parent, label="", value=False, callback=None):
+        self.created["CheckBox"] += 1
+        return _FakeSlangUiValue(parent, label, value, callback)
+
+    def SliderFloat(self, parent, label="", value=0.0, callback=None, min=0.0, max=1.0, format="%.3f"):
+        self.created["SliderFloat"] += 1
+        return _FakeSlangUiSlider(parent, label, value, callback, min, max, format)
+
+    def SliderInt(self, parent, label="", value=0, callback=None, min=0, max=1):
+        self.created["SliderInt"] += 1
+        return _FakeSlangUiSlider(parent, label, value, callback, min, max, "%d")
+
+    def Button(self, parent, label="", callback=None):
+        self.created["Button"] += 1
+        return _FakeSlangUiButton(parent, label, callback)
+
+    def ComboBox(self, parent, label="", value=0, callback=None, items=None):
+        self.created["ComboBox"] += 1
+        return _FakeSlangUiCombo(parent, label, value, callback, items)
+
+    def InputText(self, parent, label="", value="", callback=None):
+        self.created["InputText"] += 1
+        return _FakeSlangUiValue(parent, label, value, callback)
+
+
+class _FakeTissueDebugComboUi:
+    def __init__(self, combo_result=(False, 0), button_result=False):
+        self.combo_result = combo_result
+        self.button_result = button_result
+        self.combo_calls = []
+        self.texts = []
+        self.buttons = []
+
+    def combo(self, label, value, items):
+        self.combo_calls.append((label, value, tuple(items)))
+        return self.combo_result
+
+    def text(self, value):
+        self.texts.append(str(value))
+
+    def button(self, label):
+        self.buttons.append(label)
+        return self.button_result
+
+
+class _FakeTissueDebugSliderUi:
+    def __init__(self, slider_result=(False, 0), button_result=False):
+        self.slider_result = slider_result
+        self.button_result = button_result
+        self.slider_calls = []
+        self.texts = []
+        self.buttons = []
+
+    def slider_int(self, label, value, min_value, max_value):
+        self.slider_calls.append((label, value, min_value, max_value))
+        return self.slider_result
+
+    def text(self, value):
+        self.texts.append(str(value))
+
+    def button(self, label):
+        self.buttons.append(label)
+        return self.button_result
 
 
 class TestPhaseRuntime(unittest.TestCase):
@@ -570,6 +708,11 @@ class TestPhaseRuntime(unittest.TestCase):
                     BoundsConfig(),
                 )
                 self.assertTrue(runtime.textures_enabled)
+                self.assertEqual(len(runtime.vertex_colors), runtime.model.particle_count)
+                np.testing.assert_allclose(
+                    runtime.vertex_colors.numpy(),
+                    np.zeros((runtime.model.particle_count, 4), dtype=np.float32),
+                )
                 runtime.toggle_textures()
                 self.assertFalse(runtime.textures_enabled)
                 runtime.toggle_textures()
@@ -577,6 +720,30 @@ class TestPhaseRuntime(unittest.TestCase):
         finally:
             if runtime is not None:
                 runtime.close()
+
+    def test_tissue_blend_debug_channels_fill_vertex_colors(self):
+        with wp.ScopedDevice("cpu"):
+            runtime = runtime_module.Runtime.__new__(runtime_module.Runtime)
+            runtime.device = wp.get_device()
+            runtime.vertex_colors = wp.zeros(4, dtype=wp.vec4f, device=runtime.device)
+            runtime.tissue_blend_damage = 0.0
+            runtime.tissue_blend_coag = 0.0
+            runtime.tissue_blend_blood = 0.0
+            runtime._tissue_blend_dirty = False
+
+            runtime._set_tissue_blend_channel("tissue_blend_damage", 0.25)
+            runtime._set_tissue_blend_channel("tissue_blend_coag", 0.50)
+            runtime._set_tissue_blend_channel("tissue_blend_blood", 0.75)
+            runtime._sync_tissue_blend_vertex_colors()
+
+            expected = np.tile(np.array([0.25, 0.50, 0.75, 0.0], dtype=np.float32), (4, 1))
+            np.testing.assert_allclose(runtime.vertex_colors.numpy(), expected)
+            self.assertFalse(runtime._tissue_blend_dirty)
+
+            runtime._reset_tissue_blend_channels()
+            runtime._sync_tissue_blend_vertex_colors()
+
+            np.testing.assert_allclose(runtime.vertex_colors.numpy(), np.zeros((4, 4), dtype=np.float32))
 
     def test_render_bridge_normalizes_scalar_point_inputs(self):
         class FakeRenderer:
@@ -638,6 +805,515 @@ class TestPhaseRuntime(unittest.TestCase):
             _name, _points, radii, colors = bridge._renderer.calls[0]
             np.testing.assert_allclose(radii.numpy(), np.array([0.0625], dtype=np.float32))
             np.testing.assert_allclose(colors.numpy(), np.array([[0.8, 0.2, 0.2]], dtype=np.float32))
+
+    def test_render_bridge_forwards_vertex_colors_to_slang(self):
+        class FakeSlangRenderer:
+            def __init__(self):
+                self.calls = []
+
+            def draw_mesh(self, **kwargs):
+                self.calls.append(kwargs)
+
+        with wp.ScopedDevice("cpu"):
+            bridge = RenderBridge.__new__(RenderBridge)
+            bridge._backend = "slang"
+            bridge._renderer = FakeSlangRenderer()
+            bridge._mesh_created = set()
+            points = wp.zeros(3, dtype=wp.vec3f, device=wp.get_device())
+            indices = wp.array([0, 1, 2], dtype=wp.int32, device=wp.get_device())
+            vertex_colors = wp.zeros(3, dtype=wp.vec4f, device=wp.get_device())
+
+            bridge.draw_mesh(
+                "tissue",
+                points,
+                indices,
+                texture="textures/tissue/diffuse-base.png",
+                vertex_colors=vertex_colors,
+            )
+
+            self.assertEqual(len(bridge._renderer.calls), 1)
+            self.assertIs(bridge._renderer.calls[0]["vertex_colors"], vertex_colors)
+
+    def test_render_bridge_accepts_vertex_colors_on_gl_path(self):
+        class FakeGlRenderer:
+            def __init__(self):
+                self.mesh_calls = []
+                self.instance_calls = []
+
+            def log_mesh(self, name, points, indices, uvs, texture, hidden):
+                self.mesh_calls.append((name, points, indices, uvs, texture, hidden))
+
+            def log_instances(self, *args, **kwargs):
+                self.instance_calls.append((args, kwargs))
+
+        with wp.ScopedDevice("cpu"):
+            bridge = RenderBridge.__new__(RenderBridge)
+            bridge._backend = "gl"
+            bridge._renderer = FakeGlRenderer()
+            bridge._instance_colors = {}
+            bridge._mesh_instance_state = {}
+            bridge._mesh_created = set()
+            bridge.gpu = SimpleNamespace(
+                device=wp.get_device(),
+                white_color=wp.array([wp.vec3(1.0, 1.0, 1.0)], dtype=wp.vec3, device=wp.get_device()),
+                default_material=wp.array([wp.vec4(0.5, 0.0, 0.0, 0.0)], dtype=wp.vec4, device=wp.get_device()),
+                textured_material=wp.array([wp.vec4(0.5, 0.0, 0.0, 1.0)], dtype=wp.vec4, device=wp.get_device()),
+                identity_xform=wp.array([wp.transform()], dtype=wp.transformf, device=wp.get_device()),
+                unit_scale=wp.array([1.0, 1.0, 1.0], dtype=wp.vec3, device=wp.get_device()),
+            )
+            points = wp.zeros(3, dtype=wp.vec3f, device=wp.get_device())
+            indices = wp.array([0, 1, 2], dtype=wp.int32, device=wp.get_device())
+            vertex_colors = wp.zeros(3, dtype=wp.vec4f, device=wp.get_device())
+
+            bridge.draw_mesh(
+                "flat_mesh",
+                points,
+                indices,
+                color=(0.1, 0.2, 0.3),
+                vertex_colors=vertex_colors,
+            )
+
+            self.assertEqual(len(bridge._renderer.mesh_calls), 1)
+            self.assertEqual(len(bridge._renderer.instance_calls), 1)
+
+    def test_render_bridge_forwards_tissue_material_params_to_slang(self):
+        class FakeSlangRenderer:
+            def __init__(self):
+                self.params = []
+
+            def set_tissue_material_params(self, **params):
+                self.params.append(params)
+
+        bridge = RenderBridge.__new__(RenderBridge)
+        bridge._backend = "slang"
+        bridge._renderer = FakeSlangRenderer()
+
+        bridge.set_tissue_material_params(debug_mode=2, specular_scale=0.6)
+
+        self.assertEqual(bridge._renderer.params, [{"debug_mode": 2, "specular_scale": 0.6}])
+
+    def test_render_bridge_ignores_tissue_material_params_on_non_slang(self):
+        class FakeGlRenderer:
+            def set_tissue_material_params(self, **params):
+                raise AssertionError("non-Slang renderers should not receive tissue material params")
+
+        bridge = RenderBridge.__new__(RenderBridge)
+        bridge._backend = "gl"
+        bridge._renderer = FakeGlRenderer()
+
+        bridge.set_tissue_material_params(debug_mode=2, specular_scale=0.6)
+
+    def test_slang_renderer_tissue_material_params_are_clamped_and_bound(self):
+        class FakeSpy:
+            def __init__(self):
+                self.cursor = SimpleNamespace()
+
+            def ShaderCursor(self, shader_object):
+                del shader_object
+                return self.cursor
+
+            def float3(self, *values):
+                return tuple(values)
+
+            def float4(self, *values):
+                return tuple(values)
+
+        def layer_set(prefix):
+            return SimpleNamespace(
+                base=f"{prefix}-base",
+                damage=f"{prefix}-damage",
+                coag=f"{prefix}-coag",
+                blood=f"{prefix}-blood",
+            )
+
+        renderer = SlangRenderer.__new__(SlangRenderer)
+        renderer._tissue_material_params = TissueMaterialParams()
+        renderer._spy = FakeSpy()
+        renderer._surface_texture = SimpleNamespace(width=1600, height=800)
+        renderer._camera_pos = np.array([0.0, 1.0, 2.0], dtype=np.float32)
+        renderer._camera_right = np.array([1.0, 0.0, 0.0], dtype=np.float32)
+        renderer._camera_up = np.array([0.0, 1.0, 0.0], dtype=np.float32)
+        renderer._camera_forward = np.array([0.0, 0.0, -1.0], dtype=np.float32)
+        renderer._camera_inv_tan_half_fovy = 1.25
+        renderer._camera_near = 0.01
+        renderer._camera_far = 10.0
+        material = SimpleNamespace(
+            valid=True,
+            diffuse=layer_set("diffuse"),
+            normal=layer_set("normal"),
+            spec=layer_set("spec"),
+            layer_masks=layer_set("mask"),
+            blood_mask_texture="blood-mask",
+            heat_mask_texture="heat-mask",
+            sampler="sampler",
+        )
+
+        renderer.set_tissue_material_params(
+            debug_mode=999,
+            normal_strength=1.2,
+            specular_scale=0.7,
+            roughness_bias=0.25,
+            ambient=0.11,
+            rim_strength=0.33,
+            wetness=0.2,
+            wet_spec_scale=1.5,
+            wet_roughness=0.08,
+            subsurface_color=(2.0, -1.0, 0.5),
+            subsurface_strength=0.4,
+            blood_wetness=0.9,
+        )
+        renderer._set_shader_uniforms("shader-object", (1.0, 1.0, 1.0, 1.0), material)
+
+        cursor = renderer._spy.cursor
+        self.assertEqual(cursor.debug_mode, len(TISSUE_DEBUG_MODE_LABELS) - 1)
+        self.assertEqual(cursor.subsurface_color, (1.0, 0.0, 0.5))
+        self.assertEqual(cursor.diffuse_blood_tex, "diffuse-blood")
+        self.assertEqual(cursor.normal_coag_tex, "normal-coag")
+        self.assertEqual(cursor.spec_damage_tex, "spec-damage")
+        self.assertEqual(cursor.layer_mask_blood_tex, "mask-blood")
+        self.assertEqual(cursor.blood_mask_tex, "blood-mask")
+        self.assertEqual(cursor.heat_mask_tex, "heat-mask")
+        self.assertEqual(cursor.material_sampler, "sampler")
+        self.assertEqual(cursor.normal_strength, 1.2)
+        self.assertEqual(cursor.specular_scale, 0.7)
+        self.assertEqual(cursor.roughness_bias, 0.25)
+        self.assertEqual(cursor.ambient, 0.11)
+        self.assertEqual(cursor.rim_strength, 0.33)
+        self.assertEqual(cursor.blend_damage, 1.0)
+        self.assertEqual(cursor.blend_coag, 1.0)
+        self.assertEqual(cursor.blend_blood, 1.0)
+        self.assertEqual(cursor.wetness, 0.2)
+        self.assertEqual(cursor.wet_spec_scale, 1.5)
+        self.assertEqual(cursor.wet_roughness, 0.08)
+        self.assertEqual(cursor.subsurface_strength, 0.4)
+        self.assertEqual(cursor.blood_wetness, 0.9)
+
+    def test_runtime_tissue_material_param_sync_updates_renderer(self):
+        class FakeRenderer:
+            def __init__(self):
+                self.params = []
+
+            def set_tissue_material_params(self, **params):
+                self.params.append(params)
+
+        runtime = Runtime.__new__(Runtime)
+        runtime.renderer = FakeRenderer()
+        runtime.tissue_debug_mode = 0
+        runtime.tissue_normal_strength = 0.65
+        runtime.tissue_specular_scale = 0.35
+        runtime.tissue_roughness_bias = 0.45
+        runtime.tissue_ambient = 0.22
+        runtime.tissue_rim_strength = 0.12
+        runtime.tissue_wetness = 0.0
+        runtime.tissue_wet_spec_scale = 1.0
+        runtime.tissue_wet_roughness = 0.18
+        runtime.tissue_subsurface_color = (0.8, 0.22, 0.16)
+        runtime.tissue_subsurface_strength = 0.0
+        runtime.tissue_blood_wetness = 1.0
+
+        runtime._sync_tissue_material_params()
+
+        self.assertEqual(runtime.renderer.params[-1]["debug_mode"], 0)
+        self.assertEqual(runtime.renderer.params[-1]["normal_strength"], 0.65)
+        self.assertEqual(runtime.renderer.params[-1]["subsurface_color"], (0.8, 0.22, 0.16))
+
+        runtime._set_tissue_debug_mode(999)
+        self.assertEqual(runtime.tissue_debug_mode, len(TISSUE_DEBUG_MODE_LABELS) - 1)
+        self.assertEqual(runtime.renderer.params[-1]["debug_mode"], len(TISSUE_DEBUG_MODE_LABELS) - 1)
+
+        runtime._set_tissue_material_float("tissue_specular_scale", 4.0, 0.0, 2.0)
+        self.assertEqual(runtime.tissue_specular_scale, 2.0)
+        self.assertEqual(runtime.renderer.params[-1]["specular_scale"], 2.0)
+
+    def test_runtime_tissue_debug_ui_uses_named_combo_and_reset_button(self):
+        class FakeRenderer:
+            def __init__(self):
+                self.params = []
+
+            def set_tissue_material_params(self, **params):
+                self.params.append(params)
+
+        runtime = Runtime.__new__(Runtime)
+        runtime.renderer = FakeRenderer()
+        runtime.tissue_debug_mode = 0
+        runtime.tissue_normal_strength = 0.65
+        runtime.tissue_specular_scale = 0.35
+        runtime.tissue_roughness_bias = 0.45
+        runtime.tissue_ambient = 0.22
+        runtime.tissue_rim_strength = 0.12
+        runtime.tissue_wetness = 0.0
+        runtime.tissue_wet_spec_scale = 1.0
+        runtime.tissue_wet_roughness = 0.18
+        runtime.tissue_subsurface_color = (0.8, 0.22, 0.16)
+        runtime.tissue_subsurface_strength = 0.0
+        runtime.tissue_blood_wetness = 1.0
+
+        ui = _FakeTissueDebugComboUi(combo_result=(True, 3), button_result=False)
+        runtime._render_tissue_debug_ui(ui)
+
+        self.assertEqual(runtime.tissue_debug_mode, 3)
+        self.assertEqual(runtime.renderer.params[-1]["debug_mode"], 3)
+        self.assertEqual(ui.combo_calls, [("Tissue Debug View", 0, TISSUE_DEBUG_MODE_LABELS)])
+        self.assertIn("Active: Blended Diffuse", ui.texts)
+        self.assertEqual(ui.buttons, ["Show Final Tissue"])
+
+        ui = _FakeTissueDebugComboUi(combo_result=(False, 3), button_result=True)
+        runtime._render_tissue_debug_ui(ui)
+
+        self.assertEqual(runtime.tissue_debug_mode, 0)
+        self.assertEqual(runtime.renderer.params[-1]["debug_mode"], 0)
+
+    def test_runtime_tissue_debug_ui_falls_back_to_slider(self):
+        class FakeRenderer:
+            def __init__(self):
+                self.params = []
+
+            def set_tissue_material_params(self, **params):
+                self.params.append(params)
+
+        runtime = Runtime.__new__(Runtime)
+        runtime.renderer = FakeRenderer()
+        runtime.tissue_debug_mode = 0
+        runtime.tissue_normal_strength = 0.65
+        runtime.tissue_specular_scale = 0.35
+        runtime.tissue_roughness_bias = 0.45
+        runtime.tissue_ambient = 0.22
+        runtime.tissue_rim_strength = 0.12
+        runtime.tissue_wetness = 0.0
+        runtime.tissue_wet_spec_scale = 1.0
+        runtime.tissue_wet_roughness = 0.18
+        runtime.tissue_subsurface_color = (0.8, 0.22, 0.16)
+        runtime.tissue_subsurface_strength = 0.0
+        runtime.tissue_blood_wetness = 1.0
+
+        ui = _FakeTissueDebugSliderUi(slider_result=(True, 5), button_result=False)
+        runtime._render_tissue_debug_ui(ui)
+
+        self.assertEqual(runtime.tissue_debug_mode, 5)
+        self.assertEqual(runtime.renderer.params[-1]["debug_mode"], 5)
+        self.assertEqual(ui.slider_calls, [("Tissue Debug View", 0, 0, len(TISSUE_DEBUG_MODE_LABELS) - 1)])
+        self.assertIn("Active: Spec/Roughness", ui.texts)
+
+    def test_slang_tissue_material_paths_derive_all_layers(self):
+        texture_dir = _prepare_test_subdir("slang_material_paths")
+        base = texture_dir / "diffuse-base.png"
+        renderer = SlangRenderer.__new__(SlangRenderer)
+
+        paths = renderer._material_paths(str(base))
+        resolved = base.resolve(strict=False)
+
+        self.assertEqual(
+            paths.diffuse.as_tuple(),
+            (
+                resolved,
+                resolved.with_name("diffuse-damage.png"),
+                resolved.with_name("diffuse-coag.png"),
+                resolved.with_name("diffuse-blood.png"),
+            ),
+        )
+        self.assertEqual(
+            paths.normal.as_tuple(),
+            (
+                resolved.with_name("normal-base.png"),
+                resolved.with_name("normal-damage.png"),
+                resolved.with_name("normal-coag.png"),
+                resolved.with_name("normal-blood.png"),
+            ),
+        )
+        self.assertEqual(
+            paths.spec.as_tuple(),
+            (
+                resolved.with_name("spec-base.png"),
+                resolved.with_name("spec-damage.png"),
+                resolved.with_name("spec-coag.png"),
+                resolved.with_name("spec-blood.png"),
+            ),
+        )
+        self.assertEqual(len(renderer._material_cache_key(paths)), 12)
+
+    def test_slang_tissue_material_defaults_missing_optional_layers(self):
+        texture_dir = _prepare_test_subdir("slang_material_defaults")
+        base = texture_dir / "diffuse-base.png"
+        base.write_bytes(b"placeholder")
+        renderer = SlangRenderer.__new__(SlangRenderer)
+        renderer._materials = {}
+        renderer._default_textures = {}
+        renderer._warnings = set()
+        renderer._material_sampler = "sampler"
+        renderer._linear_wrap_sampler = lambda: "sampler"
+        renderer._load_texture_data = lambda path: np.zeros((1, 1, 4), dtype=np.uint8)
+        renderer._create_texture_from_data = lambda label, data, srgb: f"{label}:{srgb}"
+
+        resource = renderer._material_resource("organ", str(base))
+
+        self.assertTrue(resource.valid)
+        self.assertEqual(resource.diffuse.base, "organ-diffuse-base:True")
+        self.assertEqual(resource.diffuse.damage, resource.diffuse.base)
+        self.assertEqual(resource.diffuse.coag, resource.diffuse.base)
+        self.assertEqual(resource.diffuse.blood, resource.diffuse.base)
+        self.assertEqual(resource.normal.base, "omnisurg-default-normal:False")
+        self.assertEqual(resource.normal.damage, resource.normal.base)
+        self.assertEqual(resource.normal.coag, resource.normal.base)
+        self.assertEqual(resource.normal.blood, resource.normal.base)
+        self.assertEqual(resource.spec.base, "omnisurg-default-spec:False")
+        self.assertEqual(resource.spec.damage, resource.spec.base)
+        self.assertEqual(resource.spec.coag, resource.spec.base)
+        self.assertEqual(resource.spec.blood, resource.spec.base)
+        self.assertEqual(resource.layer_masks.damage, "omnisurg-default-mask-white:False")
+        self.assertEqual(resource.blood_mask_texture, "omnisurg-default-blood-mask:False")
+        self.assertEqual(resource.heat_mask_texture, "omnisurg-default-heat-mask:False")
+
+        missing = texture_dir / "missing-diffuse-base.png"
+        missing_resource = renderer._material_resource("missing", str(missing))
+        self.assertFalse(missing_resource.valid)
+
+    def test_slang_tissue_shader_declares_color_and_layer_bindings(self):
+        shader_source = (REPO_ROOT / "omnisurg" / "rendering" / "slang_shaders" / "omnisurg_tissue.slang").read_text()
+        renderer_source = (REPO_ROOT / "omnisurg" / "rendering" / "slang.py").read_text()
+
+        self.assertIn("float4 color : COLOR", shader_source)
+        for kind in ("diffuse", "normal", "spec"):
+            for layer in ("base", "damage", "coag", "blood"):
+                self.assertIn(f"Texture2D<float4> {kind}_{layer}_tex", shader_source)
+        self.assertIn("uniform int debug_mode", shader_source)
+        for uniform in (
+            "wetness",
+            "wet_spec_scale",
+            "wet_roughness",
+            "subsurface_color",
+            "subsurface_strength",
+            "blood_wetness",
+        ):
+            self.assertIn(uniform, shader_source)
+        for debug_symbol in (
+            "DEBUG_VERTEX_BLEND_RGB",
+            "DEBUG_MASKED_LAYER_WEIGHTS",
+            "DEBUG_BLENDED_DIFFUSE",
+            "DEBUG_BLENDED_NORMAL",
+            "DEBUG_SPEC_ROUGHNESS",
+            "DEBUG_HEAT_BLOOD_MASKS",
+        ):
+            self.assertIn(debug_symbol, shader_source)
+        self.assertIn('"semantic_name": "COLOR"', renderer_source)
+        self.assertIn("TISSUE_DEBUG_MODE_LABELS", renderer_source)
+        self.assertEqual(len(TISSUE_DEBUG_MODE_LABELS), 7)
+        self.assertIn("rgba32_float", renderer_source)
+
+    def test_slang_immediate_ui_reuses_button_until_click_is_reported(self):
+        fake_sui = _FakeSlangUiModule()
+        screen = _FakeSlangUiWidget()
+        parent = _FakeSlangUiWidget(screen)
+        adapter = _SlangImmediateUi(SimpleNamespace(float2=lambda x, y: (x, y)), fake_sui, screen)
+
+        adapter.begin_frame()
+        adapter.reset(parent, 640, 480)
+        self.assertFalse(adapter.button("Apply"))
+        adapter.finish_frame()
+        self.assertEqual(fake_sui.created["Button"], 1)
+
+        record = next(record for record in adapter._records.values() if record.widget.__class__ is _FakeSlangUiButton)
+        record.widget.callback()
+
+        adapter.begin_frame()
+        adapter.reset(parent, 640, 480)
+        self.assertTrue(adapter.button("Apply"))
+        adapter.finish_frame()
+
+        adapter.begin_frame()
+        adapter.reset(parent, 640, 480)
+        self.assertFalse(adapter.button("Apply"))
+        adapter.finish_frame()
+        self.assertEqual(fake_sui.created["Button"], 1)
+
+    def test_slang_immediate_ui_reuses_value_widgets_for_drag_and_release(self):
+        fake_sui = _FakeSlangUiModule()
+        screen = _FakeSlangUiWidget()
+        parent = _FakeSlangUiWidget(screen)
+        adapter = _SlangImmediateUi(SimpleNamespace(float2=lambda x, y: (x, y)), fake_sui, screen)
+
+        adapter.begin_frame()
+        adapter.reset(parent, 640, 480)
+        changed, value = adapter.slider_float("Damage", 0.0, 0.0, 1.0, "%.2f")
+        self.assertFalse(changed)
+        self.assertEqual(value, 0.0)
+        adapter.finish_frame()
+
+        record = next(record for record in adapter._records.values() if record.widget.__class__ is _FakeSlangUiSlider)
+        first_widget = record.widget
+        first_widget.callback(0.4)
+
+        adapter.begin_frame()
+        adapter.reset(parent, 640, 480)
+        changed, value = adapter.slider_float("Damage", 0.0, 0.0, 1.0, "%.2f")
+        self.assertTrue(changed)
+        self.assertEqual(value, 0.4)
+        self.assertIs(record.widget, first_widget)
+        adapter.finish_frame()
+        self.assertEqual(fake_sui.created["SliderFloat"], 1)
+
+        first_widget.callback(0.8)
+        adapter.begin_frame()
+        adapter.reset(parent, 640, 480)
+        changed, value = adapter.slider_float("Damage", 0.4, 0.0, 1.0, "%.2f")
+        self.assertTrue(changed)
+        self.assertEqual(value, 0.8)
+        adapter.finish_frame()
+        self.assertEqual(fake_sui.created["SliderFloat"], 1)
+
+    def test_slang_immediate_ui_reuses_combo_for_debug_views(self):
+        fake_sui = _FakeSlangUiModule()
+        screen = _FakeSlangUiWidget()
+        parent = _FakeSlangUiWidget(screen)
+        adapter = _SlangImmediateUi(SimpleNamespace(float2=lambda x, y: (x, y)), fake_sui, screen)
+
+        adapter.begin_frame()
+        adapter.reset(parent, 640, 480)
+        changed, value = adapter.combo("Tissue Debug View", 0, TISSUE_DEBUG_MODE_LABELS)
+        self.assertFalse(changed)
+        self.assertEqual(value, 0)
+        adapter.finish_frame()
+
+        record = next(record for record in adapter._records.values() if record.widget.__class__ is _FakeSlangUiCombo)
+        first_widget = record.widget
+        self.assertEqual(first_widget.items, list(TISSUE_DEBUG_MODE_LABELS))
+        first_widget.callback(4)
+
+        adapter.begin_frame()
+        adapter.reset(parent, 640, 480)
+        changed, value = adapter.combo("Tissue Debug View", 0, TISSUE_DEBUG_MODE_LABELS)
+        self.assertTrue(changed)
+        self.assertEqual(value, 4)
+        self.assertIs(record.widget, first_widget)
+        adapter.finish_frame()
+        self.assertEqual(fake_sui.created["ComboBox"], 1)
+
+    def test_slang_immediate_ui_reuses_checkbox_and_hides_unused_widgets(self):
+        fake_sui = _FakeSlangUiModule()
+        screen = _FakeSlangUiWidget()
+        parent = _FakeSlangUiWidget(screen)
+        adapter = _SlangImmediateUi(SimpleNamespace(float2=lambda x, y: (x, y)), fake_sui, screen)
+
+        adapter.begin_frame()
+        adapter.reset(parent, 640, 480)
+        adapter.text("Visible")
+        changed, value = adapter.checkbox("Enabled", False)
+        self.assertFalse(changed)
+        self.assertFalse(value)
+        adapter.finish_frame()
+
+        checkbox_record = next(record for record in adapter._records.values() if record.widget.__class__ is _FakeSlangUiValue)
+        text_record = next(record for record in adapter._records.values() if record.widget.__class__ is _FakeSlangUiText)
+        checkbox_record.widget.callback(True)
+
+        adapter.begin_frame()
+        adapter.reset(parent, 640, 480)
+        changed, value = adapter.checkbox("Enabled", False)
+        self.assertTrue(changed)
+        self.assertTrue(value)
+        adapter.finish_frame()
+
+        self.assertEqual(fake_sui.created["CheckBox"], 1)
+        self.assertFalse(text_record.widget.visible)
 
     def test_headless_replay_runtime_smoke_single_asset(self):
         trace = np.array(

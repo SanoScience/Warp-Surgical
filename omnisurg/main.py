@@ -19,7 +19,16 @@ def parse_args():
         "--viewer",
         type=str,
         default="gl",
-        choices=["surgsim", "gl", "rtx", "headless"],
+        choices=[
+            "surgsim",
+            "gl",
+            "rtx",
+            "headless",
+            "slang",
+            "slang-d3d12",
+            "slang-vulkan",
+            "slang-vk",
+        ],
         help="Viewer backend",
     )
     parser.add_argument(
@@ -60,6 +69,49 @@ def parse_args():
         help="Path to write per-frame force-feedback telemetry as CSV for "
         "offline FFT/stability analysis. Implies --force-telemetry sampling.",
     )
+    parser.add_argument(
+        "--contact-trace",
+        type=str,
+        default=None,
+        help="Path to write a per-frame haptic-algorithm input trace (.npz). "
+        "Feeds the offline haptic_bench for algorithm research.",
+    )
+    parser.add_argument(
+        "--stage3-validate",
+        action="store_true",
+        help="Drive the real haptic device to physically follow the right-controller "
+        "replay trace while still dispatching sim-computed contact forces. Unattended — "
+        "do not hold the stylus. Implies --replay-force-feedback; requires --replay.",
+    )
+    parser.add_argument("--stage3-kp", type=float, default=0.02,
+                        help="Position-tracking P gain in N per native position unit "
+                             "(Touch traces are mm, so this is N/mm). 0.02 → 0.2 N at "
+                             "10 mm error; stays well under --stage3-force-cap.")
+    parser.add_argument("--stage3-kd", type=float, default=0.005,
+                        help="Position-tracking D gain (N·s per native position unit).")
+    parser.add_argument("--stage3-force-cap", type=float, default=1.5,
+                        help="Max force magnitude at the device (N). Safety cap.")
+    parser.add_argument("--stage3-abort-mm", type=float, default=10.0,
+                        help="Abort if tracking error stays above this many native "
+                             "position units (mm on Touch) for --stage3-abort-ms milliseconds "
+                             "(catches human grabbing stylus).")
+    parser.add_argument("--stage3-abort-ms", type=float, default=50.0,
+                        help="Sustained-error window triggering abort (ms).")
+    parser.add_argument("--stage3-ramp-ms", type=float, default=1500.0,
+                        help="Ramp-in window (ms) to smoothly move device from its "
+                             "current pose to the first replay sample.")
+    parser.add_argument("--stage3-telemetry", type=str, default=None,
+                        help="Path to write a per-frame stage-3 validation trace (.npz).")
+    parser.add_argument("--stage3-abort-action", type=str, default="zero",
+                        choices=["zero", "hold", "continue"],
+                        help="What to do when tracking-error threshold is held: "
+                             "'zero' drops forces to 0 and exits (safest, default); "
+                             "'hold' stops dispatching so motor holds last command + exits; "
+                             "'continue' logs once per excursion and keeps running.")
+    parser.add_argument("--stage3-dry-run", action="store_true",
+                        help="Scan the replay trace, print worst-case PD-force estimate "
+                             "given --stage3-kp/kd/force-cap, and exit without touching "
+                             "the device. Use to sanity-check gains before a live run.")
     parser.add_argument(
         "--record-right",
         type=str,
@@ -128,7 +180,13 @@ def parse_args():
         default=0,
         help="Max frames to run (0 = unlimited)",
     )
-    parser.add_argument("--no-vsync", action="store_true", help="Disable vsync for profiling")
+    parser.add_argument("--no-vsync", action="store_true", help="Disable display vsync for profiling")
+    parser.add_argument("--no-pacing", action="store_true", help="Disable frame pacing sleep for profiling")
+    parser.add_argument(
+        "--no-internal-profiling",
+        action="store_true",
+        help="Disable OmniSurg's internal Warp timers when using an external profiler",
+    )
     parser.add_argument(
         "--no-textures",
         action="store_true",
@@ -308,8 +366,39 @@ def main():
 
     from omnisurg.config import BoundsConfig, HapticConfig, SceneConfig, SimulationConfig, SIMULATION_PRESETS, ViewerConfig
     from omnisurg.haptics import BimanualReplayRig, RecordingRig, ReplayForceFeedbackRig
+    from omnisurg.input.position_tracking import Stage3ValidationRig, analyse_trace_for_stage3
     from omnisurg.runtime import Runtime
-    from omnisurg.telemetry import ForceTelemetry
+    from omnisurg.telemetry import ContactTraceRecorder, ForceTelemetry, Stage3TelemetryRecorder
+
+    if args.stage3_validate and not args.replay:
+        print("--stage3-validate requires --replay (a right-controller trace to track).")
+        sys.exit(2)
+
+    if args.stage3_dry_run:
+        if not args.replay:
+            print("--stage3-dry-run requires --replay.")
+            sys.exit(2)
+        if args.preset:
+            sim_dt = SIMULATION_PRESETS[args.preset].frame_dt
+        else:
+            sim_dt = SimulationConfig().frame_dt
+        summary = analyse_trace_for_stage3(
+            args.replay,
+            sim_frame_dt=sim_dt,
+            kp=args.stage3_kp,
+            kd=args.stage3_kd,
+            force_cap=args.stage3_force_cap,
+            abort_error=args.stage3_abort_mm,
+        )
+        print("[stage3 dry-run] trace analysis:")
+        for k, v in summary.items():
+            print(f"  {k}: {v}")
+        if summary.get("exceeds_force_cap"):
+            print(
+                "[stage3 dry-run] WARNING: estimated worst-case PD force exceeds "
+                "--stage3-force-cap. Lower Kp/Kd or raise the cap before a live run."
+            )
+        sys.exit(0)
 
     if args.preset:
         sim_config = SIMULATION_PRESETS[args.preset]
@@ -333,7 +422,33 @@ def main():
         if args.left_replay:
             replay_desc.append(f"left={args.left_replay}")
         print("Using replay input: " + ", ".join(replay_desc))
-        if args.replay_force_feedback:
+        if args.stage3_validate:
+            force_rig = _build_live_input_rig(args)
+            if force_rig is None:
+                print("--stage3-validate requires a live haptic device; none available. Aborting.")
+                sys.exit(3)
+            abort_frames = max(1, int(round(args.stage3_abort_ms * 1.0e-3 / sim_config.frame_dt)))
+            ramp_frames = max(0, int(round(args.stage3_ramp_ms * 1.0e-3 / sim_config.frame_dt)))
+            input_rig = Stage3ValidationRig(
+                input_rig,
+                force_rig,
+                sim_frame_dt=sim_config.frame_dt,
+                controller_id="right",
+                kp=args.stage3_kp,
+                kd=args.stage3_kd,
+                force_cap=args.stage3_force_cap,
+                abort_error=args.stage3_abort_mm,
+                abort_error_frames=abort_frames,
+                ramp_in_frames=ramp_frames,
+                abort_action=args.stage3_abort_action,
+            )
+            print(
+                f"[stage3] armed: kp={args.stage3_kp} kd={args.stage3_kd} "
+                f"cap={args.stage3_force_cap} N  abort>{args.stage3_abort_mm}mm for "
+                f"{abort_frames} frames ({args.stage3_abort_ms}ms)  ramp={ramp_frames} frames "
+                f"({args.stage3_ramp_ms}ms). DO NOT HOLD THE STYLUS."
+            )
+        elif args.replay_force_feedback:
             force_rig = _build_live_input_rig(args)
             if force_rig is None:
                 print(
@@ -378,6 +493,9 @@ def main():
 
     with wp.ScopedDevice(args.device):
         rt = Runtime(sim_config, scene_config, haptic_config, viewer_config, bounds_config)
+        if args.no_internal_profiling:
+            rt.profiling_enabled = False
+            rt.profiling_console_enabled = False
 
         if recording_rig is not None:
             def _record_key_hook(symbol, modifiers, rig=recording_rig):
@@ -412,6 +530,20 @@ def main():
                 telemetry = None
                 print("Force telemetry requested but unsupported for this viewer/backend")
 
+        contact_trace: ContactTraceRecorder | None = None
+        if args.contact_trace:
+            contact_trace = ContactTraceRecorder(rt, args.contact_trace)
+            print(f"Contact-trace recording enabled: {args.contact_trace}")
+
+        stage3_telemetry: Stage3TelemetryRecorder | None = None
+        if args.stage3_telemetry and isinstance(input_rig, Stage3ValidationRig):
+            stage3_telemetry = Stage3TelemetryRecorder(
+                input_rig,
+                args.stage3_telemetry,
+                sim_frame_dt=sim_config.frame_dt,
+            )
+            print(f"Stage3 telemetry enabled: {args.stage3_telemetry}")
+
         frame = 0
         while rt.is_running():
             if input_rig:
@@ -421,15 +553,27 @@ def main():
                 _dispatch_haptic_force_commands(input_rig, rt.get_haptic_force_commands())
             if telemetry is not None:
                 telemetry.record()
+            if contact_trace is not None:
+                contact_trace.record()
+            if stage3_telemetry is not None:
+                stage3_telemetry.record()
             rt.render()
-            rt.pace()
+            if not args.no_pacing:
+                rt.pace()
 
             frame += 1
             if args.num_frames > 0 and frame >= args.num_frames:
                 break
+            if isinstance(input_rig, Stage3ValidationRig) and input_rig.aborted:
+                print("[stage3] aborted; exiting sim loop.")
+                break
 
         if telemetry is not None:
             telemetry.close()
+        if contact_trace is not None:
+            contact_trace.close()
+        if stage3_telemetry is not None:
+            stage3_telemetry.close()
         if input_rig:
             _zero_haptic_force_commands(input_rig)
             input_rig.close()

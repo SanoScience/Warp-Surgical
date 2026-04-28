@@ -1,0 +1,17 @@
+{
+  "algorithm": "virtual_coupling",
+  "damper_b": 0.06349995368627394,
+  "deadband": 0.0044055159855558084,
+  "enabled": true,
+  "lowpass_alpha": 0.6022092290040658,
+  "max_force": 0.05,
+  "max_proxy_offset": 0.02103227556065526,
+  "name": "VC Optuna trial-16",
+  "proxy_follow": 0.35,
+  "reaction_scale": 1.0,
+  "schema_version": 1,
+  "slew_rate_limit": 44.09859455655715,
+  "spring_k": 33.04129355086612,
+  "tdpc_alpha": 1.0,
+  "vc_proxy_mass": 0.21211219770832282
+}
