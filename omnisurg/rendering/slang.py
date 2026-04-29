@@ -50,6 +50,8 @@ _TISSUE_MATERIAL_PARAM_RANGES = {
     "wet_spec_scale": (0.0, 4.0),
     "wet_roughness": (0.02, 0.6),
     "blood_wetness": (0.0, 2.0),
+    "specular_aa_strength": (0.0, 2.0),
+    "specular_aa_min_roughness": (0.0, 0.25),
 }
 _POSTPROCESS_PARAM_RANGES = {
     "exposure": (0.0, 8.0),
@@ -58,6 +60,13 @@ _POSTPROCESS_PARAM_RANGES = {
     "auto_exposure_max": (0.1, 4.0),
     "auto_exposure_speed": (0.1, 12.0),
     "auto_exposure_highlight_weight": (0.0, 4.0),
+    "ao_intensity": (0.0, 4.0),
+    "ao_radius": (0.0, 0.30),
+    "ao_bias": (0.0, 0.03),
+    "ao_power": (0.25, 4.0),
+    "fxaa_subpix": (0.0, 1.0),
+    "fxaa_edge_threshold": (0.0312, 0.333),
+    "fxaa_edge_threshold_min": (0.0, 0.0833),
     "bloom_threshold": (0.0, 1.0),
     "bloom_intensity": (0.0, 10.0),
     "bloom_radius": (0.0, 64.0),
@@ -96,6 +105,9 @@ class TissueMaterialParams:
     subsurface_color: tuple[float, float, float] = (0.8, 0.22, 0.16)
     subsurface_strength: float = 0.0
     blood_wetness: float = 1.0
+    specular_aa_enabled: bool = True
+    specular_aa_strength: float = 0.35
+    specular_aa_min_roughness: float = 0.04
 
 
 @dataclass
@@ -109,6 +121,15 @@ class PostProcessParams:
     auto_exposure_max: float = 1.8
     auto_exposure_speed: float = 4.0
     auto_exposure_highlight_weight: float = 0.8
+    ao_enabled: bool = True
+    ao_intensity: float = 1.6
+    ao_radius: float = 0.22
+    ao_bias: float = 0.004
+    ao_power: float = 1.6
+    fxaa_enabled: bool = True
+    fxaa_subpix: float = 0.75
+    fxaa_edge_threshold: float = 0.125
+    fxaa_edge_threshold_min: float = 0.0312
     bloom_enabled: bool = True
     bloom_threshold: float = 1.0
     bloom_intensity: float = 0.6
@@ -908,6 +929,13 @@ class SlangRenderer:
         self._pass_encoder = None
         self._scene_color_texture = None
         self._depth_texture = None
+        self._post_color_texture = None
+        self._fxaa_texture = None
+        self._post_texture_size: tuple[int, int] | None = None
+        self._ao_texture = None
+        self._ao_blur_texture = None
+        self._ao_texture_size: tuple[int, int] | None = None
+        self._resolved_ao_texture = None
         self._bloom_down_textures: list[Any] = []
         self._bloom_up_textures: list[Any] = []
         self._bloom_texture_size: tuple[int, int] | None = None
@@ -980,6 +1008,7 @@ class SlangRenderer:
         )
 
         self._color_format = self._surface.info.preferred_format
+        self._manual_srgb_encode = not self._format_is_srgb(self._color_format)
         self._scene_color_format = self._hdr_scene_color_format()
         self._depth_format = self._spy.Format.d32_float
         self._viewport = self._spy.Viewport.from_size(self._window.width, self._window.height)
@@ -1140,6 +1169,22 @@ class SlangRenderer:
             "omnisurg_post.slang",
             ["vertex_main", "fragment_main"],
         )
+        self._present_program = self._device.load_program(
+            "omnisurg_present.slang",
+            ["vertex_main", "fragment_main"],
+        )
+        self._fxaa_program = self._device.load_program(
+            "omnisurg_fxaa.slang",
+            ["vertex_main", "fragment_main"],
+        )
+        self._ao_program = self._device.load_program(
+            "omnisurg_ao.slang",
+            ["vertex_main", "ao_fragment"],
+        )
+        self._ao_blur_program = self._device.load_program(
+            "omnisurg_ao.slang",
+            ["vertex_main", "blur_fragment"],
+        )
         self._auto_exposure_program = self._device.load_program(
             "omnisurg_exposure.slang",
             ["vertex_main", "adapt_exposure_fragment"],
@@ -1248,9 +1293,25 @@ class SlangRenderer:
             program=self._post_program,
             input_layout=None,
             primitive_topology=self._spy.PrimitiveTopology.triangle_list,
-            targets=[{"format": self._color_format}],
+            targets=[{"format": self._scene_color_format}],
             rasterizer={"cull_mode": self._spy.CullMode.none},
             label="omnisurg-postprocess",
+        )
+        self._fxaa_pipeline = self._device.create_render_pipeline(
+            program=self._fxaa_program,
+            input_layout=None,
+            primitive_topology=self._spy.PrimitiveTopology.triangle_list,
+            targets=[{"format": self._scene_color_format}],
+            rasterizer={"cull_mode": self._spy.CullMode.none},
+            label="omnisurg-fxaa",
+        )
+        self._present_pipeline = self._device.create_render_pipeline(
+            program=self._present_program,
+            input_layout=None,
+            primitive_topology=self._spy.PrimitiveTopology.triangle_list,
+            targets=[{"format": self._color_format}],
+            rasterizer={"cull_mode": self._spy.CullMode.none},
+            label="omnisurg-present",
         )
         bloom_pipeline_common = {
             "input_layout": None,
@@ -1276,6 +1337,16 @@ class SlangRenderer:
         self._auto_exposure_pipeline = self._device.create_render_pipeline(
             program=self._auto_exposure_program,
             label="omnisurg-auto-exposure",
+            **bloom_pipeline_common,
+        )
+        self._ao_pipeline = self._device.create_render_pipeline(
+            program=self._ao_program,
+            label="omnisurg-ao",
+            **bloom_pipeline_common,
+        )
+        self._ao_blur_pipeline = self._device.create_render_pipeline(
+            program=self._ao_blur_program,
+            label="omnisurg-ao-blur",
             **bloom_pipeline_common,
         )
 
@@ -1666,6 +1737,13 @@ class SlangRenderer:
             self._surface.unconfigure()
             self._scene_color_texture = None
             self._depth_texture = None
+            self._post_color_texture = None
+            self._fxaa_texture = None
+            self._post_texture_size = None
+            self._ao_texture = None
+            self._ao_blur_texture = None
+            self._ao_texture_size = None
+            self._resolved_ao_texture = None
             self._bloom_down_textures = []
             self._bloom_up_textures = []
             self._bloom_texture_size = None
@@ -1680,6 +1758,13 @@ class SlangRenderer:
         self._scissor = self._spy.ScissorRect.from_size(width, height)
         self._scene_color_texture = None
         self._depth_texture = None
+        self._post_color_texture = None
+        self._fxaa_texture = None
+        self._post_texture_size = None
+        self._ao_texture = None
+        self._ao_blur_texture = None
+        self._ao_texture_size = None
+        self._resolved_ao_texture = None
         self._bloom_down_textures = []
         self._bloom_up_textures = []
         self._bloom_texture_size = None
@@ -1690,6 +1775,10 @@ class SlangRenderer:
 
     def _hdr_scene_color_format(self):
         return getattr(self._spy.Format, "rgba16_float", self._spy.Format.rgba32_float)
+
+    def _format_is_srgb(self, format_value: Any) -> bool:
+        name = str(format_value).lower()
+        return "srgb" in name
 
     def _ensure_scene_color_texture(self, width: int, height: int):
         if (
@@ -1720,6 +1809,62 @@ class SlangRenderer:
                 label="omnisurg-depth",
             )
         return self._depth_texture
+
+    def _ensure_postprocess_textures(self, width: int, height: int) -> None:
+        size = (int(width), int(height))
+        if (
+            self._post_texture_size == size
+            and self._post_color_texture is not None
+            and self._fxaa_texture is not None
+        ):
+            return
+
+        usage = self._spy.TextureUsage.render_target | self._spy.TextureUsage.shader_resource
+        self._post_color_texture = self._device.create_texture(
+            format=self._scene_color_format,
+            width=size[0],
+            height=size[1],
+            usage=usage,
+            label="omnisurg-post-color",
+        )
+        self._fxaa_texture = self._device.create_texture(
+            format=self._scene_color_format,
+            width=size[0],
+            height=size[1],
+            usage=usage,
+            label="omnisurg-fxaa-color",
+        )
+        self._post_texture_size = size
+
+    def _ao_texture_sizes(self, width: int, height: int) -> tuple[int, int]:
+        return (max(1, (int(width) + 1) // 2), max(1, (int(height) + 1) // 2))
+
+    def _ensure_ao_textures(self, width: int, height: int) -> tuple[int, int]:
+        size = self._ao_texture_sizes(width, height)
+        if (
+            self._ao_texture_size == size
+            and self._ao_texture is not None
+            and self._ao_blur_texture is not None
+        ):
+            return size
+
+        usage = self._spy.TextureUsage.render_target | self._spy.TextureUsage.shader_resource
+        self._ao_texture = self._device.create_texture(
+            format=self._scene_color_format,
+            width=size[0],
+            height=size[1],
+            usage=usage,
+            label="omnisurg-ao",
+        )
+        self._ao_blur_texture = self._device.create_texture(
+            format=self._scene_color_format,
+            width=size[0],
+            height=size[1],
+            usage=usage,
+            label="omnisurg-ao-blur",
+        )
+        self._ao_texture_size = size
+        return size
 
     def _bloom_level_sizes(self, width: int, height: int) -> list[tuple[int, int]]:
         sizes: list[tuple[int, int]] = []
@@ -1786,6 +1931,15 @@ class SlangRenderer:
         if self._resolved_bloom_texture is not None and bloom_down_textures:
             return bloom_down_textures[-1]
         return self._default_texture("black", False)
+
+    def _ao_is_active(self) -> bool:
+        params = self._postprocess_params
+        return bool(params.enabled and params.ao_enabled and params.ao_intensity > 0.0 and params.ao_radius > 0.0)
+
+    def _ao_texture_resource(self) -> Any:
+        if getattr(self, "_resolved_ao_texture", None) is not None:
+            return self._resolved_ao_texture
+        return self._default_texture("white", False)
 
     def _ensure_auto_exposure_textures(self) -> None:
         if len(self._auto_exposure_textures) == 2:
@@ -2568,6 +2722,9 @@ class SlangRenderer:
             cursor.subsurface_color = self._spy.float3(*tissue_params.subsurface_color)
             cursor.subsurface_strength = tissue_params.subsurface_strength
             cursor.blood_wetness = tissue_params.blood_wetness
+            cursor.specular_aa_enabled = 1 if tissue_params.specular_aa_enabled else 0
+            cursor.specular_aa_strength = tissue_params.specular_aa_strength
+            cursor.specular_aa_min_roughness = tissue_params.specular_aa_min_roughness
 
     def _set_bloom_uniforms(
         self,
@@ -2589,6 +2746,32 @@ class SlangRenderer:
         cursor.white_balance = self._spy.float3(*params.white_balance)
         cursor.bloom_threshold = float(params.bloom_threshold)
         cursor.bloom_radius = float(params.bloom_radius)
+
+    def _set_ao_uniforms(
+        self,
+        shader_object: Any,
+        *,
+        source_ao_texture: Any | None,
+        target_size: tuple[int, int],
+        full_size: tuple[int, int],
+    ) -> None:
+        cursor = self._spy.ShaderCursor(shader_object)
+        params = self._postprocess_params
+        cursor.depth_tex = self._depth_texture
+        cursor.source_ao_tex = source_ao_texture if source_ao_texture is not None else self._default_texture("white", False)
+        cursor.post_sampler = self._linear_clamp_sampler()
+        cursor.output_size = self._spy.float2(float(max(1, target_size[0])), float(max(1, target_size[1])))
+        cursor.source_size = self._spy.float2(float(max(1, full_size[0])), float(max(1, full_size[1])))
+        cursor.camera_inv_tan_half_fovy = float(self._camera_inv_tan_half_fovy)
+        cursor.camera_aspect = float(max(0.0001, float(full_size[0]) / float(max(1, full_size[1]))))
+        cursor.camera_near = float(self._camera_near)
+        cursor.camera_far = float(self._camera_far)
+        cursor.frame_index = int(getattr(self, "_frame_id", 0))
+        cursor.ao_enabled = 1 if self._ao_is_active() else 0
+        cursor.ao_intensity = float(params.ao_intensity)
+        cursor.ao_radius = float(params.ao_radius)
+        cursor.ao_bias = float(params.ao_bias)
+        cursor.ao_power = float(params.ao_power)
 
     def _render_fullscreen_to_texture(
         self,
@@ -2633,6 +2816,73 @@ class SlangRenderer:
         pass_encoder.draw({"vertex_count": 3})
         pass_encoder.end()
         self._command_encoder.set_texture_state(target_texture, self._spy.ResourceState.shader_resource)
+
+    def _render_ao_pass(
+        self,
+        *,
+        pipeline: Any,
+        target_texture: Any,
+        target_size: tuple[int, int],
+        full_size: tuple[int, int],
+        source_ao_texture: Any | None = None,
+    ) -> None:
+        if self._command_encoder is None:
+            return
+
+        self._command_encoder.set_texture_state(target_texture, self._spy.ResourceState.render_target)
+        pass_encoder = self._command_encoder.begin_render_pass(
+            {
+                "color_attachments": [
+                    {
+                        "view": target_texture.create_view({}),
+                        "clear_value": [1.0, 1.0, 1.0, 1.0],
+                        "load_op": self._spy.LoadOp.clear,
+                        "store_op": self._spy.StoreOp.store,
+                    }
+                ],
+            }
+        )
+        pass_encoder.set_render_state(
+            {
+                "viewports": [self._spy.Viewport.from_size(int(target_size[0]), int(target_size[1]))],
+                "scissor_rects": [self._spy.ScissorRect.from_size(int(target_size[0]), int(target_size[1]))],
+            }
+        )
+        shader_object = pass_encoder.bind_pipeline(pipeline)
+        self._set_ao_uniforms(
+            shader_object,
+            source_ao_texture=source_ao_texture,
+            target_size=target_size,
+            full_size=full_size,
+        )
+        pass_encoder.draw({"vertex_count": 3})
+        pass_encoder.end()
+        self._command_encoder.set_texture_state(target_texture, self._spy.ResourceState.shader_resource)
+
+    def _render_ao(self, width: int, height: int) -> None:
+        self._resolved_ao_texture = None
+        if (
+            self._command_encoder is None
+            or self._depth_texture is None
+            or not self._ao_is_active()
+        ):
+            return
+
+        ao_size = self._ensure_ao_textures(width, height)
+        self._render_ao_pass(
+            pipeline=self._ao_pipeline,
+            target_texture=self._ao_texture,
+            target_size=ao_size,
+            full_size=(int(width), int(height)),
+        )
+        self._render_ao_pass(
+            pipeline=self._ao_blur_pipeline,
+            target_texture=self._ao_blur_texture,
+            target_size=ao_size,
+            full_size=(int(width), int(height)),
+            source_ao_texture=self._ao_texture,
+        )
+        self._resolved_ao_texture = self._ao_blur_texture
 
     def _set_auto_exposure_uniforms(self, shader_object: Any, previous_texture: Any, dt: float) -> None:
         cursor = self._spy.ShaderCursor(shader_object)
@@ -2761,6 +3011,7 @@ class SlangRenderer:
         cursor.depth_tex = self._depth_texture
         cursor.bloom_tex = self._bloom_texture_resource()
         cursor.bloom_global_tex = self._bloom_global_texture_resource()
+        cursor.ao_tex = self._ao_texture_resource()
         cursor.lens_dirt_tex = self._lens_dirt_resource()
         cursor.auto_exposure_tex = self._auto_exposure_texture_resource()
         cursor.post_sampler = self._linear_clamp_sampler()
@@ -2775,6 +3026,8 @@ class SlangRenderer:
         cursor.auto_exposure_max = float(params.auto_exposure_max)
         cursor.auto_exposure_speed = float(params.auto_exposure_speed)
         cursor.auto_exposure_highlight_weight = float(params.auto_exposure_highlight_weight)
+        cursor.ao_enabled = 1 if self._ao_is_active() else 0
+        cursor.ao_intensity = float(params.ao_intensity)
         cursor.bloom_enabled = 1 if params.bloom_enabled else 0
         cursor.bloom_threshold = float(params.bloom_threshold)
         cursor.bloom_intensity = float(params.bloom_intensity)
@@ -2803,11 +3056,107 @@ class SlangRenderer:
         cursor.scope_radius = float(params.scope_radius)
         cursor.scope_softness = float(params.scope_softness)
 
-    def _render_postprocess(self, width: int, height: int) -> None:
+    def _render_postprocess(self, width: int, height: int) -> Any | None:
+        if (
+            self._command_encoder is None
+            or self._scene_color_texture is None
+        ):
+            return None
+
+        self._ensure_postprocess_textures(width, height)
+        target_texture = self._post_color_texture
+        self._command_encoder.set_texture_state(target_texture, self._spy.ResourceState.render_target)
+        pass_encoder = self._command_encoder.begin_render_pass(
+            {
+                "color_attachments": [
+                    {
+                        "view": target_texture.create_view({}),
+                        "clear_value": [0.0, 0.0, 0.0, 1.0],
+                        "load_op": self._spy.LoadOp.clear,
+                        "store_op": self._spy.StoreOp.store,
+                    }
+                ],
+            }
+        )
+        pass_encoder.set_render_state(
+            {
+                "viewports": [self._viewport],
+                "scissor_rects": [self._scissor],
+            }
+        )
+        shader_object = pass_encoder.bind_pipeline(self._post_pipeline)
+        self._set_postprocess_uniforms(shader_object, width, height)
+        pass_encoder.draw({"vertex_count": 3})
+        pass_encoder.end()
+        self._command_encoder.set_texture_state(target_texture, self._spy.ResourceState.shader_resource)
+        return target_texture
+
+    def _set_fxaa_uniforms(self, shader_object: Any, source_texture: Any, width: int, height: int) -> None:
+        cursor = self._spy.ShaderCursor(shader_object)
+        params = self._postprocess_params
+        cursor.source_tex = source_texture
+        cursor.post_sampler = self._linear_clamp_sampler()
+        cursor.output_size = self._spy.float2(float(max(1, width)), float(max(1, height)))
+        cursor.fxaa_subpix = float(params.fxaa_subpix)
+        cursor.fxaa_edge_threshold = float(params.fxaa_edge_threshold)
+        cursor.fxaa_edge_threshold_min = float(params.fxaa_edge_threshold_min)
+
+    def _render_fxaa(self, source_texture: Any, width: int, height: int) -> Any:
+        params = self._postprocess_params
+        if (
+            self._command_encoder is None
+            or source_texture is None
+            or not params.enabled
+            or not params.fxaa_enabled
+            or self._fxaa_texture is None
+        ):
+            return source_texture
+
+        target_texture = self._fxaa_texture
+        self._command_encoder.set_texture_state(target_texture, self._spy.ResourceState.render_target)
+        pass_encoder = self._command_encoder.begin_render_pass(
+            {
+                "color_attachments": [
+                    {
+                        "view": target_texture.create_view({}),
+                        "clear_value": [0.0, 0.0, 0.0, 1.0],
+                        "load_op": self._spy.LoadOp.clear,
+                        "store_op": self._spy.StoreOp.store,
+                    }
+                ],
+            }
+        )
+        pass_encoder.set_render_state(
+            {
+                "viewports": [self._viewport],
+                "scissor_rects": [self._scissor],
+            }
+        )
+        shader_object = pass_encoder.bind_pipeline(self._fxaa_pipeline)
+        self._set_fxaa_uniforms(shader_object, source_texture, width, height)
+        pass_encoder.draw({"vertex_count": 3})
+        pass_encoder.end()
+        self._command_encoder.set_texture_state(target_texture, self._spy.ResourceState.shader_resource)
+        return target_texture
+
+    def _set_present_uniforms(self, shader_object: Any, source_texture: Any, width: int, height: int) -> None:
+        cursor = self._spy.ShaderCursor(shader_object)
+        params = self._postprocess_params
+        cursor.source_tex = source_texture
+        cursor.post_sampler = self._linear_clamp_sampler()
+        cursor.output_size = self._spy.float2(float(max(1, width)), float(max(1, height)))
+        cursor.frame_index = int(getattr(self, "_frame_id", 0))
+        cursor.postprocess_enabled = 1 if params.enabled else 0
+        cursor.sensor_noise_enabled = 1 if params.sensor_noise_enabled else 0
+        cursor.sensor_noise_strength = float(params.sensor_noise_strength)
+        cursor.sensor_noise_shadow_boost = float(params.sensor_noise_shadow_boost)
+        cursor.manual_srgb_encode = 1 if getattr(self, "_manual_srgb_encode", False) else 0
+
+    def _render_present(self, source_texture: Any, width: int, height: int) -> None:
         if (
             self._command_encoder is None
             or self._surface_texture is None
-            or self._scene_color_texture is None
+            or source_texture is None
         ):
             return
 
@@ -2829,8 +3178,8 @@ class SlangRenderer:
                 "scissor_rects": [self._scissor],
             }
         )
-        shader_object = pass_encoder.bind_pipeline(self._post_pipeline)
-        self._set_postprocess_uniforms(shader_object, width, height)
+        shader_object = pass_encoder.bind_pipeline(self._present_pipeline)
+        self._set_present_uniforms(shader_object, source_texture, width, height)
         pass_encoder.draw({"vertex_count": 3})
         pass_encoder.end()
 
@@ -2931,13 +3280,27 @@ class SlangRenderer:
             self._depth_texture,
             self._spy.ResourceState.shader_resource,
         )
+        self._render_ao(
+            int(self._surface_texture.width),
+            int(self._surface_texture.height),
+        )
         self._resolved_bloom_texture = None
         self._render_bloom_pyramid(
             int(self._surface_texture.width),
             int(self._surface_texture.height),
         )
         self._render_auto_exposure()
-        self._render_postprocess(
+        post_texture = self._render_postprocess(
+            int(self._surface_texture.width),
+            int(self._surface_texture.height),
+        )
+        present_texture = self._render_fxaa(
+            post_texture,
+            int(self._surface_texture.width),
+            int(self._surface_texture.height),
+        )
+        self._render_present(
+            present_texture,
             int(self._surface_texture.width),
             int(self._surface_texture.height),
         )
@@ -2991,6 +3354,8 @@ class SlangRenderer:
 
             if key == "debug_mode":
                 value = int(np.clip(int(value), 0, len(TISSUE_DEBUG_MODE_LABELS) - 1))
+            elif key == "specular_aa_enabled":
+                value = bool(value)
             elif key == "subsurface_color":
                 color = np.asarray(value, dtype=np.float32).reshape(-1)
                 if color.size < 3:
@@ -3017,6 +3382,8 @@ class SlangRenderer:
             if key in {
                 "enabled",
                 "auto_exposure_enabled",
+                "ao_enabled",
+                "fxaa_enabled",
                 "bloom_enabled",
                 "lens_dirt_enabled",
                 "lens_distortion_enabled",

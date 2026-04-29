@@ -227,9 +227,11 @@ class _FakeTissueDebugSliderUi:
 
 
 class _FakeTissueMaterialUi:
-    def __init__(self, slider_results=None):
+    def __init__(self, slider_results=None, checkbox_results=None):
         self.slider_results = {} if slider_results is None else dict(slider_results)
+        self.checkbox_results = {} if checkbox_results is None else dict(checkbox_results)
         self.slider_calls = []
+        self.checkbox_calls = []
         self.combo_calls = []
         self.texts = []
         self.buttons = []
@@ -242,6 +244,12 @@ class _FakeTissueMaterialUi:
         self.slider_calls.append((label, value, min_value, max_value, fmt))
         if label in self.slider_results:
             return True, self.slider_results[label]
+        return False, value
+
+    def checkbox(self, label, value):
+        self.checkbox_calls.append((label, value))
+        if label in self.checkbox_results:
+            return True, self.checkbox_results[label]
         return False, value
 
     def text(self, value):
@@ -1093,6 +1101,9 @@ class TestPhaseRuntime(unittest.TestCase):
             subsurface_color=(2.0, -1.0, 0.5),
             subsurface_strength=0.4,
             blood_wetness=3.0,
+            specular_aa_enabled=0,
+            specular_aa_strength=3.0,
+            specular_aa_min_roughness=1.0,
         )
         renderer._set_shader_uniforms("shader-object", (1.0, 1.0, 1.0, 1.0), material)
 
@@ -1119,6 +1130,9 @@ class TestPhaseRuntime(unittest.TestCase):
         self.assertEqual(cursor.wet_roughness, 0.02)
         self.assertEqual(cursor.subsurface_strength, 0.4)
         self.assertEqual(cursor.blood_wetness, 2.0)
+        self.assertEqual(cursor.specular_aa_enabled, 0)
+        self.assertEqual(cursor.specular_aa_strength, 2.0)
+        self.assertEqual(cursor.specular_aa_min_roughness, 0.25)
 
     def test_slang_renderer_clamps_wet_tissue_material_params_to_ui_ranges(self):
         renderer = SlangRenderer.__new__(SlangRenderer)
@@ -1129,6 +1143,8 @@ class TestPhaseRuntime(unittest.TestCase):
             wet_spec_scale=-1.0,
             wet_roughness=-1.0,
             blood_wetness=-1.0,
+            specular_aa_strength=-1.0,
+            specular_aa_min_roughness=-1.0,
         )
 
         params = renderer._tissue_material_params
@@ -1136,18 +1152,24 @@ class TestPhaseRuntime(unittest.TestCase):
         self.assertEqual(params.wet_spec_scale, 0.0)
         self.assertEqual(params.wet_roughness, 0.02)
         self.assertEqual(params.blood_wetness, 0.0)
+        self.assertEqual(params.specular_aa_strength, 0.0)
+        self.assertEqual(params.specular_aa_min_roughness, 0.0)
 
         renderer.set_tissue_material_params(
             wetness=2.0,
             wet_spec_scale=8.0,
             wet_roughness=1.0,
             blood_wetness=4.0,
+            specular_aa_strength=4.0,
+            specular_aa_min_roughness=1.0,
         )
 
         self.assertEqual(params.wetness, 1.0)
         self.assertEqual(params.wet_spec_scale, 4.0)
         self.assertEqual(params.wet_roughness, 0.6)
         self.assertEqual(params.blood_wetness, 2.0)
+        self.assertEqual(params.specular_aa_strength, 2.0)
+        self.assertEqual(params.specular_aa_min_roughness, 0.25)
 
     def test_slang_renderer_postprocess_params_are_clamped_and_bound(self):
         class FakeSpy:
@@ -1171,6 +1193,7 @@ class TestPhaseRuntime(unittest.TestCase):
         renderer._depth_texture = "depth"
         renderer._resolved_bloom_texture = "bloom"
         renderer._bloom_down_textures = ["bloom-global"]
+        renderer._resolved_ao_texture = "ao"
         renderer._lens_dirt_textures = {3: "lens-dirt-3"}
         renderer._auto_exposure_textures = ["auto-previous", "auto-current"]
         renderer._auto_exposure_index = 1
@@ -1188,6 +1211,15 @@ class TestPhaseRuntime(unittest.TestCase):
             auto_exposure_max=9.0,
             auto_exposure_speed=99.0,
             auto_exposure_highlight_weight=9.0,
+            ao_enabled=0,
+            ao_intensity=9.0,
+            ao_radius=1.0,
+            ao_bias=1.0,
+            ao_power=9.0,
+            fxaa_enabled=0,
+            fxaa_subpix=9.0,
+            fxaa_edge_threshold=9.0,
+            fxaa_edge_threshold_min=9.0,
             bloom_enabled=0,
             bloom_threshold=12.0,
             bloom_intensity=2.0,
@@ -1224,6 +1256,7 @@ class TestPhaseRuntime(unittest.TestCase):
         self.assertEqual(cursor.depth_tex, "depth")
         self.assertEqual(cursor.bloom_tex, "bloom")
         self.assertEqual(cursor.bloom_global_tex, "bloom-global")
+        self.assertEqual(cursor.ao_tex, "ao")
         self.assertEqual(cursor.lens_dirt_tex, "lens-dirt-3")
         self.assertEqual(cursor.auto_exposure_tex, "auto-current")
         self.assertEqual(cursor.post_sampler, "sampler")
@@ -1238,6 +1271,8 @@ class TestPhaseRuntime(unittest.TestCase):
         self.assertEqual(cursor.auto_exposure_max, 4.0)
         self.assertEqual(cursor.auto_exposure_speed, 12.0)
         self.assertEqual(cursor.auto_exposure_highlight_weight, 4.0)
+        self.assertEqual(cursor.ao_enabled, 0)
+        self.assertEqual(cursor.ao_intensity, 4.0)
         self.assertEqual(cursor.bloom_enabled, 0)
         self.assertEqual(cursor.bloom_threshold, 1.0)
         self.assertEqual(cursor.bloom_intensity, 2.0)
@@ -1266,6 +1301,17 @@ class TestPhaseRuntime(unittest.TestCase):
         self.assertEqual(cursor.vignette_radius, 0.0)
         self.assertEqual(cursor.scope_radius, 1.5)
         self.assertEqual(cursor.scope_softness, 0.001)
+
+        renderer._manual_srgb_encode = True
+        renderer._set_fxaa_uniforms("shader-object", "post-color", 1600, 800)
+        self.assertEqual(cursor.source_tex, "post-color")
+        self.assertEqual(cursor.fxaa_subpix, 1.0)
+        self.assertEqual(cursor.fxaa_edge_threshold, 0.333)
+        self.assertEqual(cursor.fxaa_edge_threshold_min, 0.0833)
+        renderer._set_present_uniforms("shader-object", "fxaa-color", 1600, 800)
+        self.assertEqual(cursor.source_tex, "fxaa-color")
+        self.assertEqual(cursor.manual_srgb_encode, 1)
+        self.assertEqual(cursor.sensor_noise_enabled, 0)
 
     def test_slang_renderer_rejects_unknown_postprocess_params(self):
         renderer = SlangRenderer.__new__(SlangRenderer)
@@ -1314,6 +1360,13 @@ class TestPhaseRuntime(unittest.TestCase):
         )
         renderer._scene_color_texture = "scene"
         renderer._depth_texture = "depth"
+        renderer._post_color_texture = "post"
+        renderer._fxaa_texture = "fxaa"
+        renderer._post_texture_size = (1, 1)
+        renderer._ao_texture = "ao"
+        renderer._ao_blur_texture = "ao-blur"
+        renderer._ao_texture_size = (1, 1)
+        renderer._resolved_ao_texture = "ao-resolved"
         renderer._bloom_down_textures = ["down"]
         renderer._bloom_up_textures = ["up"]
         renderer._bloom_texture_size = (1, 1)
@@ -1328,6 +1381,13 @@ class TestPhaseRuntime(unittest.TestCase):
         self.assertEqual(renderer._surface.configured, {"width": 800, "height": 600, "vsync": False})
         self.assertIsNone(renderer._scene_color_texture)
         self.assertIsNone(renderer._depth_texture)
+        self.assertIsNone(renderer._post_color_texture)
+        self.assertIsNone(renderer._fxaa_texture)
+        self.assertIsNone(renderer._post_texture_size)
+        self.assertIsNone(renderer._ao_texture)
+        self.assertIsNone(renderer._ao_blur_texture)
+        self.assertIsNone(renderer._ao_texture_size)
+        self.assertIsNone(renderer._resolved_ao_texture)
         self.assertEqual(renderer._bloom_down_textures, [])
         self.assertEqual(renderer._bloom_up_textures, [])
         self.assertIsNone(renderer._bloom_texture_size)
@@ -1442,12 +1502,17 @@ class TestPhaseRuntime(unittest.TestCase):
         runtime.tissue_subsurface_color = (0.8, 0.22, 0.16)
         runtime.tissue_subsurface_strength = 0.0
         runtime.tissue_blood_wetness = 1.0
+        runtime.tissue_specular_aa_enabled = True
+        runtime.tissue_specular_aa_strength = 0.35
+        runtime.tissue_specular_aa_min_roughness = 0.04
 
         runtime._sync_tissue_material_params()
 
         self.assertEqual(runtime.renderer.params[-1]["debug_mode"], 0)
         self.assertEqual(runtime.renderer.params[-1]["normal_strength"], 0.65)
         self.assertEqual(runtime.renderer.params[-1]["subsurface_color"], (0.8, 0.22, 0.16))
+        self.assertEqual(runtime.renderer.params[-1]["specular_aa_enabled"], True)
+        self.assertEqual(runtime.renderer.params[-1]["specular_aa_strength"], 0.35)
 
         runtime._set_tissue_debug_mode(999)
         self.assertEqual(runtime.tissue_debug_mode, len(TISSUE_DEBUG_MODE_LABELS) - 1)
@@ -1476,6 +1541,15 @@ class TestPhaseRuntime(unittest.TestCase):
         runtime.postprocess_auto_exposure_max = 1.8
         runtime.postprocess_auto_exposure_speed = 4.0
         runtime.postprocess_auto_exposure_highlight_weight = 0.8
+        runtime.postprocess_ao_enabled = True
+        runtime.postprocess_ao_intensity = 1.6
+        runtime.postprocess_ao_radius = 0.22
+        runtime.postprocess_ao_bias = 0.004
+        runtime.postprocess_ao_power = 1.6
+        runtime.postprocess_fxaa_enabled = True
+        runtime.postprocess_fxaa_subpix = 0.75
+        runtime.postprocess_fxaa_edge_threshold = 0.125
+        runtime.postprocess_fxaa_edge_threshold_min = 0.0312
         runtime.postprocess_bloom_enabled = True
         runtime.postprocess_bloom_threshold = 1.0
         runtime.postprocess_bloom_intensity = 0.12
@@ -1513,6 +1587,10 @@ class TestPhaseRuntime(unittest.TestCase):
         self.assertEqual(runtime.renderer.params[-1]["auto_exposure_enabled"], False)
         self.assertEqual(runtime.renderer.params[-1]["auto_exposure_target_luma"], 0.35)
         self.assertEqual(runtime.renderer.params[-1]["auto_exposure_highlight_weight"], 0.8)
+        self.assertEqual(runtime.renderer.params[-1]["ao_enabled"], True)
+        self.assertEqual(runtime.renderer.params[-1]["ao_intensity"], 1.6)
+        self.assertEqual(runtime.renderer.params[-1]["fxaa_enabled"], True)
+        self.assertEqual(runtime.renderer.params[-1]["fxaa_subpix"], 0.75)
         self.assertEqual(runtime.renderer.params[-1]["bloom_enabled"], True)
         self.assertEqual(runtime.renderer.params[-1]["bloom_threshold"], 1.0)
         self.assertEqual(runtime.renderer.params[-1]["lens_dirt_enabled"], True)
@@ -1561,6 +1639,15 @@ class TestPhaseRuntime(unittest.TestCase):
         runtime.postprocess_auto_exposure_max = 1.8
         runtime.postprocess_auto_exposure_speed = 4.0
         runtime.postprocess_auto_exposure_highlight_weight = 0.8
+        runtime.postprocess_ao_enabled = True
+        runtime.postprocess_ao_intensity = 1.6
+        runtime.postprocess_ao_radius = 0.22
+        runtime.postprocess_ao_bias = 0.004
+        runtime.postprocess_ao_power = 1.6
+        runtime.postprocess_fxaa_enabled = True
+        runtime.postprocess_fxaa_subpix = 0.75
+        runtime.postprocess_fxaa_edge_threshold = 0.125
+        runtime.postprocess_fxaa_edge_threshold_min = 0.0312
         runtime.postprocess_bloom_enabled = True
         runtime.postprocess_bloom_threshold = 1.0
         runtime.postprocess_bloom_intensity = 0.12
@@ -1594,6 +1681,8 @@ class TestPhaseRuntime(unittest.TestCase):
             checkbox_results={
                 "Postprocess": False,
                 "Auto Exposure": True,
+                "Ambient Occlusion": False,
+                "FXAA": False,
                 "Bloom": False,
                 "Lens Dirt": False,
                 "Lens Distortion": False,
@@ -1608,6 +1697,13 @@ class TestPhaseRuntime(unittest.TestCase):
                 "Auto Exposure Max": 9.0,
                 "Auto Exposure Speed": 99.0,
                 "Auto Exposure Highlight Weight": 9.0,
+                "AO Intensity": 9.0,
+                "AO Radius": 1.0,
+                "AO Bias": 1.0,
+                "AO Power": 9.0,
+                "FXAA Subpix": 9.0,
+                "FXAA Edge Threshold": 9.0,
+                "FXAA Edge Threshold Min": 9.0,
                 "Bloom Threshold": 9.0,
                 "Bloom Intensity": 2.0,
                 "Bloom Radius": 20.0,
@@ -1645,6 +1741,8 @@ class TestPhaseRuntime(unittest.TestCase):
             [
                 ("Postprocess", True),
                 ("Auto Exposure", False),
+                ("Ambient Occlusion", True),
+                ("FXAA", True),
                 ("Bloom", True),
                 ("Lens Dirt", True),
                 ("Lens Distortion", True),
@@ -1660,6 +1758,13 @@ class TestPhaseRuntime(unittest.TestCase):
         self.assertEqual(calls_by_label["Auto Exposure Max"][2:], (0.1, 4.0, "%.2f"))
         self.assertEqual(calls_by_label["Auto Exposure Speed"][2:], (0.1, 12.0, "%.1f"))
         self.assertEqual(calls_by_label["Auto Exposure Highlight Weight"][2:], (0.0, 4.0, "%.2f"))
+        self.assertEqual(calls_by_label["AO Intensity"][2:], (0.0, 4.0, "%.2f"))
+        self.assertEqual(calls_by_label["AO Radius"][2:], (0.0, 0.30, "%.3f"))
+        self.assertEqual(calls_by_label["AO Bias"][2:], (0.0, 0.03, "%.4f"))
+        self.assertEqual(calls_by_label["AO Power"][2:], (0.25, 4.0, "%.2f"))
+        self.assertEqual(calls_by_label["FXAA Subpix"][2:], (0.0, 1.0, "%.2f"))
+        self.assertEqual(calls_by_label["FXAA Edge Threshold"][2:], (0.0312, 0.333, "%.4f"))
+        self.assertEqual(calls_by_label["FXAA Edge Threshold Min"][2:], (0.0, 0.0833, "%.4f"))
         self.assertEqual(calls_by_label["Bloom Threshold"][2:], (0.0, 1.0, "%.2f"))
         self.assertEqual(calls_by_label["Bloom Intensity"][2:], (0.0, 10.0, "%.2f"))
         self.assertEqual(calls_by_label["Bloom Radius"][2:], (0.0, 64.0, "%.1f px"))
@@ -1691,6 +1796,15 @@ class TestPhaseRuntime(unittest.TestCase):
         self.assertEqual(runtime.postprocess_auto_exposure_max, 4.0)
         self.assertEqual(runtime.postprocess_auto_exposure_speed, 12.0)
         self.assertEqual(runtime.postprocess_auto_exposure_highlight_weight, 4.0)
+        self.assertFalse(runtime.postprocess_ao_enabled)
+        self.assertEqual(runtime.postprocess_ao_intensity, 4.0)
+        self.assertEqual(runtime.postprocess_ao_radius, 0.30)
+        self.assertEqual(runtime.postprocess_ao_bias, 0.03)
+        self.assertEqual(runtime.postprocess_ao_power, 4.0)
+        self.assertFalse(runtime.postprocess_fxaa_enabled)
+        self.assertEqual(runtime.postprocess_fxaa_subpix, 1.0)
+        self.assertEqual(runtime.postprocess_fxaa_edge_threshold, 0.333)
+        self.assertEqual(runtime.postprocess_fxaa_edge_threshold_min, 0.0833)
         self.assertFalse(runtime.postprocess_bloom_enabled)
         self.assertEqual(runtime.postprocess_bloom_threshold, 1.0)
         self.assertEqual(runtime.postprocess_bloom_intensity, 2.0)
@@ -1724,6 +1838,10 @@ class TestPhaseRuntime(unittest.TestCase):
         self.assertEqual(runtime.renderer.params[-1]["auto_exposure_enabled"], True)
         self.assertEqual(runtime.renderer.params[-1]["auto_exposure_target_luma"], 1.0)
         self.assertEqual(runtime.renderer.params[-1]["auto_exposure_highlight_weight"], 4.0)
+        self.assertEqual(runtime.renderer.params[-1]["ao_enabled"], False)
+        self.assertEqual(runtime.renderer.params[-1]["ao_radius"], 0.30)
+        self.assertEqual(runtime.renderer.params[-1]["fxaa_enabled"], False)
+        self.assertEqual(runtime.renderer.params[-1]["fxaa_edge_threshold"], 0.333)
         self.assertEqual(runtime.renderer.params[-1]["bloom_radius"], 20.0)
         self.assertEqual(runtime.renderer.params[-1]["lens_dirt_texture_index"], 3)
         self.assertEqual(runtime.renderer.params[-1]["lens_dirt_threshold"], 1.0)
@@ -1758,6 +1876,9 @@ class TestPhaseRuntime(unittest.TestCase):
         runtime.tissue_subsurface_color = (0.8, 0.22, 0.16)
         runtime.tissue_subsurface_strength = 0.0
         runtime.tissue_blood_wetness = 1.0
+        runtime.tissue_specular_aa_enabled = True
+        runtime.tissue_specular_aa_strength = 0.35
+        runtime.tissue_specular_aa_min_roughness = 0.04
 
         ui = _FakeTissueMaterialUi(
             slider_results={
@@ -1765,7 +1886,10 @@ class TestPhaseRuntime(unittest.TestCase):
                 "Wet Spec Scale": 4.5,
                 "Wet Roughness": 0.01,
                 "Blood Wetness": 3.0,
-            }
+                "Specular AA Strength": 3.0,
+                "Specular AA Min Roughness": 1.0,
+            },
+            checkbox_results={"Specular AA": False},
         )
 
         runtime._render_tissue_material_ui(ui)
@@ -1776,14 +1900,22 @@ class TestPhaseRuntime(unittest.TestCase):
         self.assertEqual(calls_by_label["Wet Spec Scale"][2:], (0.0, 4.0, "%.2f"))
         self.assertEqual(calls_by_label["Wet Roughness"][2:], (0.02, 0.6, "%.2f"))
         self.assertEqual(calls_by_label["Blood Wetness"][2:], (0.0, 2.0, "%.2f"))
+        self.assertEqual(ui.checkbox_calls, [("Specular AA", True)])
+        self.assertEqual(calls_by_label["Specular AA Strength"][2:], (0.0, 2.0, "%.2f"))
+        self.assertEqual(calls_by_label["Specular AA Min Roughness"][2:], (0.0, 0.25, "%.2f"))
         self.assertEqual(runtime.tissue_wetness, 0.4)
         self.assertEqual(runtime.tissue_wet_spec_scale, 4.0)
         self.assertEqual(runtime.tissue_wet_roughness, 0.02)
         self.assertEqual(runtime.tissue_blood_wetness, 2.0)
+        self.assertFalse(runtime.tissue_specular_aa_enabled)
+        self.assertEqual(runtime.tissue_specular_aa_strength, 2.0)
+        self.assertEqual(runtime.tissue_specular_aa_min_roughness, 0.25)
         self.assertEqual(runtime.renderer.params[-1]["wetness"], 0.4)
         self.assertEqual(runtime.renderer.params[-1]["wet_spec_scale"], 4.0)
         self.assertEqual(runtime.renderer.params[-1]["wet_roughness"], 0.02)
         self.assertEqual(runtime.renderer.params[-1]["blood_wetness"], 2.0)
+        self.assertEqual(runtime.renderer.params[-1]["specular_aa_enabled"], False)
+        self.assertEqual(runtime.renderer.params[-1]["specular_aa_strength"], 2.0)
 
     def test_runtime_tissue_debug_ui_uses_named_combo_and_reset_button(self):
         class FakeRenderer:
@@ -1943,6 +2075,9 @@ class TestPhaseRuntime(unittest.TestCase):
             "subsurface_color",
             "subsurface_strength",
             "blood_wetness",
+            "specular_aa_enabled",
+            "specular_aa_strength",
+            "specular_aa_min_roughness",
         ):
             self.assertIn(uniform, shader_source)
         for debug_symbol in (
@@ -1959,10 +2094,14 @@ class TestPhaseRuntime(unittest.TestCase):
         self.assertEqual(len(TISSUE_DEBUG_MODE_LABELS), 7)
         self.assertIn("rgba32_float", renderer_source)
         self.assertIn("float dry_roughness = saturate(roughness_bias + (1.0 - spec_mask) * 0.35)", shader_source)
+        self.assertIn("float apply_specular_aa", shader_source)
+        self.assertIn("ddx(normal)", shader_source)
+        self.assertIn("dry_roughness = apply_specular_aa(dry_roughness, normal)", shader_source)
         self.assertIn("float dry_spec = pow(saturate(dot(normal, half_dir)), dry_shininess)", shader_source)
         self.assertIn("float blood_film = saturate(max(blood_blend, blood_mask) * blood_wetness)", shader_source)
         self.assertIn("float wet_film = saturate(wetness + blood_film)", shader_source)
-        self.assertIn("float wet_shininess = lerp(160.0, 32.0, saturate(wet_roughness))", shader_source)
+        self.assertIn("float wet_roughness_aa = apply_specular_aa(saturate(wet_roughness), normal)", shader_source)
+        self.assertIn("float wet_shininess = lerp(160.0, 32.0, wet_roughness_aa)", shader_source)
         self.assertIn("* wet_spec_scale", shader_source)
         self.assertIn("float film_spec = dry_spec * (1.0 - wet_film) + wet_spec", shader_source)
         self.assertIn("float3 wet_base_color = lerp(base_color, base_color * 0.72, wet_film * 0.35)", shader_source)
@@ -1976,6 +2115,9 @@ class TestPhaseRuntime(unittest.TestCase):
         shader_source = (REPO_ROOT / "omnisurg" / "rendering" / "slang_shaders" / "omnisurg_post.slang").read_text()
         bloom_source = (REPO_ROOT / "omnisurg" / "rendering" / "slang_shaders" / "omnisurg_bloom.slang").read_text()
         exposure_source = (REPO_ROOT / "omnisurg" / "rendering" / "slang_shaders" / "omnisurg_exposure.slang").read_text()
+        ao_source = (REPO_ROOT / "omnisurg" / "rendering" / "slang_shaders" / "omnisurg_ao.slang").read_text()
+        fxaa_source = (REPO_ROOT / "omnisurg" / "rendering" / "slang_shaders" / "omnisurg_fxaa.slang").read_text()
+        present_source = (REPO_ROOT / "omnisurg" / "rendering" / "slang_shaders" / "omnisurg_present.slang").read_text()
         mesh_source = (REPO_ROOT / "omnisurg" / "rendering" / "slang_shaders" / "omnisurg_mesh.slang").read_text()
         tissue_source = (REPO_ROOT / "omnisurg" / "rendering" / "slang_shaders" / "omnisurg_tissue.slang").read_text()
         renderer_source = (REPO_ROOT / "omnisurg" / "rendering" / "slang.py").read_text()
@@ -1985,6 +2127,7 @@ class TestPhaseRuntime(unittest.TestCase):
         self.assertIn("Texture2D<float> depth_tex", shader_source)
         self.assertIn("Texture2D<float4> bloom_tex", shader_source)
         self.assertIn("Texture2D<float4> bloom_global_tex", shader_source)
+        self.assertIn("Texture2D<float4> ao_tex", shader_source)
         self.assertIn("Texture2D<float4> lens_dirt_tex", shader_source)
         self.assertIn("Texture2D<float4> auto_exposure_tex", shader_source)
         self.assertIn("SamplerState post_sampler", shader_source)
@@ -1999,6 +2142,8 @@ class TestPhaseRuntime(unittest.TestCase):
             "auto_exposure_max",
             "auto_exposure_speed",
             "auto_exposure_highlight_weight",
+            "ao_enabled",
+            "ao_intensity",
             "bloom_enabled",
             "bloom_threshold",
             "bloom_intensity",
@@ -2034,18 +2179,17 @@ class TestPhaseRuntime(unittest.TestCase):
         self.assertIn("float2 distort_uv", shader_source)
         self.assertIn("float3 sample_hdr_with_chromatic_aberration", shader_source)
         self.assertIn("float3 apply_color_grade", shader_source)
-        self.assertIn("float hash12", shader_source)
-        self.assertIn("float3 apply_sensor_noise", shader_source)
         self.assertIn("auto_exposure_tex.Sample", shader_source)
+        self.assertIn("ao_tex.Sample", shader_source)
         self.assertIn("float3 bloom_drive = bloom_signal", shader_source)
         self.assertIn("float global_bloom_luminance", shader_source)
         self.assertIn("lens_dirt_base_opacity + driven_opacity", shader_source)
         self.assertIn("lens_dirt_global_drive", shader_source)
         self.assertIn("pow(saturate(lens_dirt_tex.Sample", shader_source)
         self.assertLess(shader_source.index("sample_hdr_with_chromatic_aberration"), shader_source.index("aces_tonemap(color)"))
+        self.assertLess(shader_source.index("ao_tex.Sample"), shader_source.index("aces_tonemap(color)"))
         self.assertLess(shader_source.index("aces_tonemap(color)"), shader_source.index("apply_lens_dirt(color, input.uv, bloom_drive, global_drive)"))
         self.assertLess(shader_source.index("apply_lens_dirt(color, input.uv, bloom_drive, global_drive)"), shader_source.index("apply_color_grade(color)"))
-        self.assertLess(shader_source.index("apply_color_grade(color)"), shader_source.index("apply_sensor_noise(color, input.uv)"))
         self.assertIn("prefilter_downsample_fragment", bloom_source)
         self.assertIn("downsample_fragment", bloom_source)
         self.assertIn("upsample_fragment", bloom_source)
@@ -2057,12 +2201,30 @@ class TestPhaseRuntime(unittest.TestCase):
         self.assertIn("Texture2D<float4> previous_exposure_tex", exposure_source)
         self.assertIn("auto_exposure_target_luma", exposure_source)
         self.assertIn("sampled_highlight_luminance", exposure_source)
+        self.assertIn("ao_fragment", ao_source)
+        self.assertIn("blur_fragment", ao_source)
+        self.assertIn("Texture2D<float> depth_tex", ao_source)
+        self.assertIn("reconstruct_view_position", ao_source)
+        self.assertIn("reconstruct_normal", ao_source)
+        self.assertIn("0.5 * ao_radius * camera_inv_tan_half_fovy", ao_source)
+        self.assertIn("projected_radius = min(projected_radius, 0.06)", ao_source)
+        self.assertIn("float recess_depth", ao_source)
+        self.assertIn("occlusion = saturate(occlusion / 6.0)", ao_source)
+        self.assertIn("source_ao_tex.Sample", ao_source)
+        self.assertIn("fxaa_edge_threshold", fxaa_source)
+        self.assertIn("luma_max - luma_min", fxaa_source)
+        self.assertIn("manual_srgb_encode", present_source)
+        self.assertIn("float3 apply_sensor_noise", present_source)
+        self.assertIn("linear_to_srgb", present_source)
         self.assertIn("float endoscope_vignette", shader_source)
         self.assertIn("float scope_mask", shader_source)
         self.assertIn("scene_color_tex.Sample", shader_source)
         self.assertIn("omnisurg_post.slang", renderer_source)
         self.assertIn("omnisurg_bloom.slang", renderer_source)
         self.assertIn("omnisurg_exposure.slang", renderer_source)
+        self.assertIn("omnisurg_ao.slang", renderer_source)
+        self.assertIn("omnisurg_fxaa.slang", renderer_source)
+        self.assertIn("omnisurg_present.slang", renderer_source)
         self.assertIn("PostProcessParams", renderer_source)
         self.assertIn("LENS_DIRT_TEXTURE_PATHS", renderer_source)
         self.assertIn("LENS_DIRT_TEXTURE_LABELS", renderer_source)
@@ -2074,6 +2236,10 @@ class TestPhaseRuntime(unittest.TestCase):
         self.assertIn("self._post_pipeline", renderer_source)
         self.assertIn("self._bloom_prefilter_pipeline", renderer_source)
         self.assertIn("self._auto_exposure_pipeline", renderer_source)
+        self.assertIn("self._ao_pipeline", renderer_source)
+        self.assertIn("self._fxaa_pipeline", renderer_source)
+        self.assertIn("self._present_pipeline", renderer_source)
+        self.assertIn("_manual_srgb_encode", renderer_source)
         self.assertIn("input_layout=None", renderer_source)
         self.assertIn("max(color, float3(0.0))", mesh_source)
         self.assertIn("max(color, float3(0.0))", tissue_source)

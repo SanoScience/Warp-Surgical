@@ -4,8 +4,11 @@
 
 - Added the first Slang postprocessing scaffold:
   - geometry now renders into an offscreen HDR scene color target
-  - a fullscreen `omnisurg_post.slang` pass writes to the swapchain before UI rendering
+  - a fullscreen `omnisurg_post.slang` pass writes to an LDR linear target before FXAA/present
   - the pass applies exposure, white balance, ACES tonemapping, endoscope vignette, and a soft circular scope mask
+  - added a final present pass that applies sensor grain after antialiasing and manually encodes sRGB only when the swapchain is not sRGB
+  - added a depth-only half-resolution AO pass with edge-aware blur for folds and close tissue contact
+  - added shader-only FXAA as a lightweight non-temporal antialiasing pass
   - added COD-style multi-scale HDR bloom before tonemapping for wet tissue and metal highlights
   - added bloom-driven lens dirt overlay using `textures/lensdirt/LensDirt00.png`
   - runtime lens dirt selection can switch between the four `textures/lensdirt/LensDirt00..03.png` assets
@@ -54,6 +57,7 @@
   - added a sharper wet film specular lobe
   - blood blend and blood mask automatically contribute to wet film
   - wet film slightly darkens diffuse tissue
+  - added derivative-based specular antialiasing controls for wet/dry highlight shimmer
   - `DEBUG_SPEC_ROUGHNESS` now shows red = spec mask, green = dry roughness, blue = wet film amount
 - Fixed wet specular stacking:
   - dry specular is attenuated by wet film
@@ -81,6 +85,9 @@
 - `wet_roughness = 0.18`
 - `blood_wetness = 1.0`
 - `subsurface_strength = 0.0`
+- `specular_aa_enabled = True`
+- `specular_aa_strength = 0.35`
+- `specular_aa_min_roughness = 0.04`
 - Postprocessing:
   - `enabled = True`
   - `exposure = 1.0`
@@ -91,6 +98,15 @@
   - `auto_exposure_max = 1.8`
   - `auto_exposure_speed = 4.0`
   - `auto_exposure_highlight_weight = 0.8`
+  - `ao_enabled = True`
+  - `ao_intensity = 1.6`
+  - `ao_radius = 0.22`
+  - `ao_bias = 0.004`
+  - `ao_power = 1.6`
+  - `fxaa_enabled = True`
+  - `fxaa_subpix = 0.75`
+  - `fxaa_edge_threshold = 0.125`
+  - `fxaa_edge_threshold_min = 0.0312`
   - `bloom_enabled = True`
   - `bloom_threshold = 1.0`
   - `bloom_intensity = 0.6`
@@ -132,9 +148,11 @@ These defaults are intentionally conservative. With zero vertex colors and defau
 - Numeric material parameter clamping is currently asymmetric. Wet parameters are clamped in the renderer API, while older material controls rely mainly on UI ranges.
 - Bloom uses a fixed five-level HDR pyramid with Karis-weighted downsample and tent upsample. It does not yet expose separate knee, firefly suppression, or chromatic dispersion controls.
 - Lens dirt uses selectable static textures with base opacity, bloom-driven local flare, low-resolution global bloom drive, and mask gamma shaping. Dynamic droplets, smears, condensation, and blood accumulation are not implemented yet.
+- AO is depth-only and half-resolution. It does not use true geometric ray queries, material thickness, or a full GTAO horizon integration.
+- FXAA is intentionally lightweight and shader-only. It does not solve temporal shimmer as well as TAA.
 - Auto-exposure samples a fixed 3x3 scene pattern plus the lowest bloom level rather than a full luminance histogram. It is intended as AGC scaffolding, not a finished metering model.
 - Distortion, chromatic aberration, grain, and color grading are screen-space approximations. They do not yet use calibrated optics or sensor profiles.
-- SSAO/contact occlusion and smoke/haze are not implemented yet.
+- Smoke/haze is not implemented yet.
 - Normal layer blending is still linear in tangent space. It has not been upgraded to reoriented normal blending.
 - Specular lighting is still Blinn-Phong style. There is no GGX/physical BRDF yet.
 - Flat/untextured rendering is unchanged; wetness affects the textured Slang tissue path.
@@ -169,7 +187,7 @@ These defaults are intentionally conservative. With zero vertex colors and defau
 - Consolidate all tissue material parameter ranges in one table and clamp them consistently in the renderer API.
 - Add a short shader comment or helper function documenting why dry and wet shininess curves differ.
 - Upgrade normal blending to reoriented normal mapping.
-- Replace the Blinn-Phong specular model with GGX or another clearer roughness model.
+- Replace the Blinn-Phong specular model with GGX or another clearer roughness model; keep the specular AA roughness boost in that path.
 - Tune per-organ subsurface color/strength defaults once visual references are available.
 
 ## Todo: Postprocessing Realism
@@ -177,28 +195,31 @@ These defaults are intentionally conservative. With zero vertex colors and defau
 Highest-value post effects to add after the first postprocess scaffold:
 
 1. Dynamic lens contamination: droplets, smears, condensation, and blood masks.
-2. SSAO/contact occlusion for folds and tool contact.
-3. Cautery smoke/haze tied to heat or tool activity.
-4. Very subtle depth of field for close endoscopic camera simulation.
-5. Calibrated optics/sensor profiles for distortion, chromatic aberration, AGC, noise, and OR color response.
+2. Cautery smoke/haze tied to heat or tool activity.
+3. Very subtle depth of field for close endoscopic camera simulation.
+4. Screen-space subsurface scattering on a diffuse/subsurface target.
+5. Temporal antialiasing with history rejection if motion/velocity buffers are added later.
+6. Calibrated optics/sensor profiles for distortion, chromatic aberration, AGC, noise, and OR color response.
 
 Suggested implementation order:
 
 1. Dynamic lens dirt masks and droplet/smear authoring.
-2. SSAO/contact occlusion.
-3. Cautery smoke/haze.
-4. Calibrated endoscope profiles and preset bundles for the existing optics controls.
+2. Cautery smoke/haze.
+3. Subtle depth of field.
+4. Screen-space subsurface scattering.
+5. Calibrated endoscope profiles and preset bundles for the existing optics controls.
 
 ## Verification Notes
 
 Focused verification used during this slice:
 
 ```powershell
-python -m unittest tests.test_phase1_runtime.TestPhaseRuntime.test_slang_renderer_tissue_material_params_are_clamped_and_bound tests.test_phase1_runtime.TestPhaseRuntime.test_slang_renderer_clamps_wet_tissue_material_params_to_ui_ranges tests.test_phase1_runtime.TestPhaseRuntime.test_runtime_tissue_material_param_sync_updates_renderer tests.test_phase1_runtime.TestPhaseRuntime.test_runtime_tissue_material_ui_exposes_wet_sliders_and_syncs_renderer tests.test_phase1_runtime.TestPhaseRuntime.test_runtime_tissue_debug_ui_uses_named_combo_and_reset_button tests.test_phase1_runtime.TestPhaseRuntime.test_runtime_tissue_debug_ui_falls_back_to_slider tests.test_phase1_runtime.TestPhaseRuntime.test_slang_tissue_shader_declares_color_and_layer_bindings tests.test_phase1_runtime.TestPhaseRuntime.test_tissue_blend_debug_channels_fill_vertex_colors tests.test_phase1_runtime.TestPhaseRuntime.test_render_bridge_forwards_vertex_colors_to_slang tests.test_phase1_runtime.TestPhaseRuntime.test_render_bridge_accepts_vertex_colors_on_gl_path
+python -m unittest tests.test_phase1_runtime.TestPhaseRuntime.test_slang_renderer_tissue_material_params_are_clamped_and_bound tests.test_phase1_runtime.TestPhaseRuntime.test_slang_renderer_clamps_wet_tissue_material_params_to_ui_ranges tests.test_phase1_runtime.TestPhaseRuntime.test_slang_renderer_postprocess_params_are_clamped_and_bound tests.test_phase1_runtime.TestPhaseRuntime.test_slang_renderer_bloom_level_sizes_are_bounded tests.test_phase1_runtime.TestPhaseRuntime.test_slang_renderer_resize_invalidates_bloom_textures tests.test_phase1_runtime.TestPhaseRuntime.test_runtime_tissue_material_param_sync_updates_renderer tests.test_phase1_runtime.TestPhaseRuntime.test_runtime_tissue_material_ui_exposes_wet_sliders_and_syncs_renderer tests.test_phase1_runtime.TestPhaseRuntime.test_runtime_postprocess_param_sync_updates_renderer tests.test_phase1_runtime.TestPhaseRuntime.test_runtime_postprocess_ui_exposes_optics_controls_and_syncs_renderer tests.test_phase1_runtime.TestPhaseRuntime.test_slang_tissue_shader_declares_color_and_layer_bindings tests.test_phase1_runtime.TestPhaseRuntime.test_slang_postprocess_shader_declares_tonemap_and_scope_bindings
 ```
 
 ```powershell
-G:\warp\slang-2026.5.1-windows-x86_64\bin\slangc.exe omnisurg\rendering\slang_shaders\omnisurg_tissue.slang -entry vertex_main -stage vertex -entry fragment_main -stage fragment -target spirv -o .tmp_tests\omnisurg_tissue.spv
+G:\warp\slang-2026.5.1-windows-x86_64\bin\slangc.exe -I omnisurg\rendering\slang_shaders -target spirv -profile glsl_460 -entry vertex_main -entry fragment_main omnisurg\rendering\slang_shaders\omnisurg_post.slang
+G:\warp\slang-2026.5.1-windows-x86_64\bin\slangc.exe -I omnisurg\rendering\slang_shaders -target spirv -profile glsl_460 -entry vertex_main -entry ao_fragment omnisurg\rendering\slang_shaders\omnisurg_ao.slang
+G:\warp\slang-2026.5.1-windows-x86_64\bin\slangc.exe -I omnisurg\rendering\slang_shaders -target spirv -profile glsl_460 -entry vertex_main -entry fragment_main omnisurg\rendering\slang_shaders\omnisurg_fxaa.slang
+G:\warp\slang-2026.5.1-windows-x86_64\bin\slangc.exe -I omnisurg\rendering\slang_shaders -target spirv -profile glsl_460 -entry vertex_main -entry fragment_main omnisurg\rendering\slang_shaders\omnisurg_present.slang
 ```
-
-`uv run pytest` was blocked in the sandbox because the existing `.venv` interpreter could not be queried by the sandbox user.

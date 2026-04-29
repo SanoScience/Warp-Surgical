@@ -696,6 +696,9 @@ class Runtime:
         self.tissue_subsurface_color = (0.8, 0.22, 0.16)
         self.tissue_subsurface_strength = 0.0
         self.tissue_blood_wetness = 1.0
+        self.tissue_specular_aa_enabled = True
+        self.tissue_specular_aa_strength = 0.35
+        self.tissue_specular_aa_min_roughness = 0.04
         self.postprocess_enabled = True
         self.postprocess_exposure = 1.0
         self.postprocess_white_balance = (1.0, 1.0, 1.0)
@@ -705,6 +708,15 @@ class Runtime:
         self.postprocess_auto_exposure_max = 1.8
         self.postprocess_auto_exposure_speed = 4.0
         self.postprocess_auto_exposure_highlight_weight = 0.8
+        self.postprocess_ao_enabled = True
+        self.postprocess_ao_intensity = 1.6
+        self.postprocess_ao_radius = 0.22
+        self.postprocess_ao_bias = 0.004
+        self.postprocess_ao_power = 1.6
+        self.postprocess_fxaa_enabled = True
+        self.postprocess_fxaa_subpix = 0.75
+        self.postprocess_fxaa_edge_threshold = 0.125
+        self.postprocess_fxaa_edge_threshold_min = 0.0312
         self.postprocess_bloom_enabled = True
         self.postprocess_bloom_threshold = 1.0
         self.postprocess_bloom_intensity = 0.6
@@ -1663,6 +1675,9 @@ class Runtime:
             subsurface_color=self.tissue_subsurface_color,
             subsurface_strength=self.tissue_subsurface_strength,
             blood_wetness=self.tissue_blood_wetness,
+            specular_aa_enabled=getattr(self, "tissue_specular_aa_enabled", True),
+            specular_aa_strength=getattr(self, "tissue_specular_aa_strength", 0.35),
+            specular_aa_min_roughness=getattr(self, "tissue_specular_aa_min_roughness", 0.04),
         )
 
     def _sync_postprocess_params(self) -> None:
@@ -1682,6 +1697,15 @@ class Runtime:
             auto_exposure_max=self.postprocess_auto_exposure_max,
             auto_exposure_speed=self.postprocess_auto_exposure_speed,
             auto_exposure_highlight_weight=self.postprocess_auto_exposure_highlight_weight,
+            ao_enabled=getattr(self, "postprocess_ao_enabled", True),
+            ao_intensity=getattr(self, "postprocess_ao_intensity", 1.6),
+            ao_radius=getattr(self, "postprocess_ao_radius", 0.22),
+            ao_bias=getattr(self, "postprocess_ao_bias", 0.004),
+            ao_power=getattr(self, "postprocess_ao_power", 1.6),
+            fxaa_enabled=getattr(self, "postprocess_fxaa_enabled", True),
+            fxaa_subpix=getattr(self, "postprocess_fxaa_subpix", 0.75),
+            fxaa_edge_threshold=getattr(self, "postprocess_fxaa_edge_threshold", 0.125),
+            fxaa_edge_threshold_min=getattr(self, "postprocess_fxaa_edge_threshold_min", 0.0312),
             bloom_enabled=self.postprocess_bloom_enabled,
             bloom_threshold=self.postprocess_bloom_threshold,
             bloom_intensity=self.postprocess_bloom_intensity,
@@ -1777,13 +1801,13 @@ class Runtime:
         if changed:
             self._set_postprocess_float("postprocess_auto_exposure_target_luma", auto_exposure_target_luma, 0.05, 1.0)
 
-        changed, auto_exposure_min = ui.slider_float(
-            "Auto Exposure Min",
-            self.postprocess_auto_exposure_min,
-            0.05,
-            2.0,
-            "%.2f",
-        )
+            changed, auto_exposure_min = ui.slider_float(
+                "Auto Exposure Min",
+                self.postprocess_auto_exposure_min,
+                0.05,
+                2.0,
+                "%.2f",
+            )
         if changed:
             self._set_postprocess_float("postprocess_auto_exposure_min", auto_exposure_min, 0.05, 2.0)
 
@@ -1821,6 +1845,86 @@ class Runtime:
                 0.0,
                 4.0,
             )
+
+        changed, ao_enabled = ui.checkbox("Ambient Occlusion", self.postprocess_ao_enabled)
+        if changed and bool(ao_enabled) != self.postprocess_ao_enabled:
+            self.postprocess_ao_enabled = bool(ao_enabled)
+            self._sync_postprocess_params()
+
+            changed, ao_intensity = ui.slider_float(
+                "AO Intensity",
+                self.postprocess_ao_intensity,
+                0.0,
+                4.0,
+                "%.2f",
+            )
+        if changed:
+            self._set_postprocess_float("postprocess_ao_intensity", ao_intensity, 0.0, 4.0)
+
+        changed, ao_radius = ui.slider_float(
+            "AO Radius",
+            self.postprocess_ao_radius,
+            0.0,
+            0.30,
+            "%.3f",
+        )
+        if changed:
+            self._set_postprocess_float("postprocess_ao_radius", ao_radius, 0.0, 0.30)
+
+        changed, ao_bias = ui.slider_float(
+            "AO Bias",
+            self.postprocess_ao_bias,
+            0.0,
+            0.03,
+            "%.4f",
+        )
+        if changed:
+            self._set_postprocess_float("postprocess_ao_bias", ao_bias, 0.0, 0.03)
+
+        changed, ao_power = ui.slider_float(
+            "AO Power",
+            self.postprocess_ao_power,
+            0.25,
+            4.0,
+            "%.2f",
+        )
+        if changed:
+            self._set_postprocess_float("postprocess_ao_power", ao_power, 0.25, 4.0)
+
+        changed, fxaa_enabled = ui.checkbox("FXAA", self.postprocess_fxaa_enabled)
+        if changed and bool(fxaa_enabled) != self.postprocess_fxaa_enabled:
+            self.postprocess_fxaa_enabled = bool(fxaa_enabled)
+            self._sync_postprocess_params()
+
+        changed, fxaa_subpix = ui.slider_float(
+            "FXAA Subpix",
+            self.postprocess_fxaa_subpix,
+            0.0,
+            1.0,
+            "%.2f",
+        )
+        if changed:
+            self._set_postprocess_float("postprocess_fxaa_subpix", fxaa_subpix, 0.0, 1.0)
+
+        changed, fxaa_edge_threshold = ui.slider_float(
+            "FXAA Edge Threshold",
+            self.postprocess_fxaa_edge_threshold,
+            0.0312,
+            0.333,
+            "%.4f",
+        )
+        if changed:
+            self._set_postprocess_float("postprocess_fxaa_edge_threshold", fxaa_edge_threshold, 0.0312, 0.333)
+
+        changed, fxaa_edge_threshold_min = ui.slider_float(
+            "FXAA Edge Threshold Min",
+            self.postprocess_fxaa_edge_threshold_min,
+            0.0,
+            0.0833,
+            "%.4f",
+        )
+        if changed:
+            self._set_postprocess_float("postprocess_fxaa_edge_threshold_min", fxaa_edge_threshold_min, 0.0, 0.0833)
 
         changed, bloom_enabled = ui.checkbox("Bloom", self.postprocess_bloom_enabled)
         if changed and bool(bloom_enabled) != self.postprocess_bloom_enabled:
@@ -2212,6 +2316,36 @@ class Runtime:
         )
         if changed:
             self._set_tissue_material_float("tissue_blood_wetness", blood_wetness, 0.0, 2.0)
+
+        changed, specular_aa_enabled = ui.checkbox("Specular AA", self.tissue_specular_aa_enabled)
+        if changed and bool(specular_aa_enabled) != self.tissue_specular_aa_enabled:
+            self.tissue_specular_aa_enabled = bool(specular_aa_enabled)
+            self._sync_tissue_material_params()
+
+        changed, specular_aa_strength = ui.slider_float(
+            "Specular AA Strength",
+            self.tissue_specular_aa_strength,
+            0.0,
+            2.0,
+            "%.2f",
+        )
+        if changed:
+            self._set_tissue_material_float("tissue_specular_aa_strength", specular_aa_strength, 0.0, 2.0)
+
+        changed, specular_aa_min_roughness = ui.slider_float(
+            "Specular AA Min Roughness",
+            self.tissue_specular_aa_min_roughness,
+            0.0,
+            0.25,
+            "%.2f",
+        )
+        if changed:
+            self._set_tissue_material_float(
+                "tissue_specular_aa_min_roughness",
+                specular_aa_min_roughness,
+                0.0,
+                0.25,
+            )
 
         changed, ambient = ui.slider_float("Ambient", self.tissue_ambient, 0.0, 1.0, "%.2f")
         if changed:

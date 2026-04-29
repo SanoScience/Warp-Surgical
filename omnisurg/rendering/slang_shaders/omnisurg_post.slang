@@ -8,6 +8,7 @@ Texture2D<float4> scene_color_tex;
 Texture2D<float> depth_tex;
 Texture2D<float4> bloom_tex;
 Texture2D<float4> bloom_global_tex;
+Texture2D<float4> ao_tex;
 Texture2D<float4> lens_dirt_tex;
 Texture2D<float4> auto_exposure_tex;
 SamplerState post_sampler;
@@ -23,6 +24,8 @@ uniform float auto_exposure_min;
 uniform float auto_exposure_max;
 uniform float auto_exposure_speed;
 uniform float auto_exposure_highlight_weight;
+uniform int ao_enabled;
+uniform float ao_intensity;
 uniform int bloom_enabled;
 uniform float bloom_threshold;
 uniform float bloom_intensity;
@@ -127,7 +130,11 @@ float scope_mask(float radius)
 
 float3 sample_scene_hdr(float2 uv, float effective_exposure)
 {
-    return max(scene_color_tex.Sample(post_sampler, uv).rgb, float3(0.0)) * white_balance * effective_exposure;
+    float ao = ao_enabled != 0 ? saturate(ao_tex.Sample(post_sampler, uv).r) : 1.0;
+    return max(scene_color_tex.Sample(post_sampler, uv).rgb, float3(0.0))
+        * white_balance
+        * effective_exposure
+        * ao;
 }
 
 float3 sample_bloom_hdr(float2 uv, bool bloom_active, float auto_exposure_multiplier)
@@ -191,33 +198,10 @@ float3 apply_color_grade(float3 color)
     return saturate(color);
 }
 
-float hash12(float2 value)
-{
-    float3 p3 = frac(float3(value.xyx) * 0.1031);
-    p3 += dot(p3, p3.yzx + 33.33);
-    return frac((p3.x + p3.y) * p3.z);
-}
-
-float3 apply_sensor_noise(float3 color, float2 uv)
-{
-    float frame = float(frame_index);
-    float2 pixel = uv * output_size;
-    float2 seed = pixel + float2(frame * 17.0, frame * 59.0);
-    float3 noise = float3(
-        hash12(seed),
-        hash12(seed + 19.19),
-        hash12(seed + 37.73)
-    ) - 0.5;
-    float shadow_weight = lerp(1.0 + sensor_noise_shadow_boost, 1.0, saturate(luminance(color)));
-    return color + noise * sensor_noise_strength * shadow_weight;
-}
-
 [shader("fragment")]
 float4 fragment_main(V2F input) : SV_Target
 {
-    float depth = depth_tex.Sample(post_sampler, input.uv);
     float3 color = max(scene_color_tex.Sample(post_sampler, input.uv).rgb, float3(0.0));
-    color += depth * 0.0;
 
     if (postprocess_enabled != 0)
     {
@@ -248,8 +232,6 @@ float4 fragment_main(V2F input) : SV_Target
 
         float radius = radial_distance(input.uv);
         color *= endoscope_vignette(radius);
-        if (sensor_noise_enabled != 0 && sensor_noise_strength > 0.0)
-            color = apply_sensor_noise(color, input.uv);
         color *= scope_mask(radius);
     }
     else

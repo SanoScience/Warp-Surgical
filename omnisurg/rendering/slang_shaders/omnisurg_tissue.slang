@@ -58,6 +58,9 @@ uniform float wet_roughness;
 uniform float3 subsurface_color;
 uniform float subsurface_strength;
 uniform float blood_wetness;
+uniform int specular_aa_enabled;
+uniform float specular_aa_strength;
+uniform float specular_aa_min_roughness;
 
 static const int DEBUG_FINAL = 0;
 static const int DEBUG_VERTEX_BLEND_RGB = 1;
@@ -170,6 +173,18 @@ float blend_spec_layers(float2 uv, float damage_blend, float coag_blend, float b
     return value;
 }
 
+float apply_specular_aa(float roughness, float3 normal)
+{
+    if (specular_aa_enabled == 0 || specular_aa_strength <= 0.0)
+        return roughness;
+
+    float3 normal_dx = ddx(normal);
+    float3 normal_dy = ddy(normal);
+    float variance = dot(normal_dx, normal_dx) + dot(normal_dy, normal_dy);
+    float boost = saturate(variance * specular_aa_strength);
+    return saturate(max(roughness, specular_aa_min_roughness) + boost);
+}
+
 [shader("fragment")]
 float4 fragment_main(V2F input) : SV_Target
 {
@@ -218,13 +233,15 @@ float4 fragment_main(V2F input) : SV_Target
 
     float3 half_dir = normalize(key_light + view_dir);
     float dry_roughness = saturate(roughness_bias + (1.0 - spec_mask) * 0.35);
+    dry_roughness = apply_specular_aa(dry_roughness, normal);
     float dry_shininess = lerp(96.0, 18.0, dry_roughness);
     float dry_spec = pow(saturate(dot(normal, half_dir)), dry_shininess)
         * specular_scale
         * (0.25 + spec_mask);
     float blood_film = saturate(max(blood_blend, blood_mask) * blood_wetness);
     float wet_film = saturate(wetness + blood_film);
-    float wet_shininess = lerp(160.0, 32.0, saturate(wet_roughness));
+    float wet_roughness_aa = apply_specular_aa(saturate(wet_roughness), normal);
+    float wet_shininess = lerp(160.0, 32.0, wet_roughness_aa);
     float wet_spec = pow(saturate(dot(normal, half_dir)), wet_shininess)
         * wet_spec_scale
         * wet_film;
