@@ -249,6 +249,36 @@ class GPUBuffers:
 class RenderBridge:
     """Thin backend wrapper for the supported Phase viewers."""
 
+    @classmethod
+    def wrap_existing(cls, viewer, *, backend: str | None = None, device=None) -> "RenderBridge":
+        """Wrap an already-created viewer with the RenderBridge API."""
+        obj = cls.__new__(cls)
+        if device is None:
+            model = getattr(viewer, "model", None)
+            device = getattr(model, "device", None)
+        if device is None:
+            device = wp.get_device()
+        obj.gpu = GPUBuffers(device)
+        if backend is None:
+            if viewer.__class__.__name__ == "SlangHexViewer":
+                backend = str(getattr(viewer, "_backend", "slang"))
+            elif viewer.__class__.__name__ == "_HeadlessHexViewer":
+                backend = "headless"
+            elif viewer.__class__.__name__ == "ViewerUSD":
+                backend = "usd"
+            elif viewer.__class__.__name__ == "ViewerGL":
+                backend = "gl"
+            else:
+                backend = str(getattr(viewer, "backend", "wrapped"))
+        obj._backend = backend
+        obj._renderer = viewer
+        obj._mesh_created = set()
+        obj._mesh_instance_state = {}
+        obj._instance_colors = {}
+        obj._point_radii = {}
+        obj._point_colors = {}
+        return obj
+
     def __init__(self, viewer_config: ViewerConfig, model, device):
         self.gpu = GPUBuffers(device)
         self._backend = viewer_config.backend
@@ -564,6 +594,20 @@ class RenderBridge:
             method = getattr(target, "screen_to_world_ray", None)
             if callable(method):
                 return method(x, y)
+            to_framebuffer = getattr(target, "_to_framebuffer_coords", None)
+            camera = getattr(target, "camera", None)
+            if callable(to_framebuffer) and camera is not None and hasattr(camera, "get_world_ray"):
+                fb_x, fb_y = to_framebuffer(x, y)
+                ray_start, ray_dir = camera.get_world_ray(fb_x, fb_y)
+                origin = np.asarray(ray_start, dtype=np.float32).reshape(3)
+                try:
+                    direction = np.asarray((ray_dir.x, ray_dir.y, ray_dir.z), dtype=np.float32)
+                except AttributeError:
+                    direction = np.asarray(ray_dir, dtype=np.float32).reshape(3)
+                direction_norm = float(np.linalg.norm(direction))
+                if direction_norm > 1.0e-8:
+                    direction /= direction_norm
+                return origin, direction
         raise RuntimeError(f"{self._backend} renderer does not expose screen_to_world_ray")
 
     def draw_cryo_surface(self, *args, **kwargs):

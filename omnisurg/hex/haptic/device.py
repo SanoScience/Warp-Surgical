@@ -13,6 +13,8 @@ import threading
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 
+import numpy as np
+
 from .frames import matrix_to_quaternion, minimou_orientation_to_quaternion, minimou_position_to_adapter
 
 
@@ -31,6 +33,9 @@ class InputPose:
         button1: first front button state.
         button2: second front button state (None if the device only has one).
         tool_pos: MiniMou tool-position scalar used as the cut trigger.
+        grip: normalized handle/tool closure in [0, 1], where 1 is closed.
+        handle_pos: raw MiniMou handle opening value when available.
+        handle_active: MiniMou handle activity bit when available.
         valid: False until the scheduler has produced at least one update.
     """
 
@@ -39,6 +44,9 @@ class InputPose:
     button1: bool = False
     button2: bool = False
     tool_pos: float = 0.0
+    grip: float = 0.0
+    handle_pos: float = 0.0
+    handle_active: bool = False
     valid: bool = False
 
 
@@ -172,14 +180,38 @@ class MiniMouInput:
     def __init__(self, controller):
         self._controller = controller
         self._angles_degrees: tuple[float, float, float] | None = None
+        self._handle_min: float | None = None
+        self._handle_max: float | None = None
+        self._tool_min: float | None = None
+        self._tool_max: float | None = None
         self._closed = False
+
+    def _closing_grip(self, value: float, min_attr: str, max_attr: str) -> float:
+        if not np.isfinite(value):
+            return 0.0
+        current_min = getattr(self, min_attr)
+        current_max = getattr(self, max_attr)
+        if current_min is None or current_max is None:
+            setattr(self, min_attr, float(value))
+            setattr(self, max_attr, float(value))
+            return 0.0
+        current_min = min(float(current_min), float(value))
+        current_max = max(float(current_max), float(value))
+        setattr(self, min_attr, current_min)
+        setattr(self, max_attr, current_max)
+        span = current_max - current_min
+        if span <= 1.0e-4:
+            return 0.0
+        opening = (float(value) - current_min) / span
+        return float(np.clip(1.0 - opening, 0.0, 1.0))
 
     @classmethod
     def discover(cls, count: int = 1) -> list[MiniMouInput]:
         try:
-            from follou.devices.minimou import MiniMou  # noqa: PLC0415
-            from follou.manager import DeviceManager  # noqa: PLC0415
-        except (OSError, ImportError, FileNotFoundError) as exc:
+            from omnisurg.input.follou import ensure_follou_importable  # noqa: PLC0415
+
+            DeviceManager, MiniMou = ensure_follou_importable()
+        except Exception as exc:
             raise HapticUnavailable(f"Follou MiniMou support unavailable: {exc}") from exc
 
         try:
@@ -211,13 +243,22 @@ class MiniMouInput:
             )
             orientation = self._controller.get_orientation()
             tool_pos = float(getattr(self._controller, "get_tool_pos", lambda: 0.0)())
+            handle_pos = float(getattr(self._controller, "get_handle_opening_value", lambda: tool_pos)())
+            handle_active = bool(getattr(self._controller, "get_handle_activity", lambda: 0)())
+            grip = max(
+                self._closing_grip(handle_pos, "_handle_min", "_handle_max"),
+                self._closing_grip(tool_pos, "_tool_min", "_tool_max"),
+            )
 
             self._angles_degrees = angles
             return InputPose(
                 position=minimou_position_to_adapter(pos),
                 quaternion=minimou_orientation_to_quaternion(orientation),
-                button1=tool_pos < 0.1,
+                button1=handle_active or grip >= 0.5,
                 tool_pos=tool_pos,
+                grip=grip,
+                handle_pos=handle_pos,
+                handle_active=handle_active,
                 valid=True,
             )
         except Exception:
@@ -274,6 +315,9 @@ class FallbackInput:
             button1=self.pose.button1,
             button2=self.pose.button2,
             tool_pos=self.pose.tool_pos,
+            grip=self.pose.grip,
+            handle_pos=self.pose.handle_pos,
+            handle_active=self.pose.handle_active,
             valid=True,
         )
 

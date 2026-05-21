@@ -9,7 +9,7 @@ import numpy as np
 import pytest
 
 import omnisurg.hex.slang_viewer as slang_mod
-from omnisurg.hex._legacy_corner_app import (
+from omnisurg.hex.app_runtime import (
     UiState,
     _camera_local_offsets,
     _camera_points_from_local_offsets,

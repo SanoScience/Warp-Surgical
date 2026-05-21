@@ -12,7 +12,7 @@ import pytest
 import warp as wp
 
 from omnisurg.hex.materials import DEFAULT_MATERIALS, MaterialTable, Phase
-from omnisurg.hex import _legacy_corner_app
+from omnisurg.hex import app_runtime
 from omnisurg.hex.cli import _default_root
 from omnisurg.hex.data.cache import build_manifest, make_cache_key, try_read_valid_cache, write_npz_atomic
 from omnisurg.hex.data.crop import crop_labels_to_visible_classes, select_visible_class_ids
@@ -56,7 +56,7 @@ def test_cli_default_dataset_roots_honor_data_root_env(monkeypatch: pytest.Monke
 def test_omnisurg_runtime_never_pins_bone_particles(monkeypatch: pytest.MonkeyPatch):
     captured: dict[str, object] = {}
 
-    def fake_build_corner_grid(*args, **kwargs):
+    def fake_build_hex_particle_grid(*args, **kwargs):
         captured.update(kwargs)
         raise _StopAfterBuild
 
@@ -66,12 +66,12 @@ def test_omnisurg_runtime_never_pins_bone_particles(monkeypatch: pytest.MonkeyPa
         materials=MaterialTable(DEFAULT_MATERIALS),
         class_map={0: "background", 1: "muscle"},
     )
-    monkeypatch.setattr(_legacy_corner_app, "build_corner_grid", fake_build_corner_grid)
-    monkeypatch.setattr(_legacy_corner_app, "_OMNISURG_PREPARED_VOLUME", volume)
-    monkeypatch.setattr(_legacy_corner_app, "_OMNISURG_PREPARED_TEXTURE_RGB", None)
+    monkeypatch.setattr(app_runtime, "build_hex_particle_grid", fake_build_hex_particle_grid)
+    monkeypatch.setattr(app_runtime, "_OMNISURG_PREPARED_VOLUME", volume)
+    monkeypatch.setattr(app_runtime, "_OMNISURG_PREPARED_TEXTURE_RGB", None)
 
     with pytest.raises(_StopAfterBuild):
-        _legacy_corner_app.main(["--exit-after-init", "--cryo-renderer", "off", "--no-gl-interop"])
+        app_runtime.main(["--exit-after-init", "--cryo-renderer", "off", "--no-gl-interop"])
 
     assert captured["kinematic_bones"] is False
 
@@ -92,7 +92,7 @@ def test_runtime_locked_node_enforcement_pins_position_and_velocity():
     locked_indices = wp.array(np.asarray([1], dtype=np.int32), dtype=wp.int32, device=device)
     locked_positions = wp.array(np.asarray([[2.5, 3.5, 4.5]], dtype=np.float32), dtype=wp.vec3, device=device)
 
-    _legacy_corner_app._enforce_locked_nodes(state, locked_indices, locked_positions, 1, device)
+    app_runtime._enforce_locked_nodes(state, locked_indices, locked_positions, 1, device)
     wp.synchronize_device(device)
 
     assert np.allclose(state.particle_q.numpy()[1], [2.5, 3.5, 4.5])
@@ -104,7 +104,7 @@ def test_runtime_locked_node_merge_updates_existing_position():
     locked_positions = np.zeros((4, 3), dtype=np.float32)
     locked_slot_by_node: dict[int, int] = {}
 
-    count = _legacy_corner_app._merge_locked_node_positions(
+    count = app_runtime._merge_locked_node_positions(
         locked_indices,
         locked_positions,
         locked_slot_by_node,
@@ -112,7 +112,7 @@ def test_runtime_locked_node_merge_updates_existing_position():
         np.asarray([2, 3], dtype=np.int32),
         np.asarray([[1.0, 0.0, 0.0], [2.0, 0.0, 0.0]], dtype=np.float32),
     )
-    count = _legacy_corner_app._merge_locked_node_positions(
+    count = app_runtime._merge_locked_node_positions(
         locked_indices,
         locked_positions,
         locked_slot_by_node,

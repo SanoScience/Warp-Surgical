@@ -21,25 +21,30 @@ class _ManagerEntry:
     refcount: int = 0
 
 
-def _ensure_follou_importable():
-    if not FOLLOU_ROOT.exists():
-        raise RuntimeError(f'Follou package not found at "{FOLLOU_ROOT}"')
+def ensure_follou_importable():
+    if FOLLOU_ROOT.exists():
+        repo_root = str(FOLLOU_ROOT.parent)
+    else:
+        repo_root = ""
 
-    repo_root = str(FOLLOU_ROOT.parent)
-    if repo_root not in sys.path:
+    if repo_root and repo_root not in sys.path:
         sys.path.insert(0, repo_root)
 
     try:
         from follou.devices.minimou import MiniMou
         from follou.manager import DeviceManager
     except Exception as exc:
-        raise RuntimeError(f'Failed to import Follou SDK from "{FOLLOU_ROOT}": {exc}') from exc
+        location = f'"{FOLLOU_ROOT}"' if FOLLOU_ROOT.exists() else "installed package or repo-local ./follou"
+        raise RuntimeError(f"Failed to import Follou SDK from {location}: {exc}") from exc
 
     return DeviceManager, MiniMou
 
 
+_ensure_follou_importable = ensure_follou_importable
+
+
 def acquire_manager():
-    DeviceManager, MiniMou = _ensure_follou_importable()
+    DeviceManager, MiniMou = ensure_follou_importable()
     global _manager_entry
     with _manager_lock:
         if _manager_entry is None:

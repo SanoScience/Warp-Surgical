@@ -117,6 +117,22 @@ class _FakeMiniMouController:
         self.closed = True
 
 
+class _FakeMiniMouHandleController(_FakeMiniMouController):
+    def __init__(self) -> None:
+        super().__init__()
+        self.handle_opening = 1.0
+        self.handle_activity = 0
+
+    def get_tool_pos(self) -> float:
+        return 1.0
+
+    def get_handle_opening_value(self) -> float:
+        return self.handle_opening
+
+    def get_handle_activity(self) -> int:
+        return self.handle_activity
+
+
 def test_minimou_poll_uses_adapter_position_and_axis_angle_orientation():
     controller = _FakeMiniMouController()
     device = MiniMouInput(controller)
@@ -127,6 +143,47 @@ def test_minimou_poll_uses_adapter_position_and_axis_angle_orientation():
     assert pose.position == (-1.0, 2.0, 3.0)
     assert device.angles_degrees() == (10.0, 20.0, 30.0)
     _assert_matrix_close(pose.quaternion, minimou_orientation_to_quaternion(controller.get_orientation()))
+
+
+def test_minimou_poll_uses_physical_handle_for_grip_trigger():
+    controller = _FakeMiniMouHandleController()
+    device = MiniMouInput(controller)
+
+    open_pose = device.poll()
+    controller.handle_opening = 0.0
+    controller.handle_activity = 1
+    squeezed_pose = device.poll()
+
+    assert open_pose.valid
+    assert not open_pose.button1
+    assert open_pose.handle_pos == 1.0
+    assert open_pose.grip == 0.0
+    assert squeezed_pose.button1
+    assert squeezed_pose.handle_active
+    assert squeezed_pose.handle_pos == 0.0
+    assert squeezed_pose.grip == 1.0
+
+
+def test_minimou_discover_uses_repo_local_follou_import_helper(monkeypatch):
+    from omnisurg.input import follou as follou_module
+
+    calls = []
+
+    class FakeMiniMou:
+        pass
+
+    class FakeManager:
+        def get_device_controller(self, device_cls, idx):
+            calls.append((device_cls, idx))
+            return _FakeMiniMouController()
+
+    monkeypatch.setattr(follou_module, "ensure_follou_importable", lambda: (FakeManager, FakeMiniMou))
+
+    devices = MiniMouInput.discover(count=1)
+
+    assert len(devices) == 1
+    assert calls == [(FakeMiniMou, 0)]
+    devices[0].close()
 
 
 def test_minimou_adapter_position_preserves_current_mapping():

@@ -1653,34 +1653,6 @@ def _gather_cryo_colored_particles_kernel(
 
 
 @wp.kernel
-def _gather_spring_endpoints_kernel(
-    spring_indices: wp.array(dtype=wp.int32),
-    particle_q: wp.array(dtype=wp.vec3),
-    particle_flags: wp.array(dtype=wp.int32),
-    stiffness: wp.array(dtype=wp.float32),
-    starts: wp.array(dtype=wp.vec3),
-    ends: wp.array(dtype=wp.vec3),
-):
-    """Gather per-spring start/end positions, collapsing disabled springs to a degenerate segment."""
-    tid = wp.tid()
-    i = spring_indices[tid * 2 + 0]
-    j = spring_indices[tid * 2 + 1]
-    # Disabled (zero-stiffness) or cut-endpoint springs collapse to a point so
-    # they vanish from the rendered line set.
-    disabled = stiffness[tid] <= 0.0
-    fi = particle_flags[i]
-    fj = particle_flags[j]
-    active_bit = wp.int32(ParticleFlags.ACTIVE)
-    if disabled or (fi & active_bit) == 0 or (fj & active_bit) == 0:
-        p = particle_q[i]
-        starts[tid] = p
-        ends[tid] = p
-    else:
-        starts[tid] = particle_q[i]
-        ends[tid] = particle_q[j]
-
-
-@wp.kernel
 def _gather_grab_constraint_lines_kernel(
     grab_indices: wp.array(dtype=wp.int32),
     particle_q: wp.array(dtype=wp.vec3),
@@ -2213,7 +2185,7 @@ class SurfaceRenderer:
         Returns the triangle count emitted this frame.
 
         ``topology_revision`` is a monotonic counter owned by the caller
-        (e.g. ``CornerDeletionState.topology_revision``) that changes whenever
+        (e.g. ``HexDeletionState.topology_revision``) that changes whenever
         the active-flag set affecting MC changes. When supplied, the cube
         cases + emit kernels and the flat-index rebuild are
         skipped on frames where revision and visibility mode both match the
@@ -3367,55 +3339,6 @@ class CryoMeshVertexOverlay:
             hidden=hidden,
         )
         return point_count
-
-
-class SpringOverlay:
-    """Gathers per-spring endpoints into line segments for ViewerGL.
-
-    Newton's base viewer exposes a ``show_springs`` checkbox but does not
-    actually draw spring segments - the consumer has to log lines itself.
-    This helper owns two reusable ``wp.array`` buffers sized to the spring
-    count and pushes them via :meth:`~newton.viewer.ViewerBase.log_lines`.
-    """
-
-    def __init__(self, num_springs: int, device: wp.context.Device, name: str = "cutting/springs"):
-        self.name = name
-        self.device = device
-        self.num_springs = num_springs
-        self._starts = wp.zeros(num_springs, dtype=wp.vec3, device=device)
-        self._ends = wp.zeros(num_springs, dtype=wp.vec3, device=device)
-
-    def update(
-        self,
-        viewer: newton.viewer.ViewerBase,
-        spring_indices: wp.array,
-        particle_q: wp.array,
-        particle_flags: wp.array,
-        stiffness: wp.array,
-        hidden: bool = False,
-        color: tuple[float, float, float] = (0.4, 0.7, 1.0),
-        width: float = 0.0005,
-    ) -> None:
-        if self.num_springs == 0:
-            return
-        if hidden:
-            viewer.log_lines(name=self.name, starts=None, ends=None, colors=None, hidden=True)
-            return
-        wp.launch(
-            _gather_spring_endpoints_kernel,
-            dim=self.num_springs,
-            inputs=[spring_indices, particle_q, particle_flags, stiffness],
-            outputs=[self._starts, self._ends],
-            device=self.device,
-        )
-        viewer.log_lines(
-            name=self.name,
-            starts=self._starts,
-            ends=self._ends,
-            colors=color,
-            width=width,
-            hidden=hidden,
-        )
 
 
 class GrabConstraintOverlay:

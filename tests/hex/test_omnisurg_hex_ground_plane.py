@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from omnisurg.hex._legacy_corner_app import _make_ground_plane_mesh
+from omnisurg.hex.app_runtime import _make_ground_plane_mesh
 
 
 def test_make_ground_plane_mesh_expands_xy_footprint():

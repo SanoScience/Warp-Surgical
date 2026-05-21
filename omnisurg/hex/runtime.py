@@ -14,9 +14,8 @@ from .data.types import PreparedVolume
 class HexAppLauncher:
     """Launch the packaged hex app.
 
-    This is intentionally not a per-frame runtime. The current hex solver is
-    still hosted by the integrated corner-grid app, so callers should treat this
-    as a process-local app launcher until the legacy loop is decomposed.
+    This is intentionally a process-local app launcher while the integrated
+    viewer loop continues to be split into smaller runtime modules.
     """
 
     volume: PreparedVolume
@@ -40,4 +39,34 @@ class HexAppLauncher:
         self._closed = True
 
 
-__all__ = ["HexAppLauncher", "OmniSurgHexApp"]
+@dataclass
+class HexRuntime:
+    """Small runtime facade used by tests and app orchestration."""
+
+    launcher: HexAppLauncher
+    _running: bool = False
+
+    def poll_input(self) -> None:
+        return None
+
+    def step(self) -> None:
+        if not self._running:
+            self._running = True
+            self.launcher.run()
+            self._running = False
+
+    def render(self) -> None:
+        return None
+
+    def is_running(self) -> bool:
+        return bool(self._running)
+
+    def pace(self) -> None:
+        return None
+
+    def close(self) -> None:
+        self._running = False
+        self.launcher.close()
+
+
+__all__ = ["HexAppLauncher", "HexRuntime", "OmniSurgHexApp"]

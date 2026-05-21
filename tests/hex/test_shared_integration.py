@@ -35,10 +35,30 @@ class _FakeRenderer:
         self.environment["path"] = path
 
 
+class _Ray:
+    x = 0.0
+    y = 3.0
+    z = 4.0
+
+
+class _FakeCamera:
+    def get_world_ray(self, fb_x, fb_y):
+        return (fb_x, fb_y, 2.0), _Ray()
+
+
+class _FakeGLViewer:
+    def __init__(self):
+        self.camera = _FakeCamera()
+
+    def _to_framebuffer_coords(self, x, y):
+        return x * 2.0, y * 3.0
+
+
 def _bridge_for(renderer):
     bridge = RenderBridge.__new__(RenderBridge)
     bridge._backend = "fake"
     bridge._renderer = renderer
+    bridge._viewer_renderer = lambda: getattr(renderer, "renderer", None)
     return bridge
 
 
@@ -57,6 +77,15 @@ def test_render_bridge_forwards_hex_mouse_ray_cryo_and_environment_controls():
     assert result == "drawn"
     assert renderer.cryo_calls == [(("frame",), {"hidden": False})]
     assert renderer.environment["path"] == "studio.hdr"
+
+
+def test_render_bridge_uses_viewer_gl_camera_ray_fallback():
+    bridge = _bridge_for(_FakeGLViewer())
+
+    origin, direction = bridge.screen_to_world_ray(4.0, 5.0)
+
+    assert np.allclose(origin, (8.0, 15.0, 2.0))
+    assert np.allclose(direction, (0.0, 0.6, 0.8))
 
 
 def test_controller_sample_accepts_tool_position_and_frame_conversion():

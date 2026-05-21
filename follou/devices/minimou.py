@@ -130,6 +130,12 @@ class MiniMou(DeviceController):
         self.update_interval[Cmd.GET_BATTERY_VOLTAGE] = 10003
         self.update_interval[Cmd.GET_CALIBRATION_STATUS] = 101
         self.update_interval[Cmd.GET_PRED_COMPLIANCE] = 11
+        self.update_interval[Cmd.GET_HANDLE_OPENING_VALUE] = 1
+        self.update_interval[Cmd.GET_HANDLE_OPTO_FORCE] = 1
+        self.update_interval[Cmd.GET_HANDLE_POS_VOLTAGE] = 1
+        self.update_interval[Cmd.GET_HANDLE_OPTO_VOLTAGE] = 1
+        self.update_interval[Cmd.GET_HANDLE_CONNECTION_STATE] = 101
+        self.update_interval[Cmd.GET_HANDLE_ACTIVITY] = 1
         
         # Return value counts
         self.num_rets[Cmd.RESET] = 1
@@ -338,6 +344,21 @@ class MiniMou(DeviceController):
 
     def get_tool_pos_voltage(self) -> float:
         return self.get_return(Cmd.GET_TOOLPOS_AND_VOLTAGE, 1)
+
+    def get_handle_opening_value(self) -> float:
+        return self.get_return(Cmd.GET_HANDLE_OPENING_VALUE, 0)
+
+    def get_handle_activity(self) -> int:
+        return int(self.get_return(Cmd.GET_HANDLE_ACTIVITY, 0))
+
+    def get_handle_pos_voltage(self) -> float:
+        return self.get_return(Cmd.GET_HANDLE_POS_VOLTAGE, 0)
+
+    def get_handle_opto_voltage(self) -> float:
+        return self.get_return(Cmd.GET_HANDLE_OPTO_VOLTAGE, 0)
+
+    def get_handle_connection_state(self) -> int:
+        return int(self.get_return(Cmd.GET_HANDLE_CONNECTION_STATE, 0))
 
     def get_calibration_status_dof(self, dof: int) -> int:
         return int(self.get_return(Cmd.GET_CALIBRATION_STATUS, dof))

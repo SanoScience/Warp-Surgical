@@ -59,8 +59,8 @@ class PreparedVolume:
         object.__setattr__(self, "class_map", {int(k): str(v) for k, v in self.class_map.items()})
         object.__setattr__(self, "metadata", dict(self.metadata))
 
-    def to_corner_atlas(self) -> DigimouseAtlas:
-        """Return the legacy atlas shape expected by ``build_corner_grid``."""
+    def to_hex_atlas(self) -> DigimouseAtlas:
+        """Return the atlas shape expected by ``build_hex_particle_grid``."""
 
         return DigimouseAtlas(
             labels=np.ascontiguousarray(self.labels),

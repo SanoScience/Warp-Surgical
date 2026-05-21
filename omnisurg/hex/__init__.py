@@ -3,10 +3,10 @@
 
 from ._version import __version__
 from .app import OmniSurgHexApp
-from .corner_delete import DeviceDeletionResult
-from .corner_heat import CornerHeatState, make_corner_heat_state
-from .corner_grid import build_corner_l1_shape_matching_clusters, build_corner_shape_matching_clusters
-from .corner_solver import (
+from .deletion import DeviceDeletionResult
+from .heat import HexHeatState, make_hex_heat_state
+from .hex_grid import build_hex_particle_grid, build_hierarchical_shape_matching_clusters, build_shape_matching_clusters
+from .shape_matching_solver import (
     HIERARCHICAL_SHAPE_MATCHING_FULL27,
     HIERARCHICAL_SHAPE_MATCHING_LABELS,
     HIERARCHICAL_SHAPE_MATCHING_OFF,
@@ -21,11 +21,11 @@ from .corner_solver import (
     SHAPE_MATCHING_SOLVE_GATHER,
     SHAPE_MATCHING_SOLVE_LABELS,
     SHAPE_MATCHING_SOLVE_SCATTER,
-    SolverCornerShapeMatching,
+    HexShapeMatchingSolver,
 )
 from .data.types import PreparedVolume, PreprocessConfig
 from .materials import Material, MaterialTable, digimouse_material_table
-from .runtime import HexAppLauncher
+from .runtime import HexAppLauncher, HexRuntime
 
 __all__ = [
     "HIERARCHICAL_SHAPE_MATCHING_FULL27",
@@ -42,18 +42,20 @@ __all__ = [
     "SHAPE_MATCHING_SOLVE_GATHER",
     "SHAPE_MATCHING_SOLVE_LABELS",
     "SHAPE_MATCHING_SOLVE_SCATTER",
-    "CornerHeatState",
+    "HexHeatState",
     "DeviceDeletionResult",
     "HexAppLauncher",
+    "HexRuntime",
     "Material",
     "MaterialTable",
     "OmniSurgHexApp",
     "PreparedVolume",
     "PreprocessConfig",
-    "SolverCornerShapeMatching",
+    "HexShapeMatchingSolver",
     "__version__",
-    "build_corner_l1_shape_matching_clusters",
-    "build_corner_shape_matching_clusters",
+    "build_hex_particle_grid",
+    "build_hierarchical_shape_matching_clusters",
+    "build_shape_matching_clusters",
     "digimouse_material_table",
-    "make_corner_heat_state",
+    "make_hex_heat_state",
 ]

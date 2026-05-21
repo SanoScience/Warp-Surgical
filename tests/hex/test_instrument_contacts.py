@@ -4,9 +4,9 @@ import numpy as np
 import warp as wp
 from newton._src.geometry.flags import ParticleFlags
 
-from omnisurg.hex.corner_delete import make_corner_deletion_state
-from omnisurg.hex.corner_grid import build_corner_grid, build_corner_shape_matching_clusters
-from omnisurg.hex.corner_solver import SolverCornerShapeMatching
+from omnisurg.hex.deletion import make_hex_deletion_state
+from omnisurg.hex.hex_grid import build_hex_particle_grid, build_shape_matching_clusters
+from omnisurg.hex.shape_matching_solver import HexShapeMatchingSolver
 from omnisurg.hex.io.digimouse import DigimouseAtlas
 from omnisurg.hex.kernels.grab import project_grab_distance_constraints
 from omnisurg.hex.kernels.instrument import (
@@ -14,7 +14,7 @@ from omnisurg.hex.kernels.instrument import (
     project_kinematic_sphere_particle_positions_kernel,
 )
 from omnisurg.hex.materials import DEFAULT_MATERIALS, MaterialTable
-from omnisurg.hex._legacy_corner_app import _select_sphere_drag_particles
+from omnisurg.hex.app_runtime import _select_sphere_drag_particles, _should_capture_instrument_grasp
 
 
 def _atlas_from_labels(labels: np.ndarray, voxel: float = 0.01) -> DigimouseAtlas:
@@ -80,6 +80,33 @@ def test_kinematic_sphere_pushes_penetrating_particle_to_combined_radius():
     assert np.allclose(q[0], [1.1, 0.0, 0.0])
 
 
+def test_instrument_grasper_retries_capture_while_trigger_is_held_without_particles():
+    assert _should_capture_instrument_grasp(
+        is_grasper=True,
+        trigger_down=True,
+        trigger_was_down=False,
+        grasp_count=0,
+    )
+    assert _should_capture_instrument_grasp(
+        is_grasper=True,
+        trigger_down=True,
+        trigger_was_down=True,
+        grasp_count=0,
+    )
+    assert not _should_capture_instrument_grasp(
+        is_grasper=True,
+        trigger_down=True,
+        trigger_was_down=True,
+        grasp_count=3,
+    )
+    assert not _should_capture_instrument_grasp(
+        is_grasper=False,
+        trigger_down=True,
+        trigger_was_down=False,
+        grasp_count=0,
+    )
+
+
 def test_kinematic_sphere_skips_inactive_locked_and_outside_particles():
     active = int(ParticleFlags.ACTIVE)
     initial = np.asarray(
@@ -129,13 +156,12 @@ def test_kinematic_sphere_caps_position_correction():
 
 
 def test_solver_projects_kinematic_spheres_inside_constraint_loop_without_velocity_write():
-    pg = build_corner_grid(_atlas_from_labels(np.ones((1, 1, 1), dtype=np.uint8)), device="cpu")
-    clusters = build_corner_shape_matching_clusters(pg, device="cpu")
-    solver = SolverCornerShapeMatching(
+    pg = build_hex_particle_grid(_atlas_from_labels(np.ones((1, 1, 1), dtype=np.uint8)), device="cpu")
+    clusters = build_shape_matching_clusters(pg, device="cpu")
+    solver = HexShapeMatchingSolver(
         pg.model,
         clusters,
         iterations=2,
-        enable_springs=False,
         enable_shape_matching=False,
         enable_self_collisions=False,
         enable_ground_plane=False,
@@ -198,13 +224,12 @@ def test_grab_distance_constraint_preserves_rest_length_to_pull_point():
 
 
 def test_solver_projects_grab_distance_constraints_each_iteration():
-    pg = build_corner_grid(_atlas_from_labels(np.ones((1, 1, 1), dtype=np.uint8)), device="cpu")
-    clusters = build_corner_shape_matching_clusters(pg, device="cpu")
-    solver = SolverCornerShapeMatching(
+    pg = build_hex_particle_grid(_atlas_from_labels(np.ones((1, 1, 1), dtype=np.uint8)), device="cpu")
+    clusters = build_shape_matching_clusters(pg, device="cpu")
+    solver = HexShapeMatchingSolver(
         pg.model,
         clusters,
         iterations=2,
-        enable_springs=False,
         enable_shape_matching=False,
         enable_self_collisions=False,
         enable_ground_plane=False,
@@ -320,13 +345,12 @@ def test_kinematic_sphere_mc_triangle_contact_loops_over_all_spheres():
 
 
 def test_solver_can_project_kinematic_spheres_against_mc_triangles():
-    pg = build_corner_grid(_atlas_from_labels(np.ones((1, 1, 1), dtype=np.uint8)), device="cpu")
-    clusters = build_corner_shape_matching_clusters(pg, device="cpu")
-    solver = SolverCornerShapeMatching(
+    pg = build_hex_particle_grid(_atlas_from_labels(np.ones((1, 1, 1), dtype=np.uint8)), device="cpu")
+    clusters = build_shape_matching_clusters(pg, device="cpu")
+    solver = HexShapeMatchingSolver(
         pg.model,
         clusters,
         iterations=0,
-        enable_springs=False,
         enable_shape_matching=False,
         enable_self_collisions=False,
         enable_ground_plane=False,
@@ -428,8 +452,8 @@ def test_select_sphere_drag_particles_skips_locked_particles():
 
 
 def test_sphere_particle_contact_cut_deletes_cells_with_enabled_sphere():
-    pg = build_corner_grid(_atlas_from_labels(np.ones((1, 1, 1), dtype=np.uint8)), device="cpu")
-    delete_state = make_corner_deletion_state(pg.model, pg.aux)
+    pg = build_hex_particle_grid(_atlas_from_labels(np.ones((1, 1, 1), dtype=np.uint8)), device="cpu")
+    delete_state = make_hex_deletion_state(pg.model, pg.aux)
 
     sphere_center = pg.state.particle_q.numpy()[0]
     sphere_q = wp.array(np.asarray([sphere_center], dtype=np.float32), dtype=wp.vec3, device="cpu")
@@ -449,8 +473,8 @@ def test_sphere_particle_contact_cut_deletes_cells_with_enabled_sphere():
 
 
 def test_sphere_particle_contact_cut_ignores_disabled_sphere():
-    pg = build_corner_grid(_atlas_from_labels(np.ones((1, 1, 1), dtype=np.uint8)), device="cpu")
-    delete_state = make_corner_deletion_state(pg.model, pg.aux)
+    pg = build_hex_particle_grid(_atlas_from_labels(np.ones((1, 1, 1), dtype=np.uint8)), device="cpu")
+    delete_state = make_hex_deletion_state(pg.model, pg.aux)
 
     sphere_center = pg.state.particle_q.numpy()[0]
     sphere_q = wp.array(np.asarray([sphere_center], dtype=np.float32), dtype=wp.vec3, device="cpu")
