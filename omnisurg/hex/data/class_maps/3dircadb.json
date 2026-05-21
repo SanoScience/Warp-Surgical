@@ -1,0 +1,33 @@
+{
+  "dataset": "3dircadb",
+  "classes": [
+    {"id": 0, "name": "background"},
+    {"id": 1, "name": "skin"},
+    {"id": 2, "name": "portal_vein"},
+    {"id": 3, "name": "venous_system"},
+    {"id": 4, "name": "bone"},
+    {"id": 5, "name": "kidneys"},
+    {"id": 6, "name": "lungs"},
+    {"id": 7, "name": "spleen"},
+    {"id": 8, "name": "liver"},
+    {"id": 9, "name": "liver_tumor"},
+    {"id": 10, "name": "liver_cyst"},
+    {"id": 11, "name": "artery"}
+  ],
+  "material_defaults": {
+    "bone": {
+      "phase": "rigid",
+      "mass": 1.5,
+      "resistance": 100.0,
+      "conductivity": 0.2,
+      "color": [0.86, 0.82, 0.72]
+    },
+    "liver": {"color": [0.49, 0.12, 0.18]},
+    "liver_tumor": {"color": [0.92, 0.52, 0.26]},
+    "liver_cyst": {"color": [0.28, 0.62, 0.88]},
+    "artery": {"color": [0.78, 0.08, 0.07]},
+    "portal_vein": {"color": [0.2, 0.32, 0.86]},
+    "venous_system": {"color": [0.18, 0.48, 0.72]},
+    "skin": {"color": [0.86, 0.64, 0.52]}
+  }
+}

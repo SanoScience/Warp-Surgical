@@ -8,10 +8,11 @@ from pathlib import Path
 
 import numpy as np
 
-DEFAULT_FOLLOU_ROOT = Path(r"G:\warp\python_device_manager")
+# The follou package is vendored at <repo-root>/follou (sibling of omnisurg/).
+FOLLOU_ROOT = Path(__file__).resolve().parents[2] / "follou"
 
 _manager_lock = threading.Lock()
-_manager_entries: dict[Path, "_ManagerEntry"] = {}
+_manager_entry: "_ManagerEntry | None" = None
 
 
 @dataclass
@@ -20,63 +21,54 @@ class _ManagerEntry:
     refcount: int = 0
 
 
-def _normalize_root(root: str | Path | None) -> Path:
-    candidate = Path(root) if root is not None else DEFAULT_FOLLOU_ROOT
-    return candidate.expanduser().resolve()
+def _ensure_follou_importable():
+    if not FOLLOU_ROOT.exists():
+        raise RuntimeError(f'Follou package not found at "{FOLLOU_ROOT}"')
 
-
-def _ensure_follou_importable(root: str | Path | None):
-    package_root = _normalize_root(root)
-    src_root = package_root / "src"
-    if not src_root.exists():
-        raise RuntimeError(f'Follou source path not found: "{src_root}"')
-
-    src_str = str(src_root)
-    if src_str not in sys.path:
-        sys.path.insert(0, src_str)
+    repo_root = str(FOLLOU_ROOT.parent)
+    if repo_root not in sys.path:
+        sys.path.insert(0, repo_root)
 
     try:
         from follou.devices.minimou import MiniMou
         from follou.manager import DeviceManager
     except Exception as exc:
-        raise RuntimeError(f'Failed to import Follou SDK from "{src_root}": {exc}') from exc
+        raise RuntimeError(f'Failed to import Follou SDK from "{FOLLOU_ROOT}": {exc}') from exc
 
-    return package_root, DeviceManager, MiniMou
+    return DeviceManager, MiniMou
 
 
-def acquire_manager(root: str | Path | None):
-    package_root, DeviceManager, MiniMou = _ensure_follou_importable(root)
+def acquire_manager():
+    DeviceManager, MiniMou = _ensure_follou_importable()
+    global _manager_entry
     with _manager_lock:
-        entry = _manager_entries.get(package_root)
-        if entry is None:
-            entry = _ManagerEntry(manager=DeviceManager())
-            _manager_entries[package_root] = entry
-        entry.refcount += 1
-        return package_root, entry.manager, MiniMou
+        if _manager_entry is None:
+            _manager_entry = _ManagerEntry(manager=DeviceManager())
+        _manager_entry.refcount += 1
+        return _manager_entry.manager, MiniMou
 
 
-def release_manager(root: str | Path | None):
-    package_root = _normalize_root(root)
+def release_manager():
+    global _manager_entry
     with _manager_lock:
-        entry = _manager_entries.get(package_root)
-        if entry is None:
+        if _manager_entry is None:
             return
 
-        entry.refcount -= 1
-        if entry.refcount > 0:
+        _manager_entry.refcount -= 1
+        if _manager_entry.refcount > 0:
             return
 
-        for device in getattr(entry.manager, "devices", []):
+        for device in getattr(_manager_entry.manager, "devices", []):
             try:
                 device.close()
             except Exception:
                 pass
-        _manager_entries.pop(package_root, None)
+        _manager_entry = None
 
 
 class MiniMouController:
-    def __init__(self, *, root: str | Path | None = None, device_index: int = 0, scale: float = 1.0):
-        self.root, self._manager, self._mini_mou_cls = acquire_manager(root)
+    def __init__(self, *, device_index: int = 0, scale: float = 1.0):
+        self._manager, self._mini_mou_cls = acquire_manager()
         self.device_index = int(device_index)
         self.scale = float(scale)
         self._controller = self._manager.get_device_controller(self._mini_mou_cls, count=self.device_index)
@@ -86,7 +78,7 @@ class MiniMouController:
 
         if self._controller is None:
             available = [type(device).__name__ for device in getattr(self._manager, "devices", [])]
-            release_manager(self.root)
+            release_manager()
             raise RuntimeError(
                 f"MiniMou device index {self.device_index} not available; discovered devices: {available or ['none']}"
             )
@@ -115,7 +107,7 @@ class MiniMouController:
         if self._closed:
             return
         self._closed = True
-        release_manager(self.root)
+        release_manager()
 
     def _tool_position_to_grip(self, tool_pos: float) -> float:
         if not math.isfinite(tool_pos):

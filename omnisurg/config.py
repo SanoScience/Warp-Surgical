@@ -48,18 +48,18 @@ class SceneConfig:
     show_grasper_mesh: bool = True
     enable_grasper_collisions: bool = True
 
-    # def __post_init__(self):
-    #     if (
-    #         self.scene_preset == "single"
-    #         and is_synthetic_patch_asset_name(self.asset_name)
-    #         and self.pin_center == DEFAULT_PIN_CENTER
-    #         and self.pin_radius == DEFAULT_PIN_RADIUS
-    #         and not self.pinned_vertex_ids
-    #     ):
-    #         # Synthetic cloth patches use exact corner pins instead of the default liver pin sphere.
-    #         self.pin_center = None
-    #         self.show_grasper_mesh = False
-    #         self.enable_grasper_collisions = False
+    def __post_init__(self):
+        if (
+            self.scene_preset == "single"
+            and is_synthetic_patch_asset_name(self.asset_name)
+            and self.pin_center == DEFAULT_PIN_CENTER
+            and self.pin_radius == DEFAULT_PIN_RADIUS
+            and not self.pinned_vertex_ids
+        ):
+            # Synthetic cloth patches use exact corner pins instead of the default liver pin sphere.
+            self.pin_center = None
+            self.show_grasper_mesh = False
+            self.enable_grasper_collisions = False
 
 
 @dataclass

@@ -6,8 +6,11 @@ from pathlib import Path
 
 import meshio
 import numpy as np
+from meshio._helpers import extension_to_filetypes
 
 from omnisurg.mesh.assets import TetMeshAsset, load_tet_asset
+
+extension_to_filetypes.setdefault(".vtp", ["vtu"])
 
 REQUIRED_MESH_FILES = (
     "model.vertices",

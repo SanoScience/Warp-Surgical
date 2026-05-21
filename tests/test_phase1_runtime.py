@@ -63,7 +63,6 @@ def _live_args(**overrides):
         "left_device_name": "Left Device",
         "right_device_index": 0,
         "left_device_index": 1,
-        "follou_root": r"G:\warp\python_device_manager",
     }
     values.update(overrides)
     return SimpleNamespace(**values)
@@ -352,7 +351,6 @@ class TestPhaseRuntime(unittest.TestCase):
         self.assertIn("--left-replay", result.stdout)
         self.assertIn("--left-device-name", result.stdout)
         self.assertIn("--right-input-backend", result.stdout)
-        self.assertIn("--follou-root", result.stdout)
 
     def test_live_input_rig_keeps_running_when_one_device_fails(self):
         class FakeSource:
@@ -425,8 +423,7 @@ class TestPhaseRuntime(unittest.TestCase):
 
     def test_live_input_rig_builds_minimou_source(self):
         class FakeSource:
-            def __init__(self, root: str, device_index: int):
-                self.root = root
+            def __init__(self, device_index: int):
                 self.device_index = device_index
 
             def poll(self):
@@ -435,14 +432,13 @@ class TestPhaseRuntime(unittest.TestCase):
             def close(self):
                 pass
 
-        def build_source(*, root: str, device_index: int, scale: float = 1.0):
-            return FakeSource(root, device_index)
+        def build_source(*, device_index: int, scale: float = 1.0):
+            return FakeSource(device_index)
 
         args = _live_args(
             right_input_backend="minimou",
             left_input_backend="none",
             right_device_index=2,
-            follou_root=r"G:\warp\python_device_manager",
         )
         rig = None
         with mock.patch("omnisurg.haptics.LiveMiniMouSource", side_effect=build_source):
@@ -458,8 +454,7 @@ class TestPhaseRuntime(unittest.TestCase):
 
     def test_live_minimou_source_polls_controller_samples(self):
         class FakeController:
-            def __init__(self, *, root=None, device_index=0, scale=1.0):
-                self.root = root
+            def __init__(self, *, device_index=0, scale=1.0):
                 self.device_index = device_index
                 self.scale = scale
                 self.closed = False
@@ -477,7 +472,7 @@ class TestPhaseRuntime(unittest.TestCase):
 
         source = None
         with mock.patch("omnisurg.input.follou.MiniMouController", FakeController):
-            source = LiveMiniMouSource(root=r"G:\warp\python_device_manager", device_index=1)
+            source = LiveMiniMouSource(device_index=1)
             sample = source.poll()
             np.testing.assert_allclose(sample["position"], np.array([1.0, 2.0, 3.0], dtype=np.float32))
             np.testing.assert_allclose(sample["rotation"], np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32))
@@ -539,9 +534,9 @@ class TestPhaseRuntime(unittest.TestCase):
                 return self.devices[count]
 
         controller = None
-        with mock.patch("omnisurg.input.follou.acquire_manager", return_value=(Path(r"G:\warp\python_device_manager"), FakeManager(), object())):
+        with mock.patch("omnisurg.input.follou.acquire_manager", return_value=(FakeManager(), object())):
             with mock.patch("omnisurg.input.follou.release_manager"):
-                controller = MiniMouController(root=r"G:\warp\python_device_manager", device_index=0, scale=1.0)
+                controller = MiniMouController(device_index=0, scale=1.0)
                 sample = controller.poll()
                 np.testing.assert_allclose(sample["position"], np.array([-1.0, 2.0, 3.0], dtype=np.float32))
                 np.testing.assert_allclose(sample["rotation"], np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32))

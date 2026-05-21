@@ -1,0 +1,15 @@
+{
+  "dataset": "kits23",
+  "classes": [
+    {"id": 0, "name": "background"},
+    {"id": 1, "name": "kidney"},
+    {"id": 2, "name": "tumor"},
+    {"id": 3, "name": "tumor_2"}
+  ],
+  "material_defaults": {
+    "kidney": {"color": [0.56, 0.25, 0.22]},
+    "tumor": {"color": [0.92, 0.48, 0.22]},
+    "tumor_2": {"color": [0.96, 0.68, 0.28]},
+    "tumor_3": {"color": [0.86, 0.38, 0.54]}
+  }
+}

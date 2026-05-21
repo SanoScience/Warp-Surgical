@@ -1,0 +1,32 @@
+{
+  "dataset": "abdomen-atlas",
+  "classes": [
+    {"id": 0, "name": "background"},
+    {"id": 1, "name": "aorta"},
+    {"id": 2, "name": "gall_bladder"},
+    {"id": 3, "name": "kidney_left"},
+    {"id": 4, "name": "kidney_right"},
+    {"id": 5, "name": "liver"},
+    {"id": 6, "name": "pancreas"},
+    {"id": 7, "name": "postcava"},
+    {"id": 8, "name": "spleen"},
+    {"id": 9, "name": "stomach"},
+    {"id": 10, "name": "adrenal_gland_left"},
+    {"id": 11, "name": "adrenal_gland_right"},
+    {"id": 12, "name": "bladder"},
+    {"id": 13, "name": "celiac_trunk"},
+    {"id": 14, "name": "colon"},
+    {"id": 15, "name": "duodenum"},
+    {"id": 16, "name": "esophagus"},
+    {"id": 17, "name": "femur_left"},
+    {"id": 18, "name": "femur_right"},
+    {"id": 19, "name": "hepatic_vessel"},
+    {"id": 20, "name": "intestine"},
+    {"id": 21, "name": "lung_left"},
+    {"id": 22, "name": "lung_right"},
+    {"id": 23, "name": "portal_vein_and_splenic_vein"},
+    {"id": 24, "name": "prostate"},
+    {"id": 25, "name": "rectum"}
+  ],
+  "material_defaults": {}
+}

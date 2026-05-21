@@ -5,11 +5,10 @@ import numpy as np
 import warp as wp
 
 
-DEFAULT_FOLLOU_ROOT = r"G:\warp\python_device_manager"
 LIVE_INPUT_BACKENDS = ["openhaptics", "minimou", "none"]
 
 
-def parse_args():
+def parse_args(argv=None):
     parser = argparse.ArgumentParser(
         description="OmniSurg Phase 2 - soft-body simulation with configurable live input backends",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
@@ -163,12 +162,6 @@ def parse_args():
         help="Device index for backends that enumerate identical devices such as MiniMou",
     )
     parser.add_argument(
-        "--follou-root",
-        type=str,
-        default=DEFAULT_FOLLOU_ROOT,
-        help="Root folder of the local python_device_manager / Follou SDK checkout",
-    )
-    parser.add_argument(
         "--asset",
         type=str,
         default="liver",
@@ -199,7 +192,7 @@ def parse_args():
         choices=["quality", "balanced", "performance"],
         help="Simulation preset (overrides default substeps/fps)",
     )
-    return parser.parse_args()
+    return parser.parse_args(argv)
 
 
 def _device_name_candidates(device_name: str) -> tuple[str, ...]:
@@ -269,10 +262,10 @@ def _reflect_minimou_quaternion_x(rotation: np.ndarray) -> np.ndarray:
     return corrected
 
 
-def _build_minimou_source(device_index: int, follou_root: str):
+def _build_minimou_source(device_index: int):
     from omnisurg.haptics import LiveMiniMouSource
 
-    source = LiveMiniMouSource(root=follou_root, device_index=device_index)
+    source = LiveMiniMouSource(device_index=device_index)
     source = _SampleTransformSource(source, rotation_transform=_reflect_minimou_quaternion_x)
     descriptor = f"MiniMou[{device_index}]"
     controller = getattr(getattr(source, "_ctrl", None), "_controller", None)
@@ -299,7 +292,7 @@ def _build_live_input_rig(args):
                 source, descriptor = _build_openhaptics_source(controller_id, requested_name)
             elif backend == "minimou":
                 device_index = getattr(args, f"{controller_id}_device_index")
-                source, descriptor = _build_minimou_source(device_index, args.follou_root)
+                source, descriptor = _build_minimou_source(device_index)
             else:
                 raise RuntimeError(f"Unsupported input backend: {backend}")
         except Exception as exc:
@@ -355,8 +348,18 @@ def _zero_haptic_force_commands(input_rig):
     )
 
 
-def main():
-    args = parse_args()
+def main(argv=None):
+    if argv is None:
+        argv = sys.argv[1:]
+    else:
+        argv = list(argv)
+
+    if argv and argv[0] == "hex":
+        from omnisurg.hex.cli import main as hex_main
+
+        return hex_main(argv[1:])
+
+    args = parse_args(argv)
 
     print(f"Python {sys.version}")
     print(

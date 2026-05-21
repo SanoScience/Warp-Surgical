@@ -971,6 +971,18 @@ class SlangRenderer:
         self._failed_ui_callbacks: set[tuple[str, int]] = set()
         self._on_key_press_callback: Callable[[int, int], None] | None = None
         self._on_key_release_callback: Callable[[int, int], None] | None = None
+        self._on_mouse_motion_callback: Callable[..., None] | None = None
+        self._on_mouse_press_callback: Callable[..., None] | None = None
+        self._on_mouse_drag_callback: Callable[..., None] | None = None
+        self._on_mouse_release_callback: Callable[..., None] | None = None
+        self._mouse_buttons = 0
+        self._mouse_pos: tuple[float, float] | None = None
+        self._ui_mouse_active = False
+        self._environment_path: Path | None = None
+        self._environment_intensity = 1.0
+        self._environment_background_enabled = False
+        self._environment_rotation_degrees = 0.0
+        self._environment_pitch_degrees = 0.0
         self._camera_key_state: set[str] = set()
         self._camera_fast_modifier = False
         self._camera_slow_modifier = False
@@ -1502,6 +1514,32 @@ class SlangRenderer:
             except Exception:
                 return 0.0
 
+    def _pyglet_mouse_button(self, button_name: str) -> int:
+        try:
+            import pyglet
+
+            mouse = pyglet.window.mouse
+            if button_name == "left":
+                return int(mouse.LEFT)
+            if button_name == "right":
+                return int(mouse.RIGHT)
+            if button_name == "middle":
+                return int(mouse.MIDDLE)
+        except Exception:
+            pass
+        return 0
+
+    def _has_scene_mouse_callbacks(self) -> bool:
+        return any(
+            callback is not None
+            for callback in (
+                self._on_mouse_motion_callback,
+                self._on_mouse_press_callback,
+                self._on_mouse_drag_callback,
+                self._on_mouse_release_callback,
+            )
+        )
+
     def _on_camera_keyboard_event(self, event: Any) -> None:
         key = self._slang_key_name(getattr(event, "key", None))
         if not key:
@@ -1628,7 +1666,51 @@ class SlangRenderer:
                 captured = bool(self._ui_context.handle_mouse_event(event))
             except Exception as exc:
                 self._warn_once("slang-ui:mouse", f"Slang ImGui mouse handling disabled: {exc}")
-        self._on_camera_mouse_event(event, captured=captured)
+
+        if not self._has_scene_mouse_callbacks():
+            self._on_camera_mouse_event(event, captured=captured)
+            return
+
+        pos = self._mouse_pos_tuple(getattr(event, "pos", None))
+        previous = self._mouse_pos
+        self._mouse_pos = pos
+        dx = 0.0 if previous is None else float(pos[0] - previous[0])
+        dy = 0.0 if previous is None else float(pos[1] - previous[1])
+        modifiers = self._pyglet_modifiers_from_slang_event(event)
+        button = self._pyglet_mouse_button(self._mouse_button_name(getattr(event, "button", None)))
+
+        ui_active = bool(captured or self._ui_mouse_active)
+        if bool(event.is_button_down()):
+            if captured:
+                self._ui_mouse_active = True
+                return
+            self._mouse_buttons |= button
+            if self._on_mouse_press_callback is not None:
+                self._on_mouse_press_callback(pos[0], pos[1], button, modifiers)
+            return
+
+        if bool(event.is_button_up()):
+            if ui_active:
+                self._ui_mouse_active = False
+                self._mouse_buttons &= ~button
+                return
+            if self._on_mouse_release_callback is not None:
+                self._on_mouse_release_callback(pos[0], pos[1], button, modifiers)
+            self._mouse_buttons &= ~button
+            return
+
+        if bool(event.is_scroll()):
+            if not captured:
+                self._on_camera_mouse_event(event, captured=False)
+            return
+
+        if bool(event.is_move()):
+            if ui_active:
+                return
+            if self._mouse_buttons and self._on_mouse_drag_callback is not None:
+                self._on_mouse_drag_callback(pos[0], pos[1], dx, dy, self._mouse_buttons, modifiers)
+            elif self._on_mouse_motion_callback is not None:
+                self._on_mouse_motion_callback(pos[0], pos[1], dx, dy)
 
     def _invoke_ui_callbacks(
         self,
@@ -3411,6 +3493,39 @@ class SlangRenderer:
 
             setattr(current, key, value)
 
+    def _screen_size(self) -> tuple[int, int]:
+        if self._surface_texture is not None:
+            return int(self._surface_texture.width), int(self._surface_texture.height)
+        return int(self._window.width), int(self._window.height)
+
+    def screen_to_world_ray(self, x: float, y: float) -> tuple[np.ndarray, np.ndarray]:
+        width, height = self._screen_size()
+        ndc_x = (float(x) / max(float(width), 1.0)) * 2.0 - 1.0
+        ndc_y = 1.0 - (float(y) / max(float(height), 1.0)) * 2.0
+        tan_half = 1.0 / max(float(self._camera_inv_tan_half_fovy), 1.0e-6)
+        aspect = float(width) / max(float(height), 1.0)
+        direction = (
+            self._camera_forward
+            + self._camera_right * (ndc_x * tan_half * aspect)
+            + self._camera_up * (ndc_y * tan_half)
+        )
+        return self._camera_pos.copy(), _normalize_or(direction, tuple(float(v) for v in self._camera_forward))
+
+    def set_environment_path(self, path: str | Path | None) -> None:
+        self._environment_path = Path(path).expanduser().resolve(strict=False) if path else None
+
+    def set_environment_intensity(self, intensity: float) -> None:
+        self._environment_intensity = max(float(intensity), 0.0)
+
+    def set_environment_background_enabled(self, enabled: bool) -> None:
+        self._environment_background_enabled = bool(enabled)
+
+    def set_environment_rotation_degrees(self, degrees: float) -> None:
+        self._environment_rotation_degrees = float(degrees)
+
+    def set_environment_pitch_degrees(self, degrees: float) -> None:
+        self._environment_pitch_degrees = float(degrees)
+
     def draw_mesh(
         self,
         name: str,
@@ -3481,6 +3596,24 @@ class SlangRenderer:
     def set_input_callbacks(self, on_key_press=None, on_key_release=None) -> None:
         self._on_key_press_callback = on_key_press
         self._on_key_release_callback = on_key_release
+
+    def register_key_press(self, callback) -> None:
+        self._on_key_press_callback = callback
+
+    def register_key_release(self, callback) -> None:
+        self._on_key_release_callback = callback
+
+    def register_mouse_motion(self, callback) -> None:
+        self._on_mouse_motion_callback = callback
+
+    def register_mouse_press(self, callback) -> None:
+        self._on_mouse_press_callback = callback
+
+    def register_mouse_drag(self, callback) -> None:
+        self._on_mouse_drag_callback = callback
+
+    def register_mouse_release(self, callback) -> None:
+        self._on_mouse_release_callback = callback
 
     def register_ui_callback(self, callback, position: str = "side") -> None:
         if not callable(callback):

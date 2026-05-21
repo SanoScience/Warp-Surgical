@@ -21,6 +21,9 @@ from omnisurg.input.sources import (
     MultiSourceRig,
     RecordingRig,
     ReplayInputSource,
+    device_position_to_world,
+    sample_position_to_world,
+    world_position_to_device,
 )
 
 __all__ = [
@@ -40,6 +43,9 @@ __all__ = [
     "analyse_trace_for_stage3",
     "create_haptic_proxy_state",
     "create_vec3_staging_buffer",
+    "device_position_to_world",
+    "sample_position_to_world",
     "scale_position",
     "update_haptic_proxy",
+    "world_position_to_device",
 ]

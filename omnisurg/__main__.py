@@ -1,3 +1,3 @@
 from omnisurg.main import main
 
-main()
+raise SystemExit(main())

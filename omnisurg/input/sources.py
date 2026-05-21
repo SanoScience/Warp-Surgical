@@ -13,13 +13,14 @@ class ControllerSample:
     """Normalized controller sample used by multi-controller rigs."""
 
     position: np.ndarray | None = None
+    tool_pos: np.ndarray | None = None
     rotation: np.ndarray | None = None
     button: bool = False
     grip: float = 0.0
 
     @property
     def active(self) -> bool:
-        return self.position is not None or self.rotation is not None
+        return self.position is not None or self.tool_pos is not None or self.rotation is not None
 
     @classmethod
     def from_sample_dict(cls, sample: dict | None):
@@ -27,6 +28,7 @@ class ControllerSample:
             return cls()
 
         position = _as_array(sample.get("position"), expected_size=3)
+        tool_pos = _as_array(sample.get("tool_pos", sample.get("tool_position")), expected_size=3)
         rotation = _as_array(sample.get("rotation"), expected_size=4)
         button = bool(sample.get("button", False))
         grip = _as_unit_interval(sample.get("grip"))
@@ -34,6 +36,7 @@ class ControllerSample:
             grip = 1.0 if button else 0.0
         return cls(
             position=position,
+            tool_pos=tool_pos,
             rotation=rotation,
             button=button,
             grip=grip,
@@ -167,11 +170,11 @@ class LiveHapticSource(InputSource):
 
 
 class LiveMiniMouSource(InputSource):
-    def __init__(self, *, scale: float = 1.0, root: str | Path | None = None, device_index: int = 0):
+    def __init__(self, *, scale: float = 1.0, device_index: int = 0):
         from omnisurg.input.follou import MiniMouController
 
         self._description = f"MiniMou[{device_index}]"
-        self._ctrl = MiniMouController(root=root, device_index=device_index, scale=scale)
+        self._ctrl = MiniMouController(device_index=device_index, scale=scale)
         self._reported_failure = False
 
     def poll(self) -> dict:
@@ -241,14 +244,18 @@ class ReplayInputSource(InputSource):
             result["button"] = bool(sample[7] > 0.5)
         if sample.shape[0] >= 9:
             result["grip"] = float(np.clip(sample[8], 0.0, 1.0))
+        if sample.shape[0] >= 12:
+            result["tool_pos"] = sample[9:12].astype(np.float32)
         return result
 
 
 class RecordingRig(InputRig):
     """Wrap an `InputRig` to record per-controller samples to `.npy` traces.
 
-    Each saved row has 9 float32 columns: `[px, py, pz, qx, qy, qz, qw, button, grip]`,
-    matching the format accepted by `ReplayInputSource`.
+    Each saved row has 12 float32 columns:
+    `[px, py, pz, qx, qy, qz, qw, button, grip, tx, ty, tz]`,
+    matching the format accepted by `ReplayInputSource`. When a source does
+    not report a separate tool position, the controller position is reused.
     """
 
     def __init__(self, rig: InputRig, output_paths: dict[str, str | Path]):
@@ -279,6 +286,7 @@ class RecordingRig(InputRig):
                 sample = frame.get(controller_id)
                 if sample is None or sample.position is None or sample.rotation is None:
                     continue
+                tool_pos = sample.tool_pos if sample.tool_pos is not None else sample.position
                 buffer.append([
                     float(sample.position[0]),
                     float(sample.position[1]),
@@ -289,6 +297,9 @@ class RecordingRig(InputRig):
                     float(sample.rotation[3]),
                     1.0 if sample.button else 0.0,
                     float(sample.grip),
+                    float(tool_pos[0]),
+                    float(tool_pos[1]),
+                    float(tool_pos[2]),
                 ])
         return frame
 
@@ -434,3 +445,38 @@ def _as_unit_interval(value) -> float | None:
         return None
 
     return float(np.clip(numeric, 0.0, 1.0))
+
+
+def device_position_to_world(
+    position,
+    *,
+    position_offset=(0.0, 0.0, 0.0),
+    position_scale: float = 1.0,
+) -> np.ndarray:
+    return (np.asarray(position, dtype=np.float32) + np.asarray(position_offset, dtype=np.float32)) * float(
+        position_scale
+    )
+
+
+def world_position_to_device(
+    position,
+    *,
+    position_offset=(0.0, 0.0, 0.0),
+    position_scale: float = 1.0,
+) -> np.ndarray:
+    scale = float(position_scale)
+    if abs(scale) <= 1.0e-12:
+        raise ValueError("position_scale must be non-zero")
+    return np.asarray(position, dtype=np.float32) / scale - np.asarray(position_offset, dtype=np.float32)
+
+
+def sample_position_to_world(sample: ControllerSample, **kwargs) -> ControllerSample:
+    position = None if sample.position is None else device_position_to_world(sample.position, **kwargs)
+    tool_pos = None if sample.tool_pos is None else device_position_to_world(sample.tool_pos, **kwargs)
+    return ControllerSample(
+        position=position,
+        tool_pos=tool_pos,
+        rotation=None if sample.rotation is None else sample.rotation.copy(),
+        button=sample.button,
+        grip=sample.grip,
+    )

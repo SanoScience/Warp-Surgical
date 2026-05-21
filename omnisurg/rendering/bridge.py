@@ -331,6 +331,9 @@ class RenderBridge:
     def _viewer_renderer(self):
         return getattr(self._renderer, "renderer", None)
 
+    def _callback_target(self):
+        return self._renderer if hasattr(self._renderer, "register_mouse_motion") else self._viewer_renderer()
+
     def configure_render_quality(
         self,
         *,
@@ -530,6 +533,69 @@ class RenderBridge:
             viewer_renderer.register_key_press(on_key_press)
         if on_key_release is not None and hasattr(viewer_renderer, "register_key_release"):
             viewer_renderer.register_key_release(on_key_release)
+
+    def set_mouse_callbacks(
+        self,
+        *,
+        on_motion=None,
+        on_press=None,
+        on_drag=None,
+        on_release=None,
+    ):
+        target = self._callback_target()
+        if target is None:
+            return
+
+        callbacks = (
+            ("register_mouse_motion", on_motion),
+            ("register_mouse_press", on_press),
+            ("register_mouse_drag", on_drag),
+            ("register_mouse_release", on_release),
+        )
+        for method_name, callback in callbacks:
+            if callback is None:
+                continue
+            method = getattr(target, method_name, None)
+            if callable(method):
+                method(callback)
+
+    def screen_to_world_ray(self, x: float, y: float):
+        for target in (self._renderer, self._viewer_renderer()):
+            method = getattr(target, "screen_to_world_ray", None)
+            if callable(method):
+                return method(x, y)
+        raise RuntimeError(f"{self._backend} renderer does not expose screen_to_world_ray")
+
+    def draw_cryo_surface(self, *args, **kwargs):
+        method = getattr(self._renderer, "draw_cryo_surface", None)
+        if callable(method):
+            return method(*args, **kwargs)
+        return None
+
+    def set_environment_path(self, path):
+        method = getattr(self._renderer, "set_environment_path", None)
+        if callable(method):
+            method(path)
+
+    def set_environment_intensity(self, intensity: float):
+        method = getattr(self._renderer, "set_environment_intensity", None)
+        if callable(method):
+            method(intensity)
+
+    def set_environment_background_enabled(self, enabled: bool):
+        method = getattr(self._renderer, "set_environment_background_enabled", None)
+        if callable(method):
+            method(enabled)
+
+    def set_environment_rotation_degrees(self, degrees: float):
+        method = getattr(self._renderer, "set_environment_rotation_degrees", None)
+        if callable(method):
+            method(degrees)
+
+    def set_environment_pitch_degrees(self, degrees: float):
+        method = getattr(self._renderer, "set_environment_pitch_degrees", None)
+        if callable(method):
+            method(degrees)
 
     def register_ui_callback(self, callback, position: str = "side"):
         if hasattr(self._renderer, "register_ui_callback"):

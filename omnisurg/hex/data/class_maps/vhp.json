@@ -1,0 +1,19 @@
+{
+  "dataset": "vhp",
+  "classes": [
+    {"id": 0, "name": "background"},
+    {"id": 1, "name": "fat"},
+    {"id": 2, "name": "muscle"},
+    {"id": 3, "name": "liver"},
+    {"id": 4, "name": "heart"},
+    {"id": 5, "name": "stomach"},
+    {"id": 6, "name": "lung"},
+    {"id": 7, "name": "lung_alt"},
+    {"id": 8, "name": "artery_blue"},
+    {"id": 9, "name": "artery_dark_blue"},
+    {"id": 10, "name": "artery_cyan"},
+    {"id": 11, "name": "artery_deep_blue"},
+    {"id": 12, "name": "artery_teal"}
+  ],
+  "material_defaults": {}
+}

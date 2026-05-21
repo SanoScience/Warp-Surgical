@@ -16,3 +16,6 @@ wheels/
 *.sqlite
 
 docs/
+FollouDeviceLogs/Port_ttyACM0.log
+FollouDeviceLogs/Port_ttyACM1.log
+FollouDeviceLogs/Port_ttyACM2.log

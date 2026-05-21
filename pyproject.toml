@@ -1,3 +1,7 @@
+[build-system]
+requires = ["setuptools>=70", "wheel"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "ff-srl2"
 version = "0.1.0"
@@ -8,18 +12,27 @@ dependencies = [
     "gitpython>=3.1.45",
     "matplotlib>=3.9.4",
     "newton==1.1.0",
+    "numpy>=1.23",
     "pycollada>=0.9.2",
     "pyglet>=2.1.13",
     "imgui>=2.0.0",
     "imgui[pyglet]>=2.0.0",
     "trimesh>=4.7.1",
     "usd-core>=26.3",
-    #"warp-lang==1.13.0.dev20260316",
-    "warp-lang==1.12.1",
+
+    "warp-lang==1.13.0",
     "imgui-bundle>=1.92.5",
     "ovrtx==0.2.0.280040",
     "meshio>=5.3.5",
+    "nibabel>=5.0",
+    "pillow>=10.0",
+    "pydicom>=2.4",
+    "slangpy",
+    "nvtx>=0.2.15",
 ]
+
+[project.scripts]
+omnisurg = "omnisurg.main:main"
 
 
 [[tool.uv.index]]
@@ -31,7 +44,16 @@ explicit = true
 url = "https://pypi.org/simple"
 
 [tool.uv.sources]
-newton = { path = "../newton", editable = true }
+newton = { path = "../../newton/newton-1.0", editable = true }
 #newton = { path = "G:/warp/newton-rtx", editable = true }
 #warp-lang = { path = "../warp", editable = true }
 #ovrtx = { path = "/home/pkorzeniowsk/Downloads/ovrtx-0.2.0.278102-py3-none-manylinux_2_35_x86_64.whl" }
+
+[tool.setuptools.package-data]
+"omnisurg.hex.kernels" = ["_mc_tables.npz"]
+"omnisurg.hex.data.class_maps" = ["*.json"]
+"omnisurg.hex" = ["slang_shaders/*.slang"]
+
+[tool.setuptools.packages.find]
+include = ["omnisurg*"]
+exclude = ["tests*"]

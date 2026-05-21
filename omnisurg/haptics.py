@@ -10,6 +10,9 @@ from omnisurg.input.sources import (
     RecordingRig,
     ReplayForceFeedbackRig,
     ReplayInputSource,
+    device_position_to_world,
+    sample_position_to_world,
+    world_position_to_device,
 )
 
 __all__ = [
@@ -24,4 +27,7 @@ __all__ = [
     "RecordingRig",
     "ReplayForceFeedbackRig",
     "ReplayInputSource",
+    "device_position_to_world",
+    "sample_position_to_world",
+    "world_position_to_device",
 ]
