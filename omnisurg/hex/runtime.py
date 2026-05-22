@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import argparse
-import dataclasses
 import time
 from collections.abc import Sequence
 from dataclasses import dataclass, field
@@ -19,80 +18,22 @@ from omnisurg.rendering.bridge import RenderBridge
 from omnisurg.rendering.slang import SLANG_RENDER_BACKENDS
 
 from .data.types import PreparedVolume
-from .deletion import make_hex_deletion_state
 from .haptic import FallbackInput, HapticUnavailable, InputPose, open_haptic_inputs, open_minimou_inputs
-from .heat import make_hex_heat_state
-from .hex_grid import build_hex_particle_grid, build_hierarchical_shape_matching_clusters, build_shape_matching_clusters
 from .kernels.cell_render import update_cell_render_state
 from .kernels.marching_cubes import allocate_mc_buffers, bake_vertex_uv3, upload_mc_tables
 from .render import SurfaceRenderer
-from .shape_matching_solver import (
-    HIERARCHICAL_SHAPE_MATCHING_FULL27,
-    HIERARCHICAL_SHAPE_MATCHING_OFF,
-    HIERARCHICAL_SHAPE_MATCHING_OUTER8,
-    SHAPE_MATCHING_GS_WEIGHT_AVERAGED,
-    SHAPE_MATCHING_GS_WEIGHT_FULL,
-    SHAPE_MATCHING_GS_WEIGHT_SQRT,
-    SHAPE_MATCHING_SOLVE_COLORED_GS,
-    SHAPE_MATCHING_SOLVE_GATHER,
-    SHAPE_MATCHING_SOLVE_SCATTER,
-    HexShapeMatchingSolver,
+from .setup import (
+    GS_WEIGHTING_BY_NAME as _GS_WEIGHTING_BY_NAME,
+    HIERARCHICAL_MODE_BY_NAME as _HIERARCHICAL_MODE_BY_NAME,
+    L0_SHAPE_MATCHING_MODE_BY_NAME as _L0_SHAPE_MATCHING_MODE_BY_NAME,
+    L2_HIERARCHICAL_MODE_BY_NAME as _L2_HIERARCHICAL_MODE_BY_NAME,
+    StartupPhase as _StartupPhase,
+    build_hex_core_setup,
+    print_startup_report as _print_startup_report,
 )
-
-_HIERARCHICAL_MODE_BY_NAME = {
-    "off": HIERARCHICAL_SHAPE_MATCHING_OFF,
-    "outer8": HIERARCHICAL_SHAPE_MATCHING_OUTER8,
-    "full27": HIERARCHICAL_SHAPE_MATCHING_FULL27,
-}
-_L2_HIERARCHICAL_MODE_BY_NAME = {
-    "off": HIERARCHICAL_SHAPE_MATCHING_OFF,
-    "outer8": HIERARCHICAL_SHAPE_MATCHING_OUTER8,
-    "full125": HIERARCHICAL_SHAPE_MATCHING_FULL27,
-}
-_L0_SHAPE_MATCHING_MODE_BY_NAME = {
-    "scatter": SHAPE_MATCHING_SOLVE_SCATTER,
-    "gather": SHAPE_MATCHING_SOLVE_GATHER,
-    "gs": SHAPE_MATCHING_SOLVE_COLORED_GS,
-}
-_GS_WEIGHTING_BY_NAME = {
-    "averaged": SHAPE_MATCHING_GS_WEIGHT_AVERAGED,
-    "sqrt": SHAPE_MATCHING_GS_WEIGHT_SQRT,
-    "full": SHAPE_MATCHING_GS_WEIGHT_FULL,
-}
+from .shape_matching_solver import HexShapeMatchingSolver
 
 _INSTRUMENT_COUNT = 2
-
-
-class _StartupPhase:
-    def __init__(
-        self,
-        name: str,
-        sink: list[tuple[str, float]],
-        *,
-        sync_device=None,
-    ) -> None:
-        self.name = str(name)
-        self.sink = sink
-        self.sync_device = sync_device
-        self._start = 0.0
-
-    def __enter__(self) -> "_StartupPhase":
-        if self.sync_device is not None:
-            wp.synchronize_device(self.sync_device)
-        self._start = time.perf_counter()
-        return self
-
-    def __exit__(self, *exc: object) -> None:
-        if self.sync_device is not None:
-            wp.synchronize_device(self.sync_device)
-        self.sink.append((self.name, time.perf_counter() - self._start))
-
-
-def _print_startup_report(phases: list[tuple[str, float]], total: float) -> None:
-    print("[startup]")
-    for name, seconds in phases:
-        print(f"  {name:<28} {seconds * 1000.0:8.2f} ms")
-    print(f"  {'total':<28} {total * 1000.0:8.2f} ms")
 
 
 def _apply_gravity(model, enabled: bool, gravity_on: np.ndarray, gravity_off: np.ndarray) -> None:
@@ -309,37 +250,15 @@ class HexRuntimeSession:
         else:
             self._max_frames = max(0, int(self.args.frames))
 
-        with _StartupPhase("atlas_load", phases):
-            atlas = self.volume.to_hex_atlas()
-            base_origin = getattr(self.volume, "origin", (0.0, 0.0, 0.0))
-            origin = (
-                float(base_origin[0]),
-                float(base_origin[1]),
-                float(base_origin[2]) + float(self.args.drop_height),
-            )
-            if float(self.args.global_scale) != 1.0:
-                scale = float(self.args.global_scale)
-                atlas = dataclasses.replace(atlas, voxel_size=float(atlas.voxel_size) * scale)
-                origin = tuple(float(component) * scale for component in origin)
+        core_setup = build_hex_core_setup(self.args, prepared_volume=self.volume, startup_phases=phases)
+        atlas = core_setup.atlas_setup.atlas
+        pg = core_setup.particle_grid
+        model = core_setup.model
+        device = core_setup.device
+        delete_state = core_setup.delete_state
+        heat_state = core_setup.heat_state
+        solver = core_setup.solver
 
-        with _StartupPhase("build_hex_particle_grid", phases):
-            pg = build_hex_particle_grid(
-                atlas,
-                origin=origin,
-                particle_radius=float(self.args.particle_radius_scale) * float(atlas.voxel_size),
-                kinematic_bones=False,
-            )
-
-        model = pg.model
-        device = model.device
-        with _StartupPhase("make_hex_deletion_state", phases, sync_device=device):
-            delete_state = make_hex_deletion_state(model, pg.aux)
-        with _StartupPhase("make_hex_heat_state", phases, sync_device=device):
-            heat_state = make_hex_heat_state(model, pg.aux)
-        with _StartupPhase("clusters_l0", phases, sync_device=device):
-            clusters = build_shape_matching_clusters(pg)
-        with _StartupPhase("clusters_hierarchy", phases, sync_device=device):
-            hierarchy = build_hierarchical_shape_matching_clusters(pg)
         with _StartupPhase("mc_tables_and_buffers", phases, sync_device=device):
             tables = upload_mc_tables(device=device)
             mc_buffers = allocate_mc_buffers(pg.aux.grid_shape, pg.aux.num_cells, device=device)
@@ -356,65 +275,6 @@ class HexRuntimeSession:
                 particle_grid_xyz=pg.aux.cell_grid_xyz,
                 grid_to_particle=pg.aux.grid_to_cell,
                 grid_shape=pg.aux.grid_shape,
-            )
-
-        if self.args.shape_matching_mode is None:
-            shape_matching_mode = (
-                SHAPE_MATCHING_SOLVE_GATHER
-                if bool(self.args.shape_matching_gather)
-                else SHAPE_MATCHING_SOLVE_SCATTER
-            )
-        else:
-            shape_matching_mode = _L0_SHAPE_MATCHING_MODE_BY_NAME[str(self.args.shape_matching_mode)]
-
-        with _StartupPhase("solver_ctor", phases, sync_device=device):
-            solver = HexShapeMatchingSolver(
-                model,
-                clusters,
-                iterations=int(self.args.iterations),
-                enable_shape_matching=True,
-                enable_self_collisions=bool(self.args.particle_particle_collisions),
-                enable_ground_plane=True,
-                shape_matching_stiffness=float(self.args.shape_matching_stiffness),
-                shape_matching_relaxation=float(self.args.shape_matching_relaxation),
-                shape_matching_passes=int(self.args.shape_matching_passes),
-                shape_matching_mode=shape_matching_mode,
-                shape_matching_gs_weighting=_GS_WEIGHTING_BY_NAME[str(self.args.shape_matching_gs_weighting)],
-                shape_matching_gs_support_alpha=float(self.args.shape_matching_gs_support_alpha),
-                shape_matching_use_computed_prolongation=bool(self.args.shape_matching_computed_prolongation),
-                enable_volume_preservation=bool(self.args.volume_preservation),
-                volume_preservation_stiffness=float(self.args.volume_preservation_stiffness),
-                volume_preservation_passes=int(self.args.volume_preservation_passes),
-                hierarchy=hierarchy,
-                hierarchical_shape_matching_mode=_HIERARCHICAL_MODE_BY_NAME[
-                    str(self.args.hierarchical_shape_matching)
-                ],
-                hierarchical_shape_matching_stiffness=float(self.args.hierarchical_shape_matching_stiffness),
-                hierarchical_shape_matching_relaxation=float(self.args.hierarchical_shape_matching_relaxation),
-                hierarchical_shape_matching_passes=int(self.args.hierarchical_shape_matching_passes),
-                hierarchical_shape_matching_use_gs=bool(self.args.hierarchical_shape_matching_gs),
-                hierarchical_shape_matching_outer8_prolongation=bool(
-                    self.args.hierarchical_shape_matching_outer8_prolongation
-                ),
-                hierarchical_shape_matching_outer8_absolute_projection=bool(
-                    self.args.hierarchical_shape_matching_outer8_absolute_projection
-                ),
-                l2_hierarchical_shape_matching_mode=_L2_HIERARCHICAL_MODE_BY_NAME[
-                    str(self.args.l2_hierarchical_shape_matching)
-                ],
-                l2_hierarchical_shape_matching_stiffness=float(self.args.l2_hierarchical_shape_matching_stiffness),
-                l2_hierarchical_shape_matching_relaxation=float(self.args.l2_hierarchical_shape_matching_relaxation),
-                l2_hierarchical_shape_matching_passes=int(self.args.l2_hierarchical_shape_matching_passes),
-                l2_hierarchical_shape_matching_use_gs=bool(self.args.l2_hierarchical_shape_matching_gs),
-                l2_hierarchical_shape_matching_outer8_prolongation=bool(
-                    self.args.l2_hierarchical_shape_matching_outer8_prolongation
-                ),
-                l2_hierarchical_shape_matching_outer8_absolute_projection=bool(
-                    self.args.hierarchical_shape_matching_outer8_absolute_projection
-                ),
-                sleep_l0_shape_matching=bool(self.args.sleep_l0_shape_matching),
-                sleep_l0_wake_halo_blocks=int(self.args.sleep_l0_wake_halo_blocks),
-                ground_height=float(self.args.ground_height),
             )
 
         with _StartupPhase("input_devices", phases):

@@ -14,6 +14,7 @@ import warp as wp
 from omnisurg.hex.materials import DEFAULT_MATERIALS, MaterialTable, Phase
 from omnisurg.hex import app_runtime
 from omnisurg.hex import runtime as hex_runtime
+from omnisurg.hex import setup as hex_setup
 from omnisurg.hex.cli import _default_root
 from omnisurg.hex.data.cache import build_manifest, make_cache_key, try_read_valid_cache, write_npz_atomic
 from omnisurg.hex.data.crop import crop_labels_to_visible_classes, select_visible_class_ids
@@ -67,7 +68,7 @@ def test_omnisurg_runtime_never_pins_bone_particles(monkeypatch: pytest.MonkeyPa
         materials=MaterialTable(DEFAULT_MATERIALS),
         class_map={0: "background", 1: "muscle"},
     )
-    monkeypatch.setattr(hex_runtime, "build_hex_particle_grid", fake_build_hex_particle_grid)
+    monkeypatch.setattr(hex_setup, "build_hex_particle_grid", fake_build_hex_particle_grid)
 
     with pytest.raises(_StopAfterBuild):
         hex_runtime.HexRuntime.from_volume(

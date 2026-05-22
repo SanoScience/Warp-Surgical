@@ -18,7 +18,6 @@ Features:
 from __future__ import annotations
 
 import argparse
-import dataclasses
 import json
 import sys
 import time
@@ -34,13 +33,7 @@ from newton._src.geometry.flags import ParticleFlags
 
 from omnisurg.config import ViewerConfig  # noqa: E402
 from omnisurg.rendering.bridge import RenderBridge  # noqa: E402
-from omnisurg.hex.deletion import DeviceDeletionResult, make_hex_deletion_state  # noqa: E402
-from omnisurg.hex.heat import make_hex_heat_state  # noqa: E402
-from omnisurg.hex.hex_grid import (  # noqa: E402
-    build_hex_particle_grid,
-    build_hierarchical_shape_matching_clusters,
-    build_shape_matching_clusters,
-)
+from omnisurg.hex.deletion import DeviceDeletionResult  # noqa: E402
 from omnisurg.hex.shape_matching_solver import (  # noqa: E402
     HIERARCHICAL_SHAPE_MATCHING_FULL27,
     HIERARCHICAL_SHAPE_MATCHING_LABELS,
@@ -53,13 +46,9 @@ from omnisurg.hex.shape_matching_solver import (  # noqa: E402
     SHAPE_MATCHING_GS_WEIGHT_LABELS,
     SHAPE_MATCHING_GS_WEIGHT_SQRT,
     SHAPE_MATCHING_SOLVE_COLORED_GS,
-    SHAPE_MATCHING_SOLVE_GATHER,
     SHAPE_MATCHING_SOLVE_LABELS,
     SHAPE_MATCHING_SOLVE_SCATTER,
-    HexShapeMatchingSolver,
 )
-from omnisurg.hex.io.cryo import load_cryo_texture  # noqa: E402
-from omnisurg.hex.io.digimouse import DigimouseAtlas, load_digimouse  # noqa: E402
 from omnisurg.hex.kernels.cell_render import HoverPicker, update_cell_render_state  # noqa: E402
 from omnisurg.hex.kernels.grab import project_grab_distance_constraints  # noqa: E402
 from omnisurg.hex.kernels.marching_cubes import (  # noqa: E402
@@ -69,7 +58,7 @@ from omnisurg.hex.kernels.marching_cubes import (  # noqa: E402
     compute_mc_vertex_positions,
     upload_mc_tables,
 )
-from omnisurg.hex.materials import DEFAULT_MATERIALS, SKIN, MaterialTable  # noqa: E402
+from omnisurg.hex.materials import SKIN  # noqa: E402
 from omnisurg.hex.interaction import (  # noqa: E402
     _camera_basis_matrix,
     _camera_local_offsets,
@@ -141,34 +130,20 @@ from omnisurg.hex.haptic import (  # noqa: E402
     pose_to_world,
     quat_rotate,
 )
-from omnisurg.hex.data.crop import (  # noqa: E402
-    VisibleClassCrop,
-    crop_aligned_texture_rgb,
-    crop_labels_to_visible_classes,
-)
 from omnisurg.hex.data.types import PreparedVolume  # noqa: E402
+from omnisurg.hex.setup import (  # noqa: E402
+    GS_WEIGHTING_BY_NAME,
+    HIERARCHICAL_MODE_BY_NAME,
+    L0_SHAPE_MATCHING_MODE_BY_NAME,
+    L2_HIERARCHICAL_MODE_BY_NAME,
+    StartupPhase as _StartupPhase,
+    build_hex_core_setup,
+    load_cryo_texture_for_crop as _load_cryo_texture_for_crop,
+    print_startup_report as _print_startup_report,
+    upload_rgb_texture as _upload_rgb_texture,
+)
 
 ACTIVE_BIT = int(ParticleFlags.ACTIVE)
-HIERARCHICAL_MODE_BY_NAME = {
-    "off": HIERARCHICAL_SHAPE_MATCHING_OFF,
-    "outer8": HIERARCHICAL_SHAPE_MATCHING_OUTER8,
-    "full27": HIERARCHICAL_SHAPE_MATCHING_FULL27,
-}
-L2_HIERARCHICAL_MODE_BY_NAME = {
-    "off": HIERARCHICAL_SHAPE_MATCHING_OFF,
-    "outer8": HIERARCHICAL_SHAPE_MATCHING_OUTER8,
-    "full125": HIERARCHICAL_SHAPE_MATCHING_FULL27,
-}
-L0_SHAPE_MATCHING_MODE_BY_NAME = {
-    "scatter": SHAPE_MATCHING_SOLVE_SCATTER,
-    "gather": SHAPE_MATCHING_SOLVE_GATHER,
-    "gs": SHAPE_MATCHING_SOLVE_COLORED_GS,
-}
-GS_WEIGHTING_BY_NAME = {
-    "averaged": SHAPE_MATCHING_GS_WEIGHT_AVERAGED,
-    "sqrt": SHAPE_MATCHING_GS_WEIGHT_SQRT,
-    "full": SHAPE_MATCHING_GS_WEIGHT_FULL,
-}
 
 _INSTRUMENT_COUNT = 2
 _INSTRUMENT_TRIGGER_THRESHOLD = 0.1
@@ -199,52 +174,6 @@ def _effective_gs_support_alpha(weighting: int, alpha: float) -> float:
     if alpha < 0.0:
         return float(SHAPE_MATCHING_GS_WEIGHT_ALPHAS[int(weighting)])
     return min(1.0, max(0.0, float(alpha)))
-
-
-def _make_block_atlas(size: int, voxel: float) -> DigimouseAtlas:
-    """Pad the synthetic block so MC sees an exterior boundary."""
-    labels = np.zeros((size + 2, size + 2, size + 2), dtype=np.uint8)
-    labels[1:-1, 1:-1, 1:-1] = 1
-    return DigimouseAtlas(labels=labels, voxel_size=voxel, materials=MaterialTable(DEFAULT_MATERIALS))
-
-
-def _upload_rgb_texture(texture_rgb: np.ndarray, device):
-    host = np.ascontiguousarray(texture_rgb)
-    if host.ndim != 4 or host.shape[-1] != 3 or host.dtype != np.uint8:
-        raise ValueError(f"expected uint8 (nx, ny, nz, 3) texture, got {host.shape} {host.dtype}")
-    as_float = host.astype(np.float32) / 255.0
-    return host, wp.array(as_float, dtype=wp.vec3, device=device)
-
-
-def _atlas_class_map(atlas: DigimouseAtlas) -> dict[int, str]:
-    return {int(idx): str(material.name) for idx, material in enumerate(atlas.materials.materials)}
-
-
-def _crop_hex_atlas_to_visible_classes(
-    atlas: DigimouseAtlas,
-    settings_path: str | Path | None,
-    margin_voxels: int,
-) -> tuple[DigimouseAtlas, VisibleClassCrop | None]:
-    if settings_path is None:
-        return atlas, None
-    crop = crop_labels_to_visible_classes(
-        atlas.labels,
-        _atlas_class_map(atlas),
-        settings_path,
-        margin_voxels=margin_voxels,
-    )
-    origin = tuple(float(atlas.origin[i]) + float(crop.crop_min[i]) * float(atlas.voxel_size) for i in range(3))
-    metadata = dict(getattr(atlas, "metadata", {}) or {})
-    metadata["visible_class_crop"] = dict(crop.metadata)
-    return dataclasses.replace(atlas, labels=crop.labels, origin=origin, metadata=metadata), crop
-
-
-def _load_cryo_texture_for_crop(path: Path, crop: VisibleClassCrop | None, device):
-    if crop is None:
-        return load_cryo_texture(path, device=device)
-    host = np.load(path, mmap_mode="r")
-    cropped = crop_aligned_texture_rgb(host, crop, texture_name="cryo texture")
-    return _upload_rgb_texture(cropped, device)
 
 
 def _apply_gravity(model, enabled: bool, gravity_on: np.ndarray, gravity_off: np.ndarray) -> None:
@@ -714,46 +643,6 @@ def _apply_grab_distance_constraints(
         float(stiffness),
         device=device,
     )
-
-
-class _StartupPhase:
-    """Context manager that records wall-clock time for one startup phase.
-
-    When ``sync_device`` is given, ``wp.synchronize_device(device)`` is called
-    on exit so the timing reflects GPU work that was queued inside the block
-    (uploads, kernel launches) rather than just the host-side return.
-    """
-
-    def __init__(
-        self,
-        name: str,
-        sink: list[tuple[str, float]],
-        *,
-        sync_device: wp.context.Device | None = None,
-    ) -> None:
-        self.name = name
-        self.sink = sink
-        self.sync_device = sync_device
-
-    def __enter__(self) -> _StartupPhase:
-        self.t0 = time.perf_counter()
-        return self
-
-    def __exit__(self, *exc: object) -> None:
-        if self.sync_device is not None:
-            wp.synchronize_device(self.sync_device)
-        self.sink.append((self.name, time.perf_counter() - self.t0))
-
-
-def _print_startup_report(phases: list[tuple[str, float]], total: float) -> None:
-    captured = sum(dt for _, dt in phases)
-    print(f"[startup] total {total * 1000:.1f} ms (captured {captured * 1000:.1f} ms)")
-    for name, dt in sorted(phases, key=lambda kv: -kv[1]):
-        share = (100.0 * dt / total) if total > 0.0 else 0.0
-        print(f"  {name:<32} {dt * 1000:8.1f} ms  ({share:4.1f}%)")
-    leftover = max(0.0, total - captured)
-    if leftover > 0.0:
-        print(f"  {'(uncaptured)':<32} {leftover * 1000:8.1f} ms")
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -1247,120 +1136,27 @@ def _run_app(argv: Sequence[str] | None = None, *, prepared_volume: PreparedVolu
 
     startup_phases: list[tuple[str, float]] = []
     startup_t0 = time.perf_counter()
-    visible_class_crop: VisibleClassCrop | None = None
-    prepared_texture_rgb = None if prepared_volume is None else prepared_volume.texture_rgb
-
-    with _StartupPhase("atlas_load", startup_phases):
-        if prepared_volume is not None:
-            atlas = prepared_volume.to_hex_atlas()
-            base_origin = prepared_volume.origin
-            origin = (
-                float(base_origin[0]),
-                float(base_origin[1]),
-                float(base_origin[2]) + float(args.drop_height),
-            )
-            scene_label = str(prepared_volume.metadata.get("scene_label", "OmniSurg Hex"))
-        elif args.size > 0:
-            atlas = _make_block_atlas(args.size, args.voxel)
-            block_extent = args.size * args.voxel
-            origin = (-0.5 * block_extent - args.voxel, -0.5 * block_extent - args.voxel, args.drop_height - args.voxel)
-            scene_label = f"block {args.size}^3"
-        else:
-            atlas = load_digimouse(
-                args.atlas,
-                downsample=args.downsample,
-                pad=int(args.atlas_pad),
-                cache_path=args.digimouse_cache,
-                use_cache=bool(args.digimouse_use_cache),
-                rebuild_cache=bool(args.digimouse_rebuild_cache),
-            )
-            origin = (0.0, 0.0, args.drop_height)
-            scene_label = f"Digimouse --downsample {args.downsample}"
-
-        if prepared_volume is None and args.crop_visible_classes is not None:
-            atlas, visible_class_crop = _crop_hex_atlas_to_visible_classes(
-                atlas,
-                args.crop_visible_classes,
-                int(args.crop_visible_margin_voxels),
-            )
-            origin = tuple(float(origin[i]) + float(atlas.origin[i]) for i in range(3))
-            scene_label = f"{scene_label}  (visible crop)"
-
-        if args.global_scale != 1.0:
-            scale = float(args.global_scale)
-            atlas = dataclasses.replace(atlas, voxel_size=atlas.voxel_size * scale)
-            origin = tuple(c * scale for c in origin)
-            scene_label = f"{scene_label}  (global_scale={scale:g})"
-
-    with _StartupPhase("build_hex_particle_grid", startup_phases):
-        pg = build_hex_particle_grid(
-            atlas,
-            origin=origin,
-            particle_radius=args.particle_radius_scale * atlas.voxel_size,
-            kinematic_bones=False,
-        )
-    model = pg.model
-    dev = model.device
-    n_nodes = pg.aux.num_nodes
-    n_cells = pg.aux.num_cells
-
-    with _StartupPhase("make_hex_deletion_state", startup_phases, sync_device=dev):
-        delete_state = make_hex_deletion_state(model, pg.aux)
-    with _StartupPhase("make_hex_heat_state", startup_phases, sync_device=dev):
-        heat_state = make_hex_heat_state(model, pg.aux)
-    with _StartupPhase("clusters_l0", startup_phases, sync_device=dev):
-        clusters = build_shape_matching_clusters(pg)
-    with _StartupPhase("clusters_l1_hierarchy", startup_phases, sync_device=dev):
-        hierarchy = build_hierarchical_shape_matching_clusters(pg)
-    hierarchical_mode = HIERARCHICAL_MODE_BY_NAME[str(args.hierarchical_shape_matching)]
-    l2_hierarchical_mode = L2_HIERARCHICAL_MODE_BY_NAME[str(args.l2_hierarchical_shape_matching)]
-    if args.shape_matching_mode is None:
-        shape_matching_mode = SHAPE_MATCHING_SOLVE_GATHER if bool(args.shape_matching_gather) else SHAPE_MATCHING_SOLVE_SCATTER
-    else:
-        shape_matching_mode = L0_SHAPE_MATCHING_MODE_BY_NAME[str(args.shape_matching_mode)]
-    gs_weighting = GS_WEIGHTING_BY_NAME[str(args.shape_matching_gs_weighting)]
-    gs_support_alpha = float(args.shape_matching_gs_support_alpha)
-    with _StartupPhase("solver_ctor", startup_phases, sync_device=dev):
-        solver = HexShapeMatchingSolver(
-            model,
-            clusters,
-            iterations=args.iterations,
-            enable_shape_matching=True,
-            enable_self_collisions=bool(args.particle_particle_collisions),
-            enable_ground_plane=True,
-            shape_matching_stiffness=float(args.shape_matching_stiffness),
-            shape_matching_relaxation=float(args.shape_matching_relaxation),
-            shape_matching_passes=int(args.shape_matching_passes),
-            shape_matching_mode=shape_matching_mode,
-            shape_matching_gs_weighting=gs_weighting,
-            shape_matching_gs_support_alpha=gs_support_alpha,
-            shape_matching_use_computed_prolongation=bool(args.shape_matching_computed_prolongation),
-            enable_volume_preservation=bool(args.volume_preservation),
-            volume_preservation_stiffness=float(args.volume_preservation_stiffness),
-            volume_preservation_passes=int(args.volume_preservation_passes),
-            hierarchy=hierarchy,
-            hierarchical_shape_matching_mode=hierarchical_mode,
-            hierarchical_shape_matching_stiffness=float(args.hierarchical_shape_matching_stiffness),
-            hierarchical_shape_matching_relaxation=float(args.hierarchical_shape_matching_relaxation),
-            hierarchical_shape_matching_passes=int(args.hierarchical_shape_matching_passes),
-            hierarchical_shape_matching_use_gs=bool(args.hierarchical_shape_matching_gs),
-            hierarchical_shape_matching_outer8_prolongation=bool(args.hierarchical_shape_matching_outer8_prolongation),
-            hierarchical_shape_matching_outer8_absolute_projection=bool(
-                args.hierarchical_shape_matching_outer8_absolute_projection
-            ),
-            l2_hierarchical_shape_matching_mode=l2_hierarchical_mode,
-            l2_hierarchical_shape_matching_stiffness=float(args.l2_hierarchical_shape_matching_stiffness),
-            l2_hierarchical_shape_matching_relaxation=float(args.l2_hierarchical_shape_matching_relaxation),
-            l2_hierarchical_shape_matching_passes=int(args.l2_hierarchical_shape_matching_passes),
-            l2_hierarchical_shape_matching_use_gs=bool(args.l2_hierarchical_shape_matching_gs),
-            l2_hierarchical_shape_matching_outer8_prolongation=bool(args.l2_hierarchical_shape_matching_outer8_prolongation),
-            l2_hierarchical_shape_matching_outer8_absolute_projection=bool(
-                args.hierarchical_shape_matching_outer8_absolute_projection
-            ),
-            sleep_l0_shape_matching=bool(args.sleep_l0_shape_matching),
-            sleep_l0_wake_halo_blocks=int(args.sleep_l0_wake_halo_blocks),
-            ground_height=float(args.ground_height),
-        )
+    core_setup = build_hex_core_setup(args, prepared_volume=prepared_volume, startup_phases=startup_phases)
+    atlas_setup = core_setup.atlas_setup
+    atlas = atlas_setup.atlas
+    scene_label = atlas_setup.scene_label
+    visible_class_crop = atlas_setup.visible_class_crop
+    prepared_texture_rgb = atlas_setup.prepared_texture_rgb
+    pg = core_setup.particle_grid
+    model = core_setup.model
+    dev = core_setup.device
+    n_nodes = core_setup.n_nodes
+    n_cells = core_setup.n_cells
+    delete_state = core_setup.delete_state
+    heat_state = core_setup.heat_state
+    clusters = core_setup.clusters
+    hierarchy = core_setup.hierarchy
+    solver = core_setup.solver
+    shape_matching_mode = core_setup.solver_modes.shape_matching_mode
+    hierarchical_mode = core_setup.solver_modes.hierarchical_shape_matching_mode
+    l2_hierarchical_mode = core_setup.solver_modes.l2_hierarchical_shape_matching_mode
+    gs_weighting = core_setup.solver_modes.shape_matching_gs_weighting
+    gs_support_alpha = core_setup.solver_modes.shape_matching_gs_support_alpha
 
     ui = UiState(
         gravity_enabled=bool(args.gravity_on),
