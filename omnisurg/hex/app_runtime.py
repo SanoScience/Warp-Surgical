@@ -22,9 +22,9 @@ import dataclasses
 import json
 import sys
 import time
-from dataclasses import dataclass, field
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import newton
 import numpy as np
@@ -69,6 +69,28 @@ from omnisurg.hex.kernels.marching_cubes import (  # noqa: E402
     upload_mc_tables,
 )
 from omnisurg.hex.materials import DEFAULT_MATERIALS, SKIN, MaterialTable  # noqa: E402
+from omnisurg.hex.interaction import (  # noqa: E402
+    _camera_basis_matrix,
+    _camera_local_offsets,
+    _camera_points_from_local_offsets,
+    _camera_transform_points_between_frames,
+    _camera_transform_quaternion_between_frames,
+    _intersect_ray_plane,
+    _mouse_world_ray,
+    _normalize_or,
+    _pick_particle_from_ray,
+    _select_drag_particles,
+    _select_sphere_drag_particles,
+    _vec3_array,
+    _viewer_camera_frame,
+)
+from omnisurg.hex.locking import (  # noqa: E402
+    _active_cells_for_material,
+    _active_cells_outside_cluster_coverage,
+    _enforce_locked_nodes,
+    _enforce_locked_nodes_kernel,
+    _merge_locked_node_positions,
+)
 from omnisurg.hex.render import (  # noqa: E402
     build_segmentation_color_texture,
     ColoredParticleOverlay,
@@ -84,9 +106,7 @@ from omnisurg.hex.render import (  # noqa: E402
 from omnisurg.rendering.slang_cryo import (  # noqa: E402
     PROCEDURAL_MATERIAL_PARAM_NAMES,
     SLANG_RENDER_BACKENDS,
-    SLANG_SURFACE_DEBUG_VIEW_HEIGHT,
     SLANG_SURFACE_DEBUG_VIEW_LABELS,
-    SLANG_SURFACE_DEBUG_VIEW_OFF,
     build_procedural_uv3_noise_scale,
     clamp_material_maker_params,
     clamp_procedural_material_params,
@@ -97,19 +117,28 @@ from omnisurg.rendering.slang_cryo import (  # noqa: E402
     material_maker_parameter_row,
     material_maker_setting_value,
 )
+from omnisurg.hex.ui import (  # noqa: E402
+    TimerPanelRow,
+    TimerPanelSnapshot,
+    UiState,
+    build_timer_panel_snapshot,
+    discover_hdri_maps as _discover_hdri_maps,
+    hdri_map_choice_index as _hdri_map_choice_index,
+    hdri_map_choice_labels as _hdri_map_choice_labels,
+    hdri_map_choice_paths as _hdri_map_choice_paths,
+    hdri_map_key as _hdri_map_key,
+)
 from omnisurg.hex.haptic import (  # noqa: E402
     FallbackInput,
     HapticFrameConfig,
     HapticUnavailable,
     InputPose,
     MINIMOU_PROFILE,
-    matrix_to_quaternion,
     OPENHAPTICS_PROFILE,
     open_haptic_inputs,
     open_minimou_inputs,
     pose_to_world,
     quat_rotate,
-    quat_to_matrix,
 )
 from omnisurg.hex.data.crop import (  # noqa: E402
     VisibleClassCrop,
@@ -118,8 +147,6 @@ from omnisurg.hex.data.crop import (  # noqa: E402
 )
 
 ACTIVE_BIT = int(ParticleFlags.ACTIVE)
-HDRI_MAP_EXTENSIONS = (".hdr", ".exr")
-HDRI_NONE_LABEL = "None"
 HIERARCHICAL_MODE_BY_NAME = {
     "off": HIERARCHICAL_SHAPE_MATCHING_OFF,
     "outer8": HIERARCHICAL_SHAPE_MATCHING_OUTER8,
@@ -166,74 +193,6 @@ def _should_capture_instrument_grasp(
     grasp_count: int,
 ) -> bool:
     return bool(is_grasper and trigger_down and ((not trigger_was_down) or int(grasp_count) <= 0))
-
-
-@dataclass(frozen=True)
-class TimerPanelRow:
-    name: str
-    calls: int
-    avg_ms: float
-    total_ms: float
-    gpu_avg_ms: float | None = None
-
-
-@dataclass(frozen=True)
-class TimerPanelSnapshot:
-    window_secs: float
-    window_frames: int
-    fps: float
-    frame_count: int
-    triangle_count: int
-    rows: tuple[TimerPanelRow, ...]
-
-
-def build_timer_panel_snapshot(
-    timer_stats: dict[str, list[float]],
-    *,
-    window_secs: float,
-    window_frames: int,
-    frame_count: int,
-    triangle_count: int,
-    gpu_stats: dict[str, list[float]] | None = None,
-    max_rows: int = 14,
-) -> TimerPanelSnapshot:
-    """Build an immutable Slang timing-panel snapshot from accumulated timer samples."""
-    rows: list[TimerPanelRow] = []
-    for name, samples in timer_stats.items():
-        if not samples:
-            continue
-        total_ms = float(sum(samples))
-        calls = len(samples)
-        gpu_avg_ms = None
-        if gpu_stats is not None:
-            gpu_samples = gpu_stats.get(name)
-            if gpu_samples:
-                gpu_avg_ms = float(sum(gpu_samples)) / len(gpu_samples)
-        rows.append(
-            TimerPanelRow(
-                name=str(name),
-                calls=calls,
-                avg_ms=total_ms / calls,
-                total_ms=total_ms,
-                gpu_avg_ms=gpu_avg_ms,
-            )
-        )
-
-    rows.sort(key=lambda row: (row.avg_ms, row.total_ms, row.name), reverse=True)
-    limit = max(0, int(max_rows))
-    if limit:
-        rows = rows[:limit]
-    else:
-        rows = []
-    fps = float(window_frames) / float(window_secs) if window_secs > 0.0 and window_frames > 0 else 0.0
-    return TimerPanelSnapshot(
-        window_secs=float(window_secs),
-        window_frames=int(window_frames),
-        fps=fps,
-        frame_count=int(frame_count),
-        triangle_count=int(triangle_count),
-        rows=tuple(rows),
-    )
 
 
 def _effective_gs_support_alpha(weighting: int, alpha: float) -> float:
@@ -286,52 +245,6 @@ def _load_cryo_texture_for_crop(path: Path, crop: VisibleClassCrop | None, devic
     host = np.load(path, mmap_mode="r")
     cropped = crop_aligned_texture_rgb(host, crop, texture_name="cryo texture")
     return _upload_rgb_texture(cropped, device)
-
-
-def _discover_hdri_maps(folder: str | Path) -> tuple[Path, ...]:
-    root = Path(folder).expanduser()
-    if not root.is_dir():
-        return ()
-    return tuple(
-        sorted(
-            (
-                path
-                for path in root.iterdir()
-                if path.is_file() and path.suffix.lower() in HDRI_MAP_EXTENSIONS
-            ),
-            key=lambda path: path.name.lower(),
-        )
-    )
-
-
-def _hdri_map_key(path: str | Path | None) -> str:
-    if not path:
-        return ""
-    return str(Path(path).expanduser().resolve(strict=False))
-
-
-def _hdri_map_choice_paths(folder: str | Path, current_path: str | Path | None = None) -> tuple[Path | None, ...]:
-    choices: list[Path | None] = [None]
-    seen = {""}
-    for path in _discover_hdri_maps(folder):
-        key = _hdri_map_key(path)
-        choices.append(path)
-        seen.add(key)
-    if current_path and _hdri_map_key(current_path) not in seen:
-        choices.append(Path(current_path).expanduser())
-    return tuple(choices)
-
-
-def _hdri_map_choice_labels(paths: tuple[Path | None, ...]) -> tuple[str, ...]:
-    return tuple(HDRI_NONE_LABEL if path is None else path.name for path in paths)
-
-
-def _hdri_map_choice_index(paths: tuple[Path | None, ...], current_path: str | Path | None) -> int:
-    current_key = _hdri_map_key(current_path)
-    for idx, path in enumerate(paths):
-        if _hdri_map_key(path) == current_key:
-            return idx
-    return 0
 
 
 def _apply_gravity(model, enabled: bool, gravity_on: np.ndarray, gravity_off: np.ndarray) -> None:
@@ -409,220 +322,6 @@ def _delete_stats_dirty(delete_state) -> bool:
     return "stats" in dirty_domains
 
 
-def _mouse_world_ray(viewer, x: float, y: float) -> tuple[np.ndarray, np.ndarray]:
-    if hasattr(viewer, "screen_to_world_ray"):
-        origin, direction = viewer.screen_to_world_ray(x, y)
-        origin = np.asarray(origin, dtype=np.float32).reshape(3)
-        direction = np.asarray(direction, dtype=np.float32).reshape(3)
-        direction_norm = float(np.linalg.norm(direction))
-        if direction_norm > 1.0e-8:
-            direction /= direction_norm
-        return origin, direction
-
-    fb_x, fb_y = viewer._to_framebuffer_coords(x, y)  # noqa: SLF001
-    ray_start, ray_dir = viewer.camera.get_world_ray(fb_x, fb_y)
-    origin = np.asarray(ray_start, dtype=np.float32).reshape(3)
-    direction = np.asarray((ray_dir.x, ray_dir.y, ray_dir.z), dtype=np.float32)
-    direction_norm = float(np.linalg.norm(direction))
-    if direction_norm > 1.0e-8:
-        direction /= direction_norm
-    return origin, direction
-
-
-def _vec3_array(value) -> np.ndarray:
-    try:
-        return np.asarray((float(value.x), float(value.y), float(value.z)), dtype=np.float32)
-    except Exception:
-        return np.asarray(value, dtype=np.float32).reshape(3)
-
-
-def _normalize_or(value: np.ndarray, fallback: tuple[float, float, float]) -> np.ndarray:
-    vec = np.asarray(value, dtype=np.float32).reshape(3)
-    norm = float(np.linalg.norm(vec))
-    if norm > 1.0e-8:
-        return (vec / norm).astype(np.float32, copy=False)
-    return np.asarray(fallback, dtype=np.float32)
-
-
-def _viewer_camera_frame(viewer) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray] | None:
-    if viewer is None:
-        return None
-
-    if all(hasattr(viewer, name) for name in ("_camera_pos", "_camera_right", "_camera_up", "_camera_forward")):
-        try:
-            pos = _vec3_array(getattr(viewer, "_camera_pos"))
-            right = _normalize_or(_vec3_array(getattr(viewer, "_camera_right")), (1.0, 0.0, 0.0))
-            up = _normalize_or(_vec3_array(getattr(viewer, "_camera_up")), (0.0, 0.0, 1.0))
-            forward = _normalize_or(_vec3_array(getattr(viewer, "_camera_forward")), (0.0, 1.0, 0.0))
-            return pos, right, up, forward
-        except Exception:
-            pass
-
-    camera = getattr(viewer, "camera", None)
-    if camera is None:
-        return None
-    try:
-        pos = _vec3_array(camera.pos)
-        forward = _normalize_or(_vec3_array(camera.get_front()), (0.0, 1.0, 0.0))
-        right = _normalize_or(_vec3_array(camera.get_right()), (1.0, 0.0, 0.0))
-        up = _normalize_or(_vec3_array(camera.get_up()), (0.0, 0.0, 1.0))
-    except Exception:
-        return None
-    return pos, right, up, forward
-
-
-def _camera_local_offsets(
-    points: np.ndarray,
-    camera_frame: tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray],
-) -> np.ndarray:
-    pos, right, up, forward = camera_frame
-    rel = np.asarray(points, dtype=np.float32).reshape(-1, 3) - np.asarray(pos, dtype=np.float32).reshape(1, 3)
-    basis = np.stack((right, up, forward), axis=1).astype(np.float32, copy=False)
-    return np.ascontiguousarray(rel @ basis, dtype=np.float32)
-
-
-def _camera_points_from_local_offsets(
-    offsets: np.ndarray,
-    camera_frame: tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray],
-) -> np.ndarray:
-    pos, right, up, forward = camera_frame
-    local = np.asarray(offsets, dtype=np.float32).reshape(-1, 3)
-    return np.ascontiguousarray(
-        np.asarray(pos, dtype=np.float32).reshape(1, 3)
-        + local[:, 0:1] * right.reshape(1, 3)
-        + local[:, 1:2] * up.reshape(1, 3)
-        + local[:, 2:3] * forward.reshape(1, 3),
-        dtype=np.float32,
-    )
-
-
-def _camera_basis_matrix(camera_frame: tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]) -> np.ndarray:
-    _pos, right, up, forward = camera_frame
-    return np.column_stack((right, up, forward)).astype(np.float32, copy=False)
-
-
-def _camera_transform_points_between_frames(
-    points: np.ndarray,
-    reference_frame: tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray],
-    current_frame: tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray],
-) -> np.ndarray:
-    return _camera_points_from_local_offsets(_camera_local_offsets(points, reference_frame), current_frame)
-
-
-def _camera_transform_quaternion_between_frames(
-    quaternion: tuple[float, float, float, float] | np.ndarray,
-    reference_frame: tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray],
-    current_frame: tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray],
-) -> tuple[float, float, float, float]:
-    delta = _camera_basis_matrix(current_frame) @ _camera_basis_matrix(reference_frame).T
-    return matrix_to_quaternion(delta @ quat_to_matrix(quaternion))
-
-
-def _pick_particle_from_ray(
-    particle_q: np.ndarray,
-    particle_flags: np.ndarray,
-    particle_inv_mass: np.ndarray,
-    particle_radius: np.ndarray,
-    ray_origin: np.ndarray,
-    ray_direction: np.ndarray,
-    base_pick_radius: float,
-) -> tuple[int, np.ndarray | None]:
-    active_mask = ((particle_flags & ACTIVE_BIT) != 0) & (particle_inv_mass > 0.0)
-    if not np.any(active_mask):
-        return -1, None
-
-    active_indices = np.nonzero(active_mask)[0]
-    rel = particle_q[active_indices] - ray_origin[None, :]
-    t = rel @ ray_direction
-    forward_mask = t >= 0.0
-    if not np.any(forward_mask):
-        return -1, None
-
-    active_indices = active_indices[forward_mask]
-    rel = rel[forward_mask]
-    t = t[forward_mask]
-    closest = rel - t[:, None] * ray_direction[None, :]
-    dist_sq = np.einsum("ij,ij->i", closest, closest)
-    pick_radius = np.maximum(particle_radius[active_indices] * 4.0, base_pick_radius)
-    hit_mask = dist_sq <= pick_radius * pick_radius
-    if not np.any(hit_mask):
-        return -1, None
-
-    hit_indices = active_indices[hit_mask]
-    hit_t = t[hit_mask]
-    best = int(np.argmin(hit_t))
-    particle = int(hit_indices[best])
-    hit_point = ray_origin + hit_t[best] * ray_direction
-    return particle, hit_point.astype(np.float32)
-
-
-def _select_drag_particles(
-    particle_q: np.ndarray,
-    particle_flags: np.ndarray,
-    particle_inv_mass: np.ndarray,
-    seed_particle: int,
-    radius: float,
-) -> tuple[np.ndarray, np.ndarray]:
-    if seed_particle < 0:
-        return np.zeros(0, dtype=np.int32), np.zeros((0, 3), dtype=np.float32)
-
-    active_mask = ((particle_flags & ACTIVE_BIT) != 0) & (particle_inv_mass > 0.0)
-    if not active_mask[seed_particle]:
-        return np.zeros(0, dtype=np.int32), np.zeros((0, 3), dtype=np.float32)
-
-    seed_pos = particle_q[seed_particle].astype(np.float32, copy=False)
-    delta = particle_q - seed_pos[None, :]
-    radius_sq = max(float(radius), 0.0) ** 2
-    selected_mask = active_mask & (np.einsum("ij,ij->i", delta, delta, optimize=True) <= radius_sq)
-    selected = np.nonzero(selected_mask)[0].astype(np.int32)
-    offsets = (particle_q[selected] - seed_pos[None, :]).astype(np.float32, copy=False)
-    return selected, offsets
-
-
-def _select_sphere_drag_particles(
-    particle_q: np.ndarray,
-    particle_flags: np.ndarray,
-    particle_inv_mass: np.ndarray,
-    particle_radius: np.ndarray,
-    sphere_center: np.ndarray,
-    sphere_radius: float,
-) -> tuple[np.ndarray, np.ndarray]:
-    if sphere_radius <= 0.0:
-        return np.zeros(0, dtype=np.int32), np.zeros((0, 3), dtype=np.float32)
-
-    active_mask = ((particle_flags & ACTIVE_BIT) != 0) & (particle_inv_mass > 0.0)
-    if not np.any(active_mask):
-        return np.zeros(0, dtype=np.int32), np.zeros((0, 3), dtype=np.float32)
-
-    center = np.asarray(sphere_center, dtype=np.float32).reshape(3)
-    q = np.asarray(particle_q, dtype=np.float32)
-    radii = np.maximum(np.asarray(particle_radius, dtype=np.float32), 0.0)
-    delta = q - center[None, :]
-    dist_sq = np.einsum("ij,ij->i", delta, delta, optimize=True)
-    contact_radius = np.maximum(float(sphere_radius), 0.0) + radii
-    selected_mask = active_mask & (dist_sq <= contact_radius * contact_radius)
-    selected = np.nonzero(selected_mask)[0].astype(np.int32)
-    offsets = delta[selected].astype(np.float32, copy=False)
-    return selected, offsets
-
-
-def _active_cells_for_material(
-    cell_material: np.ndarray,
-    cell_active: np.ndarray,
-    material_idx: int,
-) -> np.ndarray:
-    active = (cell_active != 0) & (cell_material == int(material_idx))
-    return np.nonzero(active)[0].astype(np.int32, copy=False)
-
-
-def _active_cells_outside_cluster_coverage(
-    cell_active: np.ndarray,
-    cell_to_cluster: np.ndarray,
-) -> np.ndarray:
-    outside = (cell_active != 0) & (cell_to_cluster < 0)
-    return np.nonzero(outside)[0].astype(np.int32, copy=False)
-
-
 def _outer_layer_cells(
     cell_grid_xyz: np.ndarray,
     cell_active: np.ndarray,
@@ -649,19 +348,6 @@ def _outer_layer_cells(
         & occupied[x, y, z + 1]
     )
     return active_indices[~interior].astype(np.int32, copy=False)
-
-
-def _intersect_ray_plane(
-    ray_origin: np.ndarray,
-    ray_direction: np.ndarray,
-    plane_origin: np.ndarray,
-    plane_normal: np.ndarray,
-) -> np.ndarray | None:
-    denom = float(np.dot(ray_direction, plane_normal))
-    if abs(denom) < 1.0e-6:
-        return None
-    t = float(np.dot(plane_origin - ray_origin, plane_normal) / denom)
-    return (ray_origin + t * ray_direction).astype(np.float32)
 
 
 def _make_ground_plane_mesh(
@@ -1030,68 +716,6 @@ def _apply_grab_distance_constraints(
     )
 
 
-@wp.kernel(enable_backward=False)
-def _enforce_locked_nodes_kernel(
-    locked_indices: wp.array(dtype=wp.int32),
-    locked_positions: wp.array(dtype=wp.vec3),
-    particle_q: wp.array(dtype=wp.vec3),
-    particle_qd: wp.array(dtype=wp.vec3),
-):
-    tid = wp.tid()
-    particle_idx = locked_indices[tid]
-    if particle_idx < 0:
-        return
-
-    particle_q[particle_idx] = locked_positions[tid]
-    particle_qd[particle_idx] = wp.vec3(0.0, 0.0, 0.0)
-
-
-def _enforce_locked_nodes(
-    state,
-    locked_indices: wp.array,
-    locked_positions: wp.array,
-    locked_count: int,
-    device,
-) -> None:
-    if locked_count <= 0:
-        return
-    wp.launch(
-        kernel=_enforce_locked_nodes_kernel,
-        dim=int(locked_count),
-        inputs=[locked_indices, locked_positions],
-        outputs=[state.particle_q, state.particle_qd],
-        device=device,
-    )
-
-
-def _merge_locked_node_positions(
-    locked_indices_host: np.ndarray,
-    locked_positions_host: np.ndarray,
-    locked_slot_by_node: dict[int, int],
-    locked_count: int,
-    node_indices: np.ndarray,
-    node_positions: np.ndarray,
-) -> int:
-    nodes = np.asarray(node_indices, dtype=np.int32).reshape(-1)
-    positions = np.asarray(node_positions, dtype=np.float32)
-    if positions.shape != (nodes.size, 3):
-        raise ValueError(f"locked node positions shape mismatch: expected {(nodes.size, 3)}, got {positions.shape}")
-
-    for node, position in zip(nodes.tolist(), positions, strict=True):
-        if node < 0:
-            continue
-        slot = locked_slot_by_node.get(node)
-        if slot is None:
-            if locked_count >= locked_indices_host.shape[0]:
-                raise RuntimeError("locked node buffer is full")
-            slot = int(locked_count)
-            locked_slot_by_node[node] = slot
-            locked_indices_host[slot] = node
-            locked_count += 1
-        locked_positions_host[slot] = position
-    return int(locked_count)
-
-
 class _StartupPhase:
     """Context manager that records wall-clock time for one startup phase.
 
@@ -1130,148 +754,6 @@ def _print_startup_report(phases: list[tuple[str, float]], total: float) -> None
     leftover = max(0.0, total - captured)
     if leftover > 0.0:
         print(f"  {'(uncaptured)':<32} {leftover * 1000:8.1f} ms")
-
-
-@dataclass
-class UiState:
-    gravity_enabled: bool = True
-    viewer_log_state: bool = True
-    show_mesh: bool = True
-    show_ground_plane: bool = True
-    show_cell_particles: bool = False
-    show_nodes: bool = False
-    show_mc_vertex_samples: bool = False
-    show_timing_panel: bool = True
-    show_lighting_panel: bool = True
-    timer_panel_snapshot: TimerPanelSnapshot | None = None
-    particle_particle_collisions: bool = False
-    cryo_colored_cells: bool = False
-    stress_colored_surface: bool = False
-    stress_color_scale: float = 4.0
-    cryo_scale_x: float = 1.0
-    cryo_scale_y: float = 1.0
-    cryo_scale_z: float = 1.0
-    slang_procedural_surface: bool = True
-    slang_procedural_world_space: bool = False
-    slang_surface_lighting: bool = True
-    slang_key_light: bool = True
-    slang_fill_light: bool = True
-    slang_ambient_light: bool = False
-    slang_environment_lighting: bool = True
-    slang_debug_view: int = SLANG_SURFACE_DEBUG_VIEW_OFF
-    slang_cryo_mix: float = 0.0
-    slang_state_overlay_strength: float = 1.0
-    slang_procedural_material_scale: float = 1.0
-    slang_environment_map: str = "environments/photo_studio_01_1k.hdr"
-    slang_environment_intensity: float = 1.0
-    slang_environment_background: bool = True
-    slang_environment_rotation_degrees: float = 0.0
-    slang_environment_pitch_degrees: float = -90.0
-    material_names: list[str] | None = None
-    material_stiffness_scale: list[float] | None = None
-    material_visible: list[bool] | None = None
-    material_cuttable: list[bool] | None = None
-    material_locked: list[bool] | None = None
-    material_colors: list[tuple[float, float, float]] | None = None
-    material_colors_revision: int = 0
-    material_colors_revision_pending: bool = False
-    material_procedural: list[dict[str, float]] | None = None
-    material_procedural_revision: int = 0
-    material_procedural_revision_pending: bool = False
-    material_maker_params: list[dict[str, Any]] | None = None
-    material_maker_params_revision: int = 0
-    material_maker_params_revision_pending: bool = False
-    material_maker_parameter_specs: tuple[Any, ...] = ()
-    material_shader_edit_index: int = 1
-    material_dirty: bool = False
-    material_visibility_dirty: bool = False
-    material_visibility_revision: int = 0
-    material_settings_status: str = ""
-    smooth_mesh_normals: bool = True
-    taubin_iterations: int = 2
-    taubin_lambda: float = 1.00
-    taubin_mu: float = -0.34
-    active_cut_fast_surface: bool = True
-    active_cut_smooth_mesh_normals: bool = False
-    active_cut_taubin_iterations: int = 0
-    enable_shape_matching: bool = True
-    shape_matching_mode: int = SHAPE_MATCHING_SOLVE_SCATTER
-    shape_matching_gs_weighting: int = SHAPE_MATCHING_GS_WEIGHT_AVERAGED
-    shape_matching_gs_support_alpha: float = -1.0
-    shape_matching_use_computed_prolongation: bool = True
-    enable_volume_preservation: bool = False
-    volume_preservation_stiffness: float = 0.0
-    volume_preservation_passes: int = 1
-    show_l0_shape_clusters: bool = False
-    show_l1_shape_clusters: bool = False
-    show_l2_shape_clusters: bool = False
-    sleep_l0_shape_matching: bool = False
-    hierarchical_shape_matching_mode: int = HIERARCHICAL_SHAPE_MATCHING_OUTER8
-    l2_hierarchical_shape_matching_mode: int = HIERARCHICAL_SHAPE_MATCHING_OUTER8
-    hierarchical_shape_matching_use_gs: bool = False
-    l2_hierarchical_shape_matching_use_gs: bool = False
-    hierarchical_shape_matching_outer8_prolongation: bool = True
-    l2_hierarchical_shape_matching_outer8_prolongation: bool = True
-    hierarchical_shape_matching_outer8_absolute_projection: bool = False
-    shape_matching_stiffness: float = 1.0
-    shape_matching_relaxation: float = 1.0
-    shape_matching_passes: int = 1
-    hierarchical_shape_matching_stiffness: float = 1.0
-    hierarchical_shape_matching_relaxation: float = 1.0
-    hierarchical_shape_matching_passes: int = 1
-    l2_hierarchical_shape_matching_stiffness: float = 1.0
-    l2_hierarchical_shape_matching_relaxation: float = 1.0
-    l2_hierarchical_shape_matching_passes: int = 1
-    substeps: int = 8
-    iterations: int = 8
-    frame: int = 0
-    active_cells: int = 0
-    deleted_total: int = 0
-    tri_count: int = 0
-    last_pick_cell: int = -1
-    last_deleted_cell: int = -1
-    pending_delete_material: int = -1
-    pending_toggle_material_lock: int = -1
-    pending_peel_outer_layer: bool = False
-    pending_delete_outside_l1_clusters: bool = False
-    pending_delete_outside_l2_clusters: bool = False
-    ray_cut_depth_scale: float = 8.0
-    last_ray_deleted_count: int = 0
-    plane_cut_depth_scale: float = 8.0
-    last_plane_deleted_count: int = 0
-    pending_reset_simulation: bool = False
-    drag_particle: int = -1
-    drag_count: int = 0
-    drag_radius_scale: float = 8.0
-    drag_pull_stiffness: float = 1.0
-    show_grab_constraints: bool = False
-    show_instruments: bool = True
-    instrument_follow_camera: bool = False
-    instrument_collision_enabled: bool = True
-    instrument_collision_use_mc_triangles: bool = False
-    instrument_radius_scale: float = 5.0
-    instrument_collision_relaxation: float = 0.9
-    instrument_contact_iterations: int = 1
-    instrument_max_correction_scale: float = 1.0
-    instrument_tool_modes: list[str] = field(default_factory=lambda: ["diathermy"] * _INSTRUMENT_COUNT)
-    instrument_grasp_counts: list[int] = field(default_factory=lambda: [0] * _INSTRUMENT_COUNT)
-    show_heat_overlay: bool = False
-    diathermy_power: float = 400.0
-    heat_diffusion: float = 0.25
-    heat_cooling: float = 0.10
-    heat_substeps: int = 1
-    heat_min: float = 0.0
-    heat_max: float = 0.0
-    blade_length_scale: float = 8.0
-    blade_radius_scale: float = 0.75
-
-    @property
-    def slang_height_debug(self) -> bool:
-        return self.slang_debug_view == SLANG_SURFACE_DEBUG_VIEW_HEIGHT
-
-    @slang_height_debug.setter
-    def slang_height_debug(self, enabled: bool) -> None:
-        self.slang_debug_view = SLANG_SURFACE_DEBUG_VIEW_HEIGHT if enabled else SLANG_SURFACE_DEBUG_VIEW_OFF
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 from omnisurg.rendering.slang_cryo import (
@@ -18,6 +19,122 @@ from .shape_matching_solver import (
 )
 
 _INSTRUMENT_COUNT = 2
+HDRI_MAP_EXTENSIONS = (".hdr", ".exr")
+HDRI_NONE_LABEL = "None"
+
+
+@dataclass(frozen=True)
+class TimerPanelRow:
+    name: str
+    calls: int
+    avg_ms: float
+    total_ms: float
+    gpu_avg_ms: float | None = None
+
+
+@dataclass(frozen=True)
+class TimerPanelSnapshot:
+    window_secs: float
+    window_frames: int
+    fps: float
+    frame_count: int
+    triangle_count: int
+    rows: tuple[TimerPanelRow, ...]
+
+
+def build_timer_panel_snapshot(
+    timer_stats: dict[str, list[float]],
+    *,
+    window_secs: float,
+    window_frames: int,
+    frame_count: int,
+    triangle_count: int,
+    gpu_stats: dict[str, list[float]] | None = None,
+    max_rows: int = 14,
+) -> TimerPanelSnapshot:
+    """Build an immutable Slang timing-panel snapshot from accumulated timer samples."""
+    rows: list[TimerPanelRow] = []
+    for name, samples in timer_stats.items():
+        if not samples:
+            continue
+        total_ms = float(sum(samples))
+        calls = len(samples)
+        gpu_avg_ms = None
+        if gpu_stats is not None:
+            gpu_samples = gpu_stats.get(name)
+            if gpu_samples:
+                gpu_avg_ms = float(sum(gpu_samples)) / len(gpu_samples)
+        rows.append(
+            TimerPanelRow(
+                name=str(name),
+                calls=calls,
+                avg_ms=total_ms / calls,
+                total_ms=total_ms,
+                gpu_avg_ms=gpu_avg_ms,
+            )
+        )
+
+    rows.sort(key=lambda row: (row.avg_ms, row.total_ms, row.name), reverse=True)
+    limit = max(0, int(max_rows))
+    if limit:
+        rows = rows[:limit]
+    else:
+        rows = []
+    fps = float(window_frames) / float(window_secs) if window_secs > 0.0 and window_frames > 0 else 0.0
+    return TimerPanelSnapshot(
+        window_secs=float(window_secs),
+        window_frames=int(window_frames),
+        fps=fps,
+        frame_count=int(frame_count),
+        triangle_count=int(triangle_count),
+        rows=tuple(rows),
+    )
+
+
+def discover_hdri_maps(folder: str | Path) -> tuple[Path, ...]:
+    root = Path(folder).expanduser()
+    if not root.is_dir():
+        return ()
+    return tuple(
+        sorted(
+            (
+                path
+                for path in root.iterdir()
+                if path.is_file() and path.suffix.lower() in HDRI_MAP_EXTENSIONS
+            ),
+            key=lambda path: path.name.lower(),
+        )
+    )
+
+
+def hdri_map_key(path: str | Path | None) -> str:
+    if not path:
+        return ""
+    return str(Path(path).expanduser().resolve(strict=False))
+
+
+def hdri_map_choice_paths(folder: str | Path, current_path: str | Path | None = None) -> tuple[Path | None, ...]:
+    choices: list[Path | None] = [None]
+    seen = {""}
+    for path in discover_hdri_maps(folder):
+        key = hdri_map_key(path)
+        choices.append(path)
+        seen.add(key)
+    if current_path and hdri_map_key(current_path) not in seen:
+        choices.append(Path(current_path).expanduser())
+    return tuple(choices)
+
+
+def hdri_map_choice_labels(paths: tuple[Path | None, ...]) -> tuple[str, ...]:
+    return tuple(HDRI_NONE_LABEL if path is None else path.name for path in paths)
+
+
+def hdri_map_choice_index(paths: tuple[Path | None, ...], current_path: str | Path | None) -> int:
+    current_key = hdri_map_key(current_path)
+    for idx, path in enumerate(paths):
+        if hdri_map_key(path) == current_key:
+            return idx
+    return 0
 
 
 @dataclass
@@ -31,7 +148,7 @@ class UiState:
     show_mc_vertex_samples: bool = False
     show_timing_panel: bool = True
     show_lighting_panel: bool = True
-    timer_panel_snapshot: Any | None = None
+    timer_panel_snapshot: TimerPanelSnapshot | None = None
     particle_particle_collisions: bool = False
     cryo_colored_cells: bool = False
     stress_colored_surface: bool = False
@@ -162,4 +279,14 @@ class UiState:
         self.slang_debug_view = SLANG_SURFACE_DEBUG_VIEW_HEIGHT if enabled else SLANG_SURFACE_DEBUG_VIEW_OFF
 
 
-__all__ = ["UiState"]
+__all__ = [
+    "TimerPanelRow",
+    "TimerPanelSnapshot",
+    "UiState",
+    "build_timer_panel_snapshot",
+    "discover_hdri_maps",
+    "hdri_map_choice_index",
+    "hdri_map_choice_labels",
+    "hdri_map_choice_paths",
+    "hdri_map_key",
+]
