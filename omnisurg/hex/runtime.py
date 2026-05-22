@@ -15,25 +15,20 @@ import warp as wp
 
 from omnisurg.config import ViewerConfig
 from omnisurg.rendering.bridge import RenderBridge
-from omnisurg.rendering.slang import SLANG_RENDER_BACKENDS
 
 from .data.types import PreparedVolume
 from .haptic import FallbackInput, HapticUnavailable, InputPose, open_haptic_inputs, open_minimou_inputs
 from .kernels.cell_render import update_cell_render_state
 from .kernels.marching_cubes import allocate_mc_buffers, bake_vertex_uv3, upload_mc_tables
 from .render import SurfaceRenderer
+from .runtime_config import INSTRUMENT_COUNT as _INSTRUMENT_COUNT
+from .runtime_config import add_hex_runtime_arguments, normalize_hex_runtime_args
 from .setup import (
-    GS_WEIGHTING_BY_NAME as _GS_WEIGHTING_BY_NAME,
-    HIERARCHICAL_MODE_BY_NAME as _HIERARCHICAL_MODE_BY_NAME,
-    L0_SHAPE_MATCHING_MODE_BY_NAME as _L0_SHAPE_MATCHING_MODE_BY_NAME,
-    L2_HIERARCHICAL_MODE_BY_NAME as _L2_HIERARCHICAL_MODE_BY_NAME,
     StartupPhase as _StartupPhase,
     build_hex_core_setup,
     print_startup_report as _print_startup_report,
 )
 from .shape_matching_solver import HexShapeMatchingSolver
-
-_INSTRUMENT_COUNT = 2
 
 
 def _apply_gravity(model, enabled: bool, gravity_on: np.ndarray, gravity_off: np.ndarray) -> None:
@@ -61,114 +56,7 @@ def _open_instrument_inputs(backend: str, device_name: str, left_device_name: st
 
 def _build_lifecycle_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(add_help=False)
-    parser.add_argument("--atlas", type=str, default="")
-    parser.add_argument("--atlas-pad", type=int, default=0)
-    parser.add_argument("--cryo-texture", type=str, default="")
-    parser.add_argument("--cryo-renderer", choices=("volume", "atlas", "off"), default="volume")
-    parser.add_argument("--viewer", choices=("gl", "headless", *sorted(SLANG_RENDER_BACKENDS)), default="gl")
-    parser.add_argument("--usd", type=str, default=None)
-    parser.add_argument("--frames", type=int, default=None)
-    parser.add_argument("--fps", type=int, default=60)
-    parser.add_argument("--timer-report-secs", type=float, default=0.0)
-    parser.add_argument("--timer-sync", action=argparse.BooleanOptionalAction, default=False)
-    parser.add_argument("--timer-gpu-activities", action=argparse.BooleanOptionalAction, default=False)
-    parser.add_argument("--cut-debug-validate", action="store_true")
-    parser.add_argument("--exit-after-init", action="store_true")
-    parser.add_argument("--cuda-graph", action=argparse.BooleanOptionalAction, default=True)
-    parser.add_argument("--input-backend", choices=("fallback", "openhaptics", "minimou", "off"), default="fallback")
-    parser.add_argument("--device-name", default="Default Device")
-    parser.add_argument("--left-device-name", default="Left Device")
-    parser.add_argument("--position-scale", type=float, default=0.001)
-    parser.add_argument("--device-x-offsets", type=float, nargs=2, default=(-0.17, 0.17))
-    parser.add_argument("--instrument-radius", "--instrument-radius-scale", dest="instrument_radius_scale", type=float, default=5.0)
-    parser.add_argument("--instrument-collision-relaxation", type=float, default=0.9)
-    parser.add_argument("--instrument-contact-iterations", type=int, default=1)
-    parser.add_argument("--instrument-max-correction-scale", type=float, default=1.0)
-    parser.add_argument("--show-instruments", action=argparse.BooleanOptionalAction, default=True)
-    parser.add_argument("--instrument-follow-camera", action=argparse.BooleanOptionalAction, default=None)
-    parser.add_argument("--instrument-tool-modes", nargs=_INSTRUMENT_COUNT, default=None)
-    parser.add_argument("--viewer-log-state", action=argparse.BooleanOptionalAction, default=True)
-    parser.add_argument("--gl-interop", action=argparse.BooleanOptionalAction, default=True)
-    parser.add_argument("--size", type=int, default=0)
-    parser.add_argument("--voxel", type=float, default=0.005)
-    parser.add_argument("--substeps", type=int, default=8)
-    parser.add_argument("--iterations", type=int, default=8)
-    parser.add_argument("--drop-height", type=float, default=0.04)
-    parser.add_argument("--ground-height", type=float, default=0.0)
-    parser.add_argument("--global-scale", type=float, default=1.0)
-    parser.add_argument("--gravity-on", action=argparse.BooleanOptionalAction, default=True)
-    parser.add_argument("--particle-radius-scale", type=float, default=0.18)
-    parser.add_argument("--particle-particle-collisions", action=argparse.BooleanOptionalAction, default=False)
-    parser.add_argument("--shape-matching-stiffness", type=float, default=1.0)
-    parser.add_argument("--shape-matching-relaxation", type=float, default=1.0)
-    parser.add_argument("--shape-matching-passes", type=int, default=1)
-    parser.add_argument("--shape-matching-mode", choices=tuple(_L0_SHAPE_MATCHING_MODE_BY_NAME), default=None)
-    parser.add_argument("--shape-matching-gather", action=argparse.BooleanOptionalAction, default=False)
-    parser.add_argument(
-        "--shape-matching-gs-weighting",
-        choices=tuple(_GS_WEIGHTING_BY_NAME),
-        default="averaged",
-    )
-    parser.add_argument("--shape-matching-gs-support-alpha", type=float, default=-1.0)
-    parser.add_argument("--shape-matching-computed-prolongation", action=argparse.BooleanOptionalAction, default=True)
-    parser.add_argument("--volume-preservation", action=argparse.BooleanOptionalAction, default=False)
-    parser.add_argument("--volume-preservation-stiffness", type=float, default=0.0)
-    parser.add_argument("--volume-preservation-passes", type=int, default=1)
-    parser.add_argument("--sleep-l0-shape-matching", action=argparse.BooleanOptionalAction, default=False)
-    parser.add_argument("--sleep-l0-wake-halo-blocks", type=int, default=1)
-    parser.add_argument(
-        "--hierarchical-shape-matching",
-        choices=tuple(_HIERARCHICAL_MODE_BY_NAME),
-        default="outer8",
-    )
-    parser.add_argument("--hierarchical-shape-matching-stiffness", type=float, default=1.0)
-    parser.add_argument("--hierarchical-shape-matching-relaxation", type=float, default=1.0)
-    parser.add_argument("--hierarchical-shape-matching-passes", type=int, default=1)
-    parser.add_argument("--hierarchical-shape-matching-gs", action=argparse.BooleanOptionalAction, default=False)
-    parser.add_argument("--hierarchical-shape-matching-outer8-prolongation", action=argparse.BooleanOptionalAction, default=True)
-    parser.add_argument("--hierarchical-shape-matching-outer8-absolute-projection", action=argparse.BooleanOptionalAction, default=False)
-    parser.add_argument(
-        "--l2-hierarchical-shape-matching",
-        choices=tuple(_L2_HIERARCHICAL_MODE_BY_NAME),
-        default="outer8",
-    )
-    parser.add_argument("--l2-hierarchical-shape-matching-stiffness", type=float, default=1.0)
-    parser.add_argument("--l2-hierarchical-shape-matching-relaxation", type=float, default=1.0)
-    parser.add_argument("--l2-hierarchical-shape-matching-passes", type=int, default=1)
-    parser.add_argument("--l2-hierarchical-shape-matching-gs", action=argparse.BooleanOptionalAction, default=False)
-    parser.add_argument("--l2-hierarchical-shape-matching-outer8-prolongation", action=argparse.BooleanOptionalAction, default=True)
-    parser.add_argument("--node-render-radius-scale", type=float, default=0.22)
-    parser.add_argument("--cell-render-radius-scale", type=float, default=0.5)
-    parser.add_argument("--drag-radius-scale", type=float, default=8.0)
-    parser.add_argument("--drag-pull-stiffness", type=float, default=1.0)
-    parser.add_argument("--show-grab-constraints", action=argparse.BooleanOptionalAction, default=False)
-    parser.add_argument("--plane-cut-depth-scale", type=float, default=8.0)
-    parser.add_argument("--ray-cut-depth-scale", type=float, default=8.0)
-    parser.add_argument("--render-particles", action=argparse.BooleanOptionalAction, default=False)
-    parser.add_argument("--overlay-line-width", type=float, default=0.00035)
-    parser.add_argument("--show-heat-overlay", action=argparse.BooleanOptionalAction, default=False)
-    parser.add_argument("--diathermy-power", type=float, default=400.0)
-    parser.add_argument("--heat-diffusion", type=float, default=0.25)
-    parser.add_argument("--heat-cooling", type=float, default=0.10)
-    parser.add_argument("--heat-substeps", type=int, default=1)
-    parser.add_argument("--blade-length", "--blade-length-scale", dest="blade_length_scale", type=float, default=8.0)
-    parser.add_argument("--blade-radius", "--blade-radius-scale", dest="blade_radius_scale", type=float, default=0.75)
-    parser.add_argument("--slang-procedural-material", type=str, default="")
-    parser.add_argument("--slang-procedural-scale", type=float, default=1.0)
-    parser.add_argument("--slang-procedural-hot-reload", action=argparse.BooleanOptionalAction, default=True)
-    parser.add_argument("--slang-environment-map", type=str, default="environments/photo_studio_01_1k.hdr")
-    parser.add_argument("--slang-environment-intensity", type=float, default=1.0)
-    parser.add_argument("--slang-environment-background", action=argparse.BooleanOptionalAction, default=True)
-    parser.add_argument("--slang-environment-rotation-deg", type=float, default=0.0)
-    parser.add_argument("--slang-environment-pitch-deg", type=float, default=-90.0)
-    parser.add_argument("--color-by-segmentation-map", action=argparse.BooleanOptionalAction, default=False)
-    parser.add_argument("--color-by-stress", action=argparse.BooleanOptionalAction, default=False)
-    parser.add_argument("--stress-color-scale", type=float, default=30.0)
-    parser.add_argument("--active-cut-fast-surface", action=argparse.BooleanOptionalAction, default=True)
-    parser.add_argument("--active-cut-smooth-normals", action=argparse.BooleanOptionalAction, default=False)
-    parser.add_argument("--active-cut-taubin-iterations", type=int, default=0)
-    parser.add_argument("--atlas-tile-size", type=int, default=8)
-    parser.add_argument("--segmentation-panel-settings", type=str, default="segmentation_panel_settings.json")
+    add_hex_runtime_arguments(parser)
     return parser
 
 
@@ -233,17 +121,11 @@ class HexRuntimeSession:
     def init(self) -> None:
         if self._model is not None:
             return
+        normalize_hex_runtime_args(self.args)
 
         phases: list[tuple[str, float]] = []
         startup_t0 = time.perf_counter()
         self._start_wall = time.time()
-
-        if self.args.usd is not None and self.args.frames is None:
-            raise SystemExit("--frames is required when using --usd")
-        if self.args.usd is not None and str(self.args.viewer) in SLANG_RENDER_BACKENDS:
-            raise SystemExit("--viewer slang cannot be combined with --usd")
-        if self.args.instrument_follow_camera is None:
-            self.args.instrument_follow_camera = str(self.args.input_backend) == "fallback"
 
         if self.args.frames is None:
             self._max_frames = 1 if str(self.args.viewer) == "headless" else None
@@ -477,7 +359,9 @@ class HexAppLauncher:
     def run(self, argv: Sequence[str] | None = None) -> int:
         args = list(self.argv if argv is None else argv)
         parser = _build_lifecycle_parser()
-        session = HexRuntimeSession(self.volume, parser.parse_args(args))
+        parsed_args = parser.parse_args(args)
+        normalize_hex_runtime_args(parsed_args, parser=parser)
+        session = HexRuntimeSession(self.volume, parsed_args)
         try:
             session.init()
             while session.is_running():
@@ -520,7 +404,9 @@ class HexRuntime:
         if self._initialized:
             return
         parser = _build_lifecycle_parser()
-        session = HexRuntimeSession(self.launcher.volume, parser.parse_args(list(self.launcher.argv)))
+        parsed_args = parser.parse_args(list(self.launcher.argv))
+        normalize_hex_runtime_args(parsed_args, parser=parser)
+        session = HexRuntimeSession(self.launcher.volume, parsed_args)
         self._session = session
         session.init()
         self.exit_after_init = bool(session.exit_after_init)
