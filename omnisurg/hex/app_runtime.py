@@ -22,6 +22,7 @@ import dataclasses
 import json
 import sys
 import time
+from collections.abc import Sequence
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -145,6 +146,7 @@ from omnisurg.hex.data.crop import (  # noqa: E402
     crop_aligned_texture_rgb,
     crop_labels_to_visible_classes,
 )
+from omnisurg.hex.data.types import PreparedVolume  # noqa: E402
 
 ACTIVE_BIT = int(ParticleFlags.ACTIVE)
 HIERARCHICAL_MODE_BY_NAME = {
@@ -168,8 +170,6 @@ GS_WEIGHTING_BY_NAME = {
     "full": SHAPE_MATCHING_GS_WEIGHT_FULL,
 }
 
-_OMNISURG_PREPARED_VOLUME = None
-_OMNISURG_PREPARED_TEXTURE_RGB = None
 _INSTRUMENT_COUNT = 2
 _INSTRUMENT_TRIGGER_THRESHOLD = 0.1
 _MINIMOU_CUT_THRESHOLD = _INSTRUMENT_TRIGGER_THRESHOLD
@@ -756,7 +756,15 @@ def _print_startup_report(phases: list[tuple[str, float]], total: float) -> None
         print(f"  {'(uncaptured)':<32} {leftover * 1000:8.1f} ms")
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(argv: Sequence[str] | None = None) -> int:
+    return _run_app(argv, prepared_volume=None)
+
+
+def run_prepared_volume(volume: PreparedVolume, argv: Sequence[str] | None = None) -> int:
+    return _run_app([] if argv is None else list(argv), prepared_volume=volume)
+
+
+def _run_app(argv: Sequence[str] | None = None, *, prepared_volume: PreparedVolume | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--atlas", type=str, default="Digimouse/atlas/atlas")
     parser.add_argument(
@@ -1210,7 +1218,7 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Print the startup phase breakdown and exit before entering the frame loop.",
     )
-    args = parser.parse_args(argv)
+    args = parser.parse_args(None if argv is None else list(argv))
     if args.slang_procedural_material and args.viewer == "gl":
         args.viewer = "slang"
     slang_viewer_requested = is_slang_backend(args.viewer)
@@ -1240,17 +1248,18 @@ def main(argv: list[str] | None = None) -> int:
     startup_phases: list[tuple[str, float]] = []
     startup_t0 = time.perf_counter()
     visible_class_crop: VisibleClassCrop | None = None
+    prepared_texture_rgb = None if prepared_volume is None else prepared_volume.texture_rgb
 
     with _StartupPhase("atlas_load", startup_phases):
-        if _OMNISURG_PREPARED_VOLUME is not None:
-            atlas = _OMNISURG_PREPARED_VOLUME.to_hex_atlas()
-            base_origin = getattr(_OMNISURG_PREPARED_VOLUME, "origin", (0.0, 0.0, 0.0))
+        if prepared_volume is not None:
+            atlas = prepared_volume.to_hex_atlas()
+            base_origin = prepared_volume.origin
             origin = (
                 float(base_origin[0]),
                 float(base_origin[1]),
                 float(base_origin[2]) + float(args.drop_height),
             )
-            scene_label = str(getattr(_OMNISURG_PREPARED_VOLUME, "metadata", {}).get("scene_label", "OmniSurg Hex"))
+            scene_label = str(prepared_volume.metadata.get("scene_label", "OmniSurg Hex"))
         elif args.size > 0:
             atlas = _make_block_atlas(args.size, args.voxel)
             block_extent = args.size * args.voxel
@@ -1268,7 +1277,7 @@ def main(argv: list[str] | None = None) -> int:
             origin = (0.0, 0.0, args.drop_height)
             scene_label = f"Digimouse --downsample {args.downsample}"
 
-        if _OMNISURG_PREPARED_VOLUME is None and args.crop_visible_classes is not None:
+        if prepared_volume is None and args.crop_visible_classes is not None:
             atlas, visible_class_crop = _crop_hex_atlas_to_visible_classes(
                 atlas,
                 args.crop_visible_classes,
@@ -2384,8 +2393,8 @@ def main(argv: list[str] | None = None) -> int:
     cryo_texture_3d = None
     cryo_volume_direct = False
     with _StartupPhase("cryo_texture_load", startup_phases, sync_device=dev):
-        if cryo_surface_renderer != "off" and _OMNISURG_PREPARED_TEXTURE_RGB is not None:
-            cryo_texture_host, cryo_texture_3d = _upload_rgb_texture(_OMNISURG_PREPARED_TEXTURE_RGB, dev)
+        if cryo_surface_renderer != "off" and prepared_texture_rgb is not None:
+            cryo_texture_host, cryo_texture_3d = _upload_rgb_texture(prepared_texture_rgb, dev)
             if cryo_surface_renderer == "volume":
                 if slang_viewer_requested:
                     cryo_volume_direct = True

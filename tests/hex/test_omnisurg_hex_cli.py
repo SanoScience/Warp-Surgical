@@ -5,6 +5,8 @@ import sys
 
 import numpy as np
 
+from omnisurg.hex import app_runtime
+from omnisurg.hex.app import OmniSurgHexApp
 from omnisurg.hex.cli import build_parser
 from omnisurg.hex.data.types import PreparedVolume
 from omnisurg.hex.materials import DEFAULT_MATERIALS, MaterialTable
@@ -16,6 +18,31 @@ def test_unified_hex_parser_prog():
     parser = build_parser()
 
     assert parser.prog == "omnisurg hex"
+
+
+def test_app_run_passes_volume_and_argv_to_prepared_entrypoint(monkeypatch):
+    volume = PreparedVolume(
+        labels=np.ones((2, 2, 2), dtype=np.uint8),
+        voxel_size_m=0.005,
+        materials=MaterialTable(DEFAULT_MATERIALS),
+        class_map={0: "background", 1: "synthetic_block"},
+        texture_rgb=np.zeros((2, 2, 2, 3), dtype=np.uint8),
+    )
+    argv = ("--viewer", "headless", "--frames", "1")
+    calls = []
+
+    def fake_run_prepared_volume(passed_volume, passed_argv=None):
+        legacy_prefix = "_OMNISURG_" + "PREPARED"
+        assert not any(name.startswith(legacy_prefix) for name in vars(app_runtime))
+        calls.append((passed_volume, passed_argv))
+        return 17
+
+    monkeypatch.setattr(app_runtime, "run_prepared_volume", fake_run_prepared_volume)
+
+    assert OmniSurgHexApp(volume).run(argv) == 17
+    assert len(calls) == 1
+    assert calls[0][0] is volume
+    assert calls[0][1] is argv
 
 
 def test_python_module_hex_synthetic_headless_exit_after_init():

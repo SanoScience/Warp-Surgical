@@ -18,12 +18,4 @@ class OmniSurgHexApp:
     def run(self, argv: Sequence[str] | None = None) -> int:
         from . import app_runtime
 
-        old_volume = app_runtime._OMNISURG_PREPARED_VOLUME
-        old_texture = app_runtime._OMNISURG_PREPARED_TEXTURE_RGB
-        app_runtime._OMNISURG_PREPARED_VOLUME = self.volume
-        app_runtime._OMNISURG_PREPARED_TEXTURE_RGB = self.volume.texture_rgb
-        try:
-            return int(app_runtime.main(list(argv or ())))
-        finally:
-            app_runtime._OMNISURG_PREPARED_VOLUME = old_volume
-            app_runtime._OMNISURG_PREPARED_TEXTURE_RGB = old_texture
+        return int(app_runtime.run_prepared_volume(self.volume, argv))
