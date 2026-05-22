@@ -12,6 +12,12 @@ import numpy as np
 import warp as wp
 
 from omnisurg.config import ViewerConfig
+from omnisurg.rendering.slang_cryo import (
+    MATERIAL_MAKER_SLANG_WORK_DIR,
+    SlangCryoMixin,
+    _close_slang_resource,
+    material_source_changed,
+)
 
 
 SLANG_RENDER_BACKENDS = frozenset({"slang", "slang-d3d12", "slang-vulkan", "slang-vk"})
@@ -902,7 +908,7 @@ class _SlangImmediateUi:
         del args, kwargs
 
 
-class SlangRenderer:
+class SlangRenderer(SlangCryoMixin):
     """SlangPy raster renderer backed by graphics-owned shared buffers.
 
     D3D12/Vulkan own the vertex buffers. SlangPy exposes those buffers through
@@ -910,6 +916,7 @@ class SlangRenderer:
     """
 
     supports_implot = False
+    supports_mouse_interaction = True
 
     def __init__(self, viewer_config: ViewerConfig, model: Any, device: wp.context.Device):
         if not device.is_cuda:
@@ -924,6 +931,14 @@ class SlangRenderer:
         self._cuda = _cuda_driver()
         self._frame_id = 0
         self._closed = False
+        self._paused = True
+        self.show_ui = True
+        self.show_particles = False
+        self.renderer = self
+        self.objects: dict[str, Any] = {}
+        self.ui = SimpleNamespace(is_available=True, is_capturing=self.is_ui_capturing)
+        self._last_submit_id: int | None = None
+        self._last_submit_frame = -1
         self._surface_texture = None
         self._command_encoder = None
         self._pass_encoder = None
@@ -948,10 +963,13 @@ class SlangRenderer:
         self._shared_positions: dict[tuple[int, int], _SharedPositionBuffer] = {}
         self._shared_vertex_colors: dict[tuple[int, int], _SharedVertexColorBuffer] = {}
         self._meshes: dict[str, _MeshResource] = {}
+        self._shared_buffers: dict[tuple[int, int, str, int], Any] = {}
+        self._host_index_buffers: dict[tuple[int, int], Any] = {}
         self._materials: dict[tuple[str, ...], _MaterialResource] = {}
         self._default_textures: dict[tuple[str, bool], Any] = {}
         self._material_sampler = None
         self._post_sampler = None
+        self._linear_sampler = None
         self._lens_dirt_textures: dict[int, Any] = {}
         self._tissue_material_params = TissueMaterialParams()
         self._postprocess_params = PostProcessParams()
@@ -962,6 +980,7 @@ class SlangRenderer:
         self._ui_adapter: _SlangImmediateUi | None = None
         self._ui_windows: dict[str, Any] = {}
         self._ui_enabled = True
+        self._ui_capturing = False
         self._ui_callbacks: dict[str, list[Callable[[Any], None]]] = {
             "side": [],
             "stats": [],
@@ -969,6 +988,7 @@ class SlangRenderer:
             "panel": [],
         }
         self._failed_ui_callbacks: set[tuple[str, int]] = set()
+        self._key_handler: dict[int, bool] = {}
         self._on_key_press_callback: Callable[[int, int], None] | None = None
         self._on_key_release_callback: Callable[[int, int], None] | None = None
         self._on_mouse_motion_callback: Callable[..., None] | None = None
@@ -978,11 +998,55 @@ class SlangRenderer:
         self._mouse_buttons = 0
         self._mouse_pos: tuple[float, float] | None = None
         self._ui_mouse_active = False
-        self._environment_path: Path | None = None
-        self._environment_intensity = 1.0
-        self._environment_background_enabled = False
-        self._environment_rotation_degrees = 0.0
-        self._environment_pitch_degrees = 0.0
+        self._procedural_material_path = (
+            Path(viewer_config.slang_procedural_material_path).expanduser().resolve()
+            if viewer_config.slang_procedural_material_path
+            else None
+        )
+        self._procedural_material_scale = max(float(viewer_config.slang_procedural_material_scale), 0.000001)
+        self._procedural_material_hot_reload = bool(viewer_config.slang_procedural_material_hot_reload)
+        self._procedural_material_info = None
+        self._procedural_material_textures: dict[str, Any] = {}
+        self._procedural_material_reload_error: str | None = None
+        self._procedural_material_reload_status = ""
+        self._external_material_reload_executor = None
+        self._external_material_reload_future = None
+        self._cryo_texture = None
+        self._cryo_source_key: tuple[int, tuple[int, ...], str] | None = None
+        self._neutral_cryo_texture = None
+        self._fallback_shader_buffers: dict[str, Any] = {}
+        self._material_color_buffer = None
+        self._material_color_buffer_key: tuple[Any, ...] | None = None
+        self._material_color_buffer_ring: list[Any] = []
+        self._material_color_buffer_shape_key: tuple[Any, ...] | None = None
+        self._material_color_buffer_index = -1
+        self._procedural_param_buffer = None
+        self._procedural_param_buffer_key: tuple[Any, ...] | None = None
+        self._procedural_param_buffer_ring: list[Any] = []
+        self._procedural_param_buffer_shape_key: tuple[Any, ...] | None = None
+        self._procedural_param_buffer_index = -1
+        self._material_maker_param_buffer = None
+        self._material_maker_param_buffer_key: tuple[Any, ...] | None = None
+        self._material_maker_param_buffer_ring: list[Any] = []
+        self._material_maker_param_buffer_shape_key: tuple[Any, ...] | None = None
+        self._material_maker_param_buffer_index = -1
+        self._environment_path: Path | None = (
+            Path(viewer_config.slang_environment_path).expanduser().resolve(strict=False)
+            if viewer_config.slang_environment_path
+            else None
+        )
+        self._environment_intensity = max(float(viewer_config.slang_environment_intensity), 0.0)
+        self._environment_background_enabled = bool(viewer_config.slang_environment_background)
+        self._environment_rotation_degrees = float(viewer_config.slang_environment_rotation_degrees)
+        self._environment_pitch_degrees = float(viewer_config.slang_environment_pitch_degrees)
+        self._environment_texture = None
+        self._environment_texture_key: tuple[Path, int] | None = None
+        self._neutral_environment_texture = None
+        self._retired_shader_buffers: list[Any] = []
+        self._point_sphere_vertex_buffer = None
+        self._point_sphere_index_buffer = None
+        self._point_sphere_index_count = 0
+        self._time = 0.0
         self._camera_key_state: set[str] = set()
         self._camera_fast_modifier = False
         self._camera_slow_modifier = False
@@ -994,9 +1058,13 @@ class SlangRenderer:
 
         device_type = self._device_type_from_backend(viewer_config.backend)
         self._device_type = device_type
+        include_paths = [SLANG_SHADER_DIR, MATERIAL_MAKER_SLANG_WORK_DIR]
+        if self._procedural_material_path is not None:
+            include_paths.append(self._procedural_material_path.parent)
+
         self._device = self._spy.create_device(
             device_type,
-            include_paths=[SLANG_SHADER_DIR],
+            include_paths=include_paths,
             enable_cuda_interop=True,
             existing_device_handles=self._spy.get_cuda_current_context_native_handles(),
         )
@@ -1026,6 +1094,7 @@ class SlangRenderer:
         self._viewport = self._spy.Viewport.from_size(self._window.width, self._window.height)
         self._scissor = self._spy.ScissorRect.from_size(self._window.width, self._window.height)
 
+        self._viewer_config_world_up = tuple(float(v) for v in getattr(viewer_config, "slang_world_up", (0.0, 1.0, 0.0)))
         self._init_ui()
         self._window.on_keyboard_event = self._on_keyboard_event
         self._window.on_mouse_event = self._on_mouse_event
@@ -1051,7 +1120,8 @@ class SlangRenderer:
         eye = np.array(camera_pos, dtype=np.float32)
         self._camera_target = target.astype(np.float32)
         self._camera_scene_radius = float(max(radius, 0.25))
-        self._camera_world_up = np.array([0.0, 1.0, 0.0], dtype=np.float32)
+        world_up = np.asarray(getattr(self, "_viewer_config_world_up", (0.0, 1.0, 0.0)), dtype=np.float32).reshape(3)
+        self._camera_world_up = _normalize_or(world_up, (0.0, 1.0, 0.0))
         self._camera_default_pos = eye.copy()
         self._camera_default_target = self._camera_target.copy()
         self._set_camera_look_at(eye, self._camera_target)
@@ -1079,6 +1149,33 @@ class SlangRenderer:
 
     def _reset_camera(self) -> None:
         self._set_camera_look_at(self._camera_default_pos, self._camera_default_target)
+
+    def set_model(self, model: Any) -> None:
+        target, radius = _camera_fit_from_model(model)
+        self._camera_target = target.astype(np.float32)
+        self._camera_scene_radius = float(max(radius, 0.25))
+        self._camera_default_target = self._camera_target.copy()
+        self._set_camera_look_at(self._camera_pos, self._camera_target)
+
+    def set_camera(self, pos=None, pitch: float = 0.0, yaw: float = 0.0, **_kwargs) -> None:
+        del pitch, yaw
+        if pos is None:
+            return
+        try:
+            eye = np.asarray((float(pos[0]), float(pos[1]), float(pos[2])), dtype=np.float32)
+        except Exception:
+            eye = np.asarray(pos, dtype=np.float32).reshape(3)
+        self._camera_default_pos = eye.copy()
+        self._set_camera_look_at(eye, self._camera_target)
+
+    def log_state(self, *_args, **_kwargs) -> None:
+        return
+
+    def is_paused(self) -> bool:
+        return bool(getattr(self, "_paused", False))
+
+    def is_ui_capturing(self) -> bool:
+        return bool(getattr(self, "_ui_capturing", False) or getattr(self, "_ui_mouse_active", False))
 
     def _rotate_vector(self, value: np.ndarray, axis: np.ndarray, angle: float) -> np.ndarray:
         axis = _normalize_or(axis, (0.0, 1.0, 0.0))
@@ -1164,6 +1261,9 @@ class SlangRenderer:
         self._last_camera_update_time = now
         self._apply_keyboard_camera_motion(dt)
 
+    def _update_keyboard_camera_motion(self) -> None:
+        self._update_camera_motion()
+
     def _init_pipeline(self) -> None:
         self._flat_program = self._device.load_program(
             "omnisurg_mesh.slang",
@@ -1172,6 +1272,14 @@ class SlangRenderer:
         self._point_program = self._device.load_program(
             "omnisurg_mesh.slang",
             ["point_vertex_main", "point_fragment_main"],
+        )
+        self._hex_flat_program = self._device.load_program(
+            "hex_flat.slang",
+            ["vertex_main", "fragment_main"],
+        )
+        self._point_sphere_program = self._device.load_program(
+            "hex_flat.slang",
+            ["point_sphere_vertex_main", "point_sphere_fragment_main"],
         )
         self._tissue_program = self._device.load_program(
             "omnisurg_tissue.slang",
@@ -1184,6 +1292,10 @@ class SlangRenderer:
         self._present_program = self._device.load_program(
             "omnisurg_present.slang",
             ["vertex_main", "fragment_main"],
+        )
+        self._background_program = self._device.load_program(
+            "hex_present.slang",
+            ["background_vertex_main", "background_fragment_main"],
         )
         self._fxaa_program = self._device.load_program(
             "omnisurg_fxaa.slang",
@@ -1241,6 +1353,28 @@ class SlangRenderer:
             ],
             vertex_streams=[{"stride": 12}],
         )
+        self._hex_flat_input_layout = self._device.create_input_layout(
+            input_elements=[
+                {
+                    "semantic_name": "POSITION",
+                    "semantic_index": 0,
+                    "format": self._spy.Format.rgb32_float,
+                    "buffer_slot_index": 0,
+                }
+            ],
+            vertex_streams=[{"stride": 12}],
+        )
+        self._point_sphere_input_layout = self._device.create_input_layout(
+            input_elements=[
+                {
+                    "semantic_name": "POSITION",
+                    "semantic_index": 0,
+                    "format": self._spy.Format.rgb32_float,
+                    "buffer_slot_index": 0,
+                }
+            ],
+            vertex_streams=[{"stride": 12}],
+        )
         self._tissue_input_layout = self._device.create_input_layout(
             input_elements=[
                 {
@@ -1270,6 +1404,35 @@ class SlangRenderer:
             ],
             vertex_streams=[{"stride": 12}, {"stride": 12}, {"stride": 8}, {"stride": 16}],
         )
+        self._cryo_input_layout = self._device.create_input_layout(
+            input_elements=[
+                {
+                    "semantic_name": "POSITION",
+                    "semantic_index": 0,
+                    "format": self._spy.Format.rgb32_float,
+                    "buffer_slot_index": 0,
+                },
+                {
+                    "semantic_name": "NORMAL",
+                    "semantic_index": 0,
+                    "format": self._spy.Format.rgb32_float,
+                    "buffer_slot_index": 1,
+                },
+                {
+                    "semantic_name": "TEXCOORD",
+                    "semantic_index": 0,
+                    "format": self._spy.Format.rgb32_float,
+                    "buffer_slot_index": 2,
+                },
+                {
+                    "semantic_name": "TEXCOORD",
+                    "semantic_index": 1,
+                    "format": self._spy.Format.rgb32_float,
+                    "buffer_slot_index": 3,
+                },
+            ],
+            vertex_streams=[{"stride": 12}, {"stride": 12}, {"stride": 12}, {"stride": 12}],
+        )
         common = {
             "targets": [{"format": self._scene_color_format}],
             "depth_stencil": {
@@ -1280,6 +1443,10 @@ class SlangRenderer:
             },
             "rasterizer": {"cull_mode": self._spy.CullMode.none},
         }
+        self._surface_pipeline_common = common
+        self._cryo_program = None
+        self._cryo_pipeline = None
+        self.reload_external_material(force=True, raise_on_error=True)
         self._flat_triangle_pipeline = self._device.create_render_pipeline(
             program=self._flat_program,
             input_layout=self._flat_input_layout,
@@ -1287,11 +1454,25 @@ class SlangRenderer:
             label="omnisurg-flat-triangles",
             **common,
         )
+        self._flat_pipeline = self._device.create_render_pipeline(
+            program=self._hex_flat_program,
+            input_layout=self._hex_flat_input_layout,
+            primitive_topology=self._spy.PrimitiveTopology.triangle_list,
+            label="omnisurg-hex-flat",
+            **common,
+        )
         self._point_pipeline = self._device.create_render_pipeline(
             program=self._point_program,
             input_layout=self._point_input_layout,
             primitive_topology=self._spy.PrimitiveTopology.point_list,
             label="omnisurg-points",
+            **common,
+        )
+        self._point_sphere_pipeline = self._device.create_render_pipeline(
+            program=self._point_sphere_program,
+            input_layout=self._point_sphere_input_layout,
+            primitive_topology=self._spy.PrimitiveTopology.triangle_list,
+            label="omnisurg-point-spheres",
             **common,
         )
         self._tissue_triangle_pipeline = self._device.create_render_pipeline(
@@ -1324,6 +1505,14 @@ class SlangRenderer:
             targets=[{"format": self._color_format}],
             rasterizer={"cull_mode": self._spy.CullMode.none},
             label="omnisurg-present",
+        )
+        self._background_pipeline = self._device.create_render_pipeline(
+            program=self._background_program,
+            input_layout=None,
+            primitive_topology=self._spy.PrimitiveTopology.triangle_list,
+            targets=[{"format": self._scene_color_format}],
+            rasterizer={"cull_mode": self._spy.CullMode.none},
+            label="omnisurg-environment-background",
         )
         bloom_pipeline_common = {
             "input_layout": None,
@@ -1402,7 +1591,6 @@ class SlangRenderer:
             self._ui_windows[key] = window
         else:
             window.title = str(title)
-            window.position = spy_position
             window.size = spy_size
             window.visible = True
         return window
@@ -1411,7 +1599,7 @@ class SlangRenderer:
         if key is None:
             return None
 
-        name = str(getattr(key, "name", "")).lower()
+        name = str(getattr(key, "name", "")).lower().replace("-", "_")
         fallback = getattr(key, "value", None)
         fallback_symbol = int(fallback) if fallback is not None else None
 
@@ -1438,6 +1626,21 @@ class SlangRenderer:
                 "page_down": "PAGEDOWN",
                 "home": "HOME",
                 "end": "END",
+                "ctrl": "LCTRL",
+                "control": "LCTRL",
+                "left_ctrl": "LCTRL",
+                "left_control": "LCTRL",
+                "right_ctrl": "RCTRL",
+                "right_control": "RCTRL",
+                "alt": "LALT",
+                "option": "LALT",
+                "left_alt": "LALT",
+                "left_option": "LALT",
+                "right_alt": "RALT",
+                "right_option": "RALT",
+                "shift": "LSHIFT",
+                "left_shift": "LSHIFT",
+                "right_shift": "RSHIFT",
             }
             mapped = key_map.get(name)
             if mapped is not None:
@@ -1523,11 +1726,17 @@ class SlangRenderer:
                 return int(mouse.LEFT)
             if button_name == "right":
                 return int(mouse.RIGHT)
-            if button_name == "middle":
+            if button_name in {"middle", "center"}:
                 return int(mouse.MIDDLE)
         except Exception:
             pass
-        return 0
+        return {"left": 1, "right": 4, "middle": 2, "center": 2}.get(button_name, 0)
+
+    def _left_mouse_mask(self) -> int:
+        return self._pyglet_mouse_button("left")
+
+    def is_key_down(self, symbol: int) -> bool:
+        return bool(getattr(self, "_key_handler", {}).get(int(symbol), False))
 
     def _has_scene_mouse_callbacks(self) -> bool:
         return any(
@@ -1630,15 +1839,38 @@ class SlangRenderer:
         if self._ui_enabled and self._ui_context is not None:
             try:
                 captured = bool(self._ui_context.handle_keyboard_event(event))
+                self._ui_capturing = captured
             except Exception as exc:
                 self._warn_once("slang-ui:keyboard", f"Slang ImGui keyboard handling disabled: {exc}")
 
+        key_name = self._slang_key_name(getattr(event, "key", None))
+        is_press = bool(event.is_key_press())
+        is_release = bool(event.is_key_release())
+
+        symbol = self._pyglet_symbol_from_slang_key(getattr(event, "key", None))
+        if symbol is not None:
+            if is_press:
+                self._key_handler[symbol] = True
+            elif is_release:
+                self._key_handler[symbol] = False
+
         if captured:
-            if bool(event.is_key_release()):
+            if is_release:
                 self._on_camera_keyboard_event(event)
+                if symbol is not None and self._on_key_release_callback is not None:
+                    try:
+                        self._on_key_release_callback(symbol, self._pyglet_modifiers_from_slang_event(event))
+                    except Exception as exc:
+                        self._warn_once("slang-key-callback", f"Slang key callback raised: {exc}")
             return
 
         self._on_camera_keyboard_event(event)
+
+        if event.is_key_press() and not captured:
+            if key_name == "space":
+                self._paused = not bool(getattr(self, "_paused", False))
+            elif key_name == "escape":
+                self.close()
 
         if event.is_key_press():
             callback = self._on_key_press_callback
@@ -1647,11 +1879,10 @@ class SlangRenderer:
         else:
             return
 
-        if callback is None:
+        if symbol is None:
             return
 
-        symbol = self._pyglet_symbol_from_slang_key(getattr(event, "key", None))
-        if symbol is None:
+        if callback is None:
             return
 
         try:
@@ -1664,6 +1895,7 @@ class SlangRenderer:
         if self._ui_enabled and self._ui_context is not None:
             try:
                 captured = bool(self._ui_context.handle_mouse_event(event))
+                self._ui_capturing = captured
             except Exception as exc:
                 self._warn_once("slang-ui:mouse", f"Slang ImGui mouse handling disabled: {exc}")
 
@@ -1707,6 +1939,8 @@ class SlangRenderer:
         if bool(event.is_move()):
             if ui_active:
                 return
+            if self._mouse_buttons & self._left_mouse_mask():
+                self._orbit_camera(dx, dy)
             if self._mouse_buttons and self._on_mouse_drag_callback is not None:
                 self._on_mouse_drag_callback(pos[0], pos[1], dx, dy, self._mouse_buttons, modifiers)
             elif self._on_mouse_motion_callback is not None:
@@ -3300,7 +3534,7 @@ class SlangRenderer:
             self._pass_encoder.draw({"vertex_count": int(vertex_count)})
 
     def begin_frame(self, time: float) -> None:
-        del time
+        self._time = float(time)
         if self._closed:
             return
 
@@ -3309,7 +3543,32 @@ class SlangRenderer:
         if self._window.should_close() or not self._surface.config:
             return
 
-        self._update_camera_motion()
+        self._poll_external_material_reload()
+        if self._procedural_material_path is None:
+            self.reload_external_material(force=False, raise_on_error=False)
+        elif (
+            self._procedural_material_hot_reload
+            and self._external_material_reload_future is None
+            and (
+                self._procedural_material_info is None
+                or material_source_changed(self._procedural_material_info)
+            )
+        ):
+            self.request_external_material_reload(force=False)
+        self._update_keyboard_camera_motion()
+
+        last_submit_id = getattr(self, "_last_submit_id", None)
+        is_submit_finished = getattr(self._device, "is_submit_finished", None)
+        if (
+            last_submit_id is not None
+            and int(getattr(self, "_last_submit_frame", -1)) == int(self._frame_id) - 1
+            and callable(is_submit_finished)
+            and not bool(is_submit_finished(last_submit_id))
+        ):
+            self._surface_texture = None
+            self._command_encoder = None
+            self._pass_encoder = None
+            return
 
         self._surface_texture = self._surface.acquire_next_image()
         if not self._surface_texture:
@@ -3342,6 +3601,7 @@ class SlangRenderer:
                 },
             }
         )
+        self._render_environment_background()
 
     def end_frame(self) -> None:
         if (
@@ -3354,6 +3614,23 @@ class SlangRenderer:
 
         self._pass_encoder.end()
         self._pass_encoder = None
+        if not hasattr(self._command_encoder, "set_texture_state"):
+            width = int(self._surface_texture.width)
+            height = int(self._surface_texture.height)
+            self._render_ui(width, height, target_texture=self._scene_color_texture)
+            self._render_present(self._scene_color_texture, width, height)
+            command_buffer = self._command_encoder.finish()
+            self._command_encoder = None
+            sync_to_cuda = getattr(self._device, "sync_to_cuda", None)
+            if callable(sync_to_cuda):
+                sync_to_cuda(self._cuda_stream_ptr())
+            submit_id = self._device.submit_command_buffer(command_buffer)
+            self._surface_texture = None
+            self._last_submit_id = submit_id
+            self._last_submit_frame = self._frame_id
+            self._surface.present()
+            self._frame_id += 1
+            return
         self._command_encoder.set_texture_state(
             self._scene_color_texture,
             self._spy.ResourceState.shader_resource,
@@ -3392,7 +3669,9 @@ class SlangRenderer:
         )
         command_buffer = self._command_encoder.finish()
         self._command_encoder = None
-        self._device.submit_command_buffer(command_buffer, cuda_stream=self._cuda_stream_handle())
+        submit_id = self._device.submit_command_buffer(command_buffer, cuda_stream=self._cuda_stream_handle())
+        self._last_submit_id = submit_id
+        self._last_submit_frame = self._frame_id
         del self._surface_texture
         self._surface_texture = None
         self._surface.present()
@@ -3405,9 +3684,20 @@ class SlangRenderer:
         if self._closed:
             return
         self._closed = True
+        future = getattr(self, "_external_material_reload_future", None)
+        if future is not None:
+            future.cancel()
+            self._external_material_reload_future = None
+        executor = getattr(self, "_external_material_reload_executor", None)
+        if executor is not None:
+            executor.shutdown(wait=False, cancel_futures=True)
+            self._external_material_reload_executor = None
         try:
             self._device.wait()
         finally:
+            for shared in getattr(self, "_shared_buffers", {}).values():
+                shared.close()
+            self._shared_buffers.clear()
             for shared in self._shared_positions.values():
                 shared.close()
             self._shared_positions.clear()
@@ -3417,6 +3707,37 @@ class SlangRenderer:
             for mesh in self._meshes.values():
                 mesh.close()
             self._meshes.clear()
+            for buffer in getattr(self, "_fallback_shader_buffers", {}).values():
+                _close_slang_resource(buffer)
+            self._fallback_shader_buffers.clear()
+            for ring_name in (
+                "_material_color_buffer_ring",
+                "_procedural_param_buffer_ring",
+                "_material_maker_param_buffer_ring",
+            ):
+                for buffer in getattr(self, ring_name, ()) or ():
+                    _close_slang_resource(buffer)
+                setattr(self, ring_name, [])
+            for buffer in getattr(self, "_retired_shader_buffers", []) or []:
+                _close_slang_resource(buffer)
+            self._retired_shader_buffers.clear()
+            self._clear_external_material_textures()
+            for attr in (
+                "_material_color_buffer",
+                "_procedural_param_buffer",
+                "_material_maker_param_buffer",
+                "_cryo_texture",
+                "_neutral_cryo_texture",
+                "_environment_texture",
+                "_neutral_environment_texture",
+                "_linear_sampler",
+                "_point_sphere_vertex_buffer",
+                "_point_sphere_index_buffer",
+            ):
+                resource = getattr(self, attr, None)
+                if resource is not None:
+                    _close_slang_resource(resource)
+                setattr(self, attr, None)
             self._ui_context = None
             self._ui_adapter = None
             self._ui_windows.clear()
@@ -3512,7 +3833,14 @@ class SlangRenderer:
         return self._camera_pos.copy(), _normalize_or(direction, tuple(float(v) for v in self._camera_forward))
 
     def set_environment_path(self, path: str | Path | None) -> None:
-        self._environment_path = Path(path).expanduser().resolve(strict=False) if path else None
+        new_path = Path(path).expanduser().resolve(strict=False) if path else None
+        if new_path == getattr(self, "_environment_path", None):
+            return
+        self._environment_path = new_path
+        if getattr(self, "_environment_texture", None) is not None:
+            _close_slang_resource(self._environment_texture)
+        self._environment_texture = None
+        self._environment_texture_key = None
 
     def set_environment_intensity(self, intensity: float) -> None:
         self._environment_intensity = max(float(intensity), 0.0)
@@ -3521,21 +3849,32 @@ class SlangRenderer:
         self._environment_background_enabled = bool(enabled)
 
     def set_environment_rotation_degrees(self, degrees: float) -> None:
-        self._environment_rotation_degrees = float(degrees)
+        try:
+            value = float(degrees)
+        except (TypeError, ValueError):
+            value = 0.0
+        self._environment_rotation_degrees = value if np.isfinite(value) else 0.0
 
     def set_environment_pitch_degrees(self, degrees: float) -> None:
-        self._environment_pitch_degrees = float(degrees)
+        try:
+            value = float(degrees)
+        except (TypeError, ValueError):
+            value = 0.0
+        self._environment_pitch_degrees = value if np.isfinite(value) else 0.0
 
     def draw_mesh(
         self,
         name: str,
-        particle_q: wp.array,
-        surface_indices: wp.array,
+        particle_q: wp.array | None,
+        surface_indices: wp.array | None,
         color: tuple[float, float, float] | None = None,
         uvs: wp.array | None = None,
         texture: str | None = None,
         vertex_colors: wp.array | None = None,
+        hidden: bool = False,
     ) -> None:
+        if hidden or particle_q is None or surface_indices is None:
+            return
         if self._pass_encoder is None:
             return
 
@@ -3577,21 +3916,15 @@ class SlangRenderer:
     def draw_points(
         self,
         name: str,
-        points: wp.array,
-        radii: wp.array | float,
-        colors: wp.array | tuple[float, float, float] | list[float],
+        points: wp.array | None,
+        radii: wp.array | float | None = None,
+        colors: wp.array | tuple[float, float, float] | list[float] | None = None,
+        hidden: bool = False,
     ) -> None:
-        del radii
-        if self._pass_encoder is None or len(points) == 0:
-            return
+        self.log_points(name=name, points=points, radii=radii, colors=colors, hidden=hidden)
 
-        source = self._update_shared_positions(points, name)
-        self._draw_buffer(
-            source=source,
-            pipeline=self._point_pipeline,
-            color=self._color4(colors, name),
-            vertex_count=len(points),
-        )
+    def draw_lines(self, *args, **kwargs) -> None:
+        self.log_lines(*args, **kwargs)
 
     def set_input_callbacks(self, on_key_press=None, on_key_release=None) -> None:
         self._on_key_press_callback = on_key_press

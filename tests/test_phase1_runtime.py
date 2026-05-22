@@ -31,6 +31,7 @@ from omnisurg.haptics import BimanualReplayRig, ReplayInputSource
 from omnisurg.instruments.grasper import load_kinematic_grasper
 from omnisurg.input.sources import MultiSourceRig
 from omnisurg.rendering.bridge import RenderBridge
+from omnisurg.rendering.input import ViewportInputAdapter
 from omnisurg.rendering.slang import (
     LENS_DIRT_TEXTURE_LABELS,
     PostProcessParams,
@@ -1447,6 +1448,49 @@ class TestPhaseRuntime(unittest.TestCase):
             atol=1.0e-6,
         )
 
+    def test_slang_renderer_maps_cut_modifier_keys_to_pyglet_symbols(self):
+        try:
+            import pyglet
+        except Exception as exc:  # pragma: no cover - pyglet is available in CI
+            self.skipTest(f"pyglet unavailable: {exc}")
+
+        renderer = self._make_slang_camera_renderer()
+
+        self.assertEqual(renderer._pyglet_symbol_from_slang_key(SimpleNamespace(name="left_control")), pyglet.window.key.LCTRL)
+        self.assertEqual(renderer._pyglet_symbol_from_slang_key(SimpleNamespace(name="left_ctrl")), pyglet.window.key.LCTRL)
+        self.assertEqual(renderer._pyglet_symbol_from_slang_key(SimpleNamespace(name="control")), pyglet.window.key.LCTRL)
+        self.assertEqual(renderer._pyglet_symbol_from_slang_key(SimpleNamespace(name="left_alt")), pyglet.window.key.LALT)
+        self.assertEqual(renderer._pyglet_symbol_from_slang_key(SimpleNamespace(name="alt")), pyglet.window.key.LALT)
+
+    def test_viewport_input_adapter_reads_slang_modifier_state_when_ui_captures_press(self):
+        try:
+            import pyglet
+        except Exception as exc:  # pragma: no cover - pyglet is available in CI
+            self.skipTest(f"pyglet unavailable: {exc}")
+
+        renderer = self._make_slang_camera_renderer()
+        renderer._ui_enabled = True
+        renderer._ui_context = SimpleNamespace(handle_keyboard_event=lambda _event: True)
+        renderer._key_handler = {}
+        renderer._on_key_press_callback = lambda *_args: self.fail("captured key press should not reach scene callback")
+        renderer._on_key_release_callback = None
+        renderer._paused = True
+        renderer.close = lambda: None
+        renderer._warnings = set()
+        renderer._warn_once = lambda *_args, **_kwargs: None
+
+        bridge = RenderBridge.__new__(RenderBridge)
+        bridge._backend = "slang"
+        bridge._renderer = renderer
+        bridge._viewer_renderer = lambda: None
+        adapter = ViewportInputAdapter(bridge)
+
+        renderer._on_keyboard_event(self._slang_key_event("left_control", press=True))
+
+        self.assertTrue(renderer.is_key_down(pyglet.window.key.LCTRL))
+        self.assertTrue(bridge.is_key_down(pyglet.window.key.LCTRL))
+        self.assertTrue(adapter.is_key_down(pyglet.window.key.LCTRL))
+
     def test_slang_renderer_camera_mouse_controls_respect_capture(self):
         renderer = self._make_slang_camera_renderer()
 
@@ -1474,6 +1518,29 @@ class TestPhaseRuntime(unittest.TestCase):
             captured=True,
         )
         self.assertIsNone(captured_renderer._camera_mouse_action)
+
+    def test_slang_renderer_left_drag_orbits_with_scene_mouse_callbacks(self):
+        renderer = self._make_slang_camera_renderer()
+        calls = []
+        renderer._ui_enabled = False
+        renderer._ui_context = None
+        renderer._ui_mouse_active = False
+        renderer._ui_capturing = False
+        renderer._mouse_buttons = 0
+        renderer._mouse_pos = None
+        renderer._on_mouse_motion_callback = None
+        renderer._on_mouse_press_callback = lambda *args: calls.append(("press", args))
+        renderer._on_mouse_drag_callback = lambda *args: calls.append(("drag", args))
+        renderer._on_mouse_release_callback = None
+
+        initial_pos = renderer._camera_pos.copy()
+
+        renderer._on_mouse_event(self._slang_mouse_event("down", pos=(100.0, 100.0), button="left"))
+        renderer._on_mouse_event(self._slang_mouse_event("move", pos=(130.0, 90.0)))
+
+        self.assertFalse(np.allclose(renderer._camera_pos, initial_pos))
+        self.assertTrue(any(name == "press" for name, _args in calls))
+        self.assertTrue(any(name == "drag" for name, _args in calls))
 
     def test_runtime_tissue_material_param_sync_updates_renderer(self):
         class FakeRenderer:
@@ -3426,4 +3493,3 @@ class TestPhaseRuntime(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

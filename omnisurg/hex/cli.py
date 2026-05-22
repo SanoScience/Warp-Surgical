@@ -66,7 +66,7 @@ def _default_root(dataset: str) -> Path | None:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="omnisurg hex",
-        description="Run the OmniSurg Hex corner-grid surgical cutting app.",
+        description="Run the OmniSurg Hex particle-grid surgical cutting app.",
         add_help=True,
     )
     parser.add_argument(
@@ -156,10 +156,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     volume = loader.load(config)
 
-    app_args = list(runtime_args)
-    app_args.extend(["--atlas", "__omnisurg_prepared__", "--atlas-pad", "0"])
-    app_args.extend(["--cryo-texture", "__omnisurg_prepared__" if volume.texture_rgb is not None else ""])
-    return OmniSurgHexApp(volume).run(app_args)
+    return OmniSurgHexApp(volume).run(runtime_args)
 
 
 if __name__ == "__main__":

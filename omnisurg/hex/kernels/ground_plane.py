@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Ground-plane contact kernel for the local corner-grid solver."""
+"""Ground-plane contact kernel for the local hex-grid solver."""
 
 from __future__ import annotations
 

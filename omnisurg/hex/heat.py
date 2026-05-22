@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 import newton
 import numpy as np
@@ -310,7 +311,7 @@ class HexHeatState:
 
     def update_heat_overlay(
         self,
-        viewer: newton.viewer.ViewerBase,
+        viewer: Any,
         *,
         radius: float,
         hidden: bool = False,
@@ -318,7 +319,7 @@ class HexHeatState:
     ) -> int:
         """Log heat-coloured cell centre points for debugging."""
         if hidden:
-            viewer.log_points(name="/hex_grid/heat", points=None, hidden=True)
+            viewer.draw_points(name="/hex_grid/heat", points=None, hidden=True)
             return 0
         _, heat_max = self.sync_heat_min_max()
         self._overlay_count.zero_()
@@ -338,12 +339,12 @@ class HexHeatState:
         )
         count = int(self._overlay_count.numpy()[0])
         if count <= 0:
-            viewer.log_points(name="/hex_grid/heat", points=None, hidden=True)
+            viewer.draw_points(name="/hex_grid/heat", points=None, hidden=True)
             return 0
         if self._overlay_last_radius != float(radius):
             self._overlay_radii.fill_(float(radius))
             self._overlay_last_radius = float(radius)
-        viewer.log_points(
+        viewer.draw_points(
             name="/hex_grid/heat",
             points=self._overlay_points[:count],
             radii=self._overlay_radii[:count],

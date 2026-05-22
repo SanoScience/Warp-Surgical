@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Minimal SlangPy viewer for OmniSurg Hex cryosection surface parity."""
+"""Slang cryo/procedural surface helpers for OmniSurg renderers."""
 
 from __future__ import annotations
 
@@ -1022,7 +1022,7 @@ class _SlangImmediateUi:
 
 
 class _SlangUiState:
-    def __init__(self, viewer: SlangHexViewer):
+    def __init__(self, viewer: SlangCryoMixin):
         self._viewer = viewer
         self.io = SimpleNamespace(display_size=(0.0, 0.0))
 
@@ -1051,8 +1051,8 @@ def _rotate_vector_axis_angle(value: np.ndarray, axis: np.ndarray, angle: float)
     )
 
 
-class SlangHexViewer:
-    """Small SlangPy viewer that draws the current MC cryosection surface."""
+class SlangCryoMixin:
+    """Cryo/procedural surface rendering methods mixed into ``SlangRenderer``."""
 
     supports_mouse_interaction = True
 
@@ -1072,6 +1072,7 @@ class SlangHexViewer:
         environment_rotation_degrees: float = 0.0,
         environment_pitch_degrees: float = -90.0,
     ):
+        raise TypeError("SlangCryoMixin is not a standalone renderer.")
         if not device.is_cuda:
             raise RuntimeError("Slang viewer requires a CUDA Warp device for shared-buffer interop.")
         self._spy = _load_slangpy()

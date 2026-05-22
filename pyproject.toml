@@ -52,7 +52,7 @@ newton = { path = "../../newton/newton-1.0", editable = true }
 [tool.setuptools.package-data]
 "omnisurg.hex.kernels" = ["_mc_tables.npz"]
 "omnisurg.hex.data.class_maps" = ["*.json"]
-"omnisurg.hex" = ["slang_shaders/*.slang"]
+"omnisurg.rendering" = ["slang_shaders/*.slang"]
 
 [tool.setuptools.packages.find]
 include = ["omnisurg*"]

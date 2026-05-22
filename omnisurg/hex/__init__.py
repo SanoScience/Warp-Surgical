@@ -2,7 +2,6 @@
 """OmniSurg Hex application layer for labelled hexahedral tissue volumes."""
 
 from ._version import __version__
-from .app import OmniSurgHexApp
 from .deletion import DeviceDeletionResult
 from .heat import HexHeatState, make_hex_heat_state
 from .hex_grid import build_hex_particle_grid, build_hierarchical_shape_matching_clusters, build_shape_matching_clusters
@@ -25,7 +24,18 @@ from .shape_matching_solver import (
 )
 from .data.types import PreparedVolume, PreprocessConfig
 from .materials import Material, MaterialTable, digimouse_material_table
-from .runtime import HexAppLauncher, HexRuntime
+
+
+def __getattr__(name: str):
+    if name == "OmniSurgHexApp":
+        from .app import OmniSurgHexApp
+
+        return OmniSurgHexApp
+    if name in {"HexAppLauncher", "HexRuntime"}:
+        from .runtime import HexAppLauncher, HexRuntime
+
+        return {"HexAppLauncher": HexAppLauncher, "HexRuntime": HexRuntime}[name]
+    raise AttributeError(name)
 
 __all__ = [
     "HIERARCHICAL_SHAPE_MATCHING_FULL27",

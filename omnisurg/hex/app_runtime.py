@@ -31,6 +31,7 @@ import numpy as np
 import warp as wp
 from newton._src.geometry.flags import ParticleFlags
 
+from omnisurg.config import ViewerConfig  # noqa: E402
 from omnisurg.rendering.bridge import RenderBridge  # noqa: E402
 from omnisurg.hex.deletion import DeviceDeletionResult, make_hex_deletion_state  # noqa: E402
 from omnisurg.hex.heat import make_hex_heat_state  # noqa: E402
@@ -80,13 +81,12 @@ from omnisurg.hex.render import (  # noqa: E402
     make_scoped_timer,
     set_scoped_timer_dict,
 )
-from omnisurg.hex.slang_viewer import (  # noqa: E402
+from omnisurg.rendering.slang_cryo import (  # noqa: E402
     PROCEDURAL_MATERIAL_PARAM_NAMES,
     SLANG_RENDER_BACKENDS,
     SLANG_SURFACE_DEBUG_VIEW_HEIGHT,
     SLANG_SURFACE_DEBUG_VIEW_LABELS,
     SLANG_SURFACE_DEBUG_VIEW_OFF,
-    SlangHexViewer,
     build_procedural_uv3_noise_scale,
     clamp_material_maker_params,
     clamp_procedural_material_params,
@@ -2984,26 +2984,29 @@ def main(argv: list[str] | None = None) -> int:
     elif not args.gl_interop and args.usd is None and dev.is_cuda:
         print("[gl-interop] disabled; ViewerGL mesh buffers will use CPU staging uploads")
 
+    render_bridge = None
     with _StartupPhase("viewer_create", startup_phases):
         if args.usd is not None:
             viewer = newton.viewer.ViewerUSD(args.usd, num_frames=args.frames)
         elif slang_viewer_requested:
             camera_pos = (0.12, -0.18, 0.12) if args.size > 0 else (0.32, 0.04, 0.08)
             try:
-                viewer = SlangHexViewer(
+                viewer_config = ViewerConfig(
                     backend=str(args.viewer),
-                    device=dev,
                     camera_pos=camera_pos,
                     vsync=True,
-                    procedural_material_path=args.slang_procedural_material or None,
-                    procedural_material_scale=ui.slang_procedural_material_scale,
-                    procedural_material_hot_reload=bool(args.slang_procedural_hot_reload),
-                    environment_path=ui.slang_environment_map or None,
-                    environment_intensity=ui.slang_environment_intensity,
-                    environment_background=ui.slang_environment_background,
-                    environment_rotation_degrees=ui.slang_environment_rotation_degrees,
-                    environment_pitch_degrees=ui.slang_environment_pitch_degrees,
+                    slang_world_up=(0.0, 0.0, 1.0),
+                    slang_procedural_material_path=args.slang_procedural_material or None,
+                    slang_procedural_material_scale=ui.slang_procedural_material_scale,
+                    slang_procedural_material_hot_reload=bool(args.slang_procedural_hot_reload),
+                    slang_environment_path=ui.slang_environment_map or None,
+                    slang_environment_intensity=ui.slang_environment_intensity,
+                    slang_environment_background=ui.slang_environment_background,
+                    slang_environment_rotation_degrees=ui.slang_environment_rotation_degrees,
+                    slang_environment_pitch_degrees=ui.slang_environment_pitch_degrees,
                 )
+                render_bridge = RenderBridge(viewer_config, model, dev)
+                viewer = render_bridge
             except RuntimeError as exc:
                 print(f"Slang viewer unavailable: {exc}", file=sys.stderr)
                 return 1
@@ -3031,7 +3034,8 @@ def main(argv: list[str] | None = None) -> int:
             instrument_q_prev.assign(instrument_q_prev_host)
             instrument_q.assign(instrument_q_host)
 
-    render_bridge = RenderBridge.wrap_existing(viewer, device=dev)
+    if render_bridge is None:
+        render_bridge = RenderBridge.wrap_existing(viewer, device=dev)
 
     mouse_state = {
         "continuous_pick_xy": None,
@@ -4917,7 +4921,7 @@ def main(argv: list[str] | None = None) -> int:
                     grab_point_radius = args.node_render_radius_scale * atlas.voxel_size * 1.25
                     grab_line_width = args.overlay_line_width * 2.5
                     mouse_grab_overlay.update(
-                        viewer=viewer,
+                        viewer=render_bridge,
                         grab_indices=drag_indices,
                         particle_q=state_0.particle_q,
                         pull_target=drag_target,
@@ -4936,7 +4940,7 @@ def main(argv: list[str] | None = None) -> int:
                             and bool(instrument_trigger_down_host[idx])
                         )
                         overlay.update(
-                            viewer=viewer,
+                            viewer=render_bridge,
                             grab_indices=instrument_grasp_indices[idx],
                             particle_q=state_0.particle_q,
                             pull_target=instrument_q_host[idx],
@@ -4951,7 +4955,7 @@ def main(argv: list[str] | None = None) -> int:
             with _scoped_timer("cell_overlay"):
                 if ui.stress_colored_surface:
                     cell_overlay.update_stress(
-                        viewer=viewer,
+                        viewer=render_bridge,
                         particle_q=pg.aux.cell_center_q,
                         particle_flags=pg.aux.cell_render_flags,
                         cell_stretch=pg.aux.cell_stretch,
@@ -4961,7 +4965,7 @@ def main(argv: list[str] | None = None) -> int:
                     )
                 elif ui.cryo_colored_cells and cryo_texture_3d is not None:
                     cell_overlay.update_cryo(
-                        viewer=viewer,
+                        viewer=render_bridge,
                         particle_q=pg.aux.cell_center_q,
                         particle_flags=pg.aux.cell_render_flags,
                         particle_grid_xyz=pg.aux.cell_grid_xyz,
@@ -4975,7 +4979,7 @@ def main(argv: list[str] | None = None) -> int:
                     )
                 else:
                     cell_overlay.update(
-                        viewer=viewer,
+                        viewer=render_bridge,
                         particle_q=pg.aux.cell_center_q,
                         particle_flags=pg.aux.cell_render_flags,
                         particle_material=pg.aux.cell_material,
@@ -4985,7 +4989,7 @@ def main(argv: list[str] | None = None) -> int:
 
             with _scoped_timer("heat_overlay"):
                 heat_state.update_heat_overlay(
-                    viewer=viewer,
+                    viewer=render_bridge,
                     radius=args.cell_render_radius_scale * atlas.voxel_size * 0.75,
                     hidden=not ui.show_heat_overlay,
                 )
@@ -4994,7 +4998,7 @@ def main(argv: list[str] | None = None) -> int:
 
             with _scoped_timer("node_overlay"):
                 node_overlay.update(
-                    viewer=viewer,
+                    viewer=render_bridge,
                     particle_q=state_0.particle_q,
                     particle_flags=model.particle_flags,
                     particle_material=pg.aux.node_material,
@@ -5004,7 +5008,7 @@ def main(argv: list[str] | None = None) -> int:
             with _scoped_timer("shape_cluster_overlay"):
                 l0_active = solver.l0_runtime_active if ui.sleep_l0_shape_matching else clusters.active
                 l0_shape_overlay.update(
-                    viewer=viewer,
+                    viewer=render_bridge,
                     indices_by_slot=clusters.indices_by_slot,
                     cluster_active=l0_active,
                     num_clusters=clusters.num_clusters,
@@ -5016,7 +5020,7 @@ def main(argv: list[str] | None = None) -> int:
                 )
                 l1_clusters = hierarchy.outer8
                 l1_shape_overlay.update(
-                    viewer=viewer,
+                    viewer=render_bridge,
                     indices_by_slot=None if l1_clusters is None else l1_clusters.indices_by_slot,
                     cluster_active=None if l1_clusters is None else l1_clusters.active,
                     num_clusters=0 if l1_clusters is None else l1_clusters.num_clusters,
@@ -5028,7 +5032,7 @@ def main(argv: list[str] | None = None) -> int:
                 )
                 l2_clusters = hierarchy.l2_outer8
                 l2_shape_overlay.update(
-                    viewer=viewer,
+                    viewer=render_bridge,
                     indices_by_slot=None if l2_clusters is None else l2_clusters.indices_by_slot,
                     cluster_active=None if l2_clusters is None else l2_clusters.active,
                     num_clusters=0 if l2_clusters is None else l2_clusters.num_clusters,
@@ -5200,7 +5204,7 @@ def main(argv: list[str] | None = None) -> int:
             if cryo_texture_3d is not None and ui.show_mc_vertex_samples and tri_count > 0:
                 with _scoped_timer("mc_vertex_overlay"):
                     mc_vertex_overlay.update_cryo(
-                        viewer=viewer,
+                        viewer=render_bridge,
                         tri_indices=mc_buffers.tri_indices,
                         vertex_pos=mc_buffers.vertex_pos,
                         vertex_uv3=mc_buffers.vertex_uv3,

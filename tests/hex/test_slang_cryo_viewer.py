@@ -8,9 +8,10 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-import omnisurg.hex.slang_viewer as slang_mod
+import omnisurg.rendering.slang_cryo as slang_mod
+from omnisurg.rendering.slang import SlangRenderer
+from omnisurg.hex.ui import UiState
 from omnisurg.hex.app_runtime import (
-    UiState,
     _camera_local_offsets,
     _camera_points_from_local_offsets,
     _camera_transform_points_between_frames,
@@ -23,19 +24,18 @@ from omnisurg.hex.app_runtime import (
     _save_segmentation_panel_settings,
     build_timer_panel_snapshot,
 )
-from omnisurg.hex.material_maker_slang import (
+from omnisurg.rendering.material_maker_slang import (
     MaterialMakerSlangInfo,
     material_source_changed,
     parse_material_maker_parameter_specs,
     texture_path_for,
     write_material_bridge,
 )
-from omnisurg.hex.slang_viewer import (
+from omnisurg.rendering.slang_cryo import (
     PROCEDURAL_MATERIAL_PARAM_DEFAULTS,
     SLANG_SURFACE_DEBUG_VIEW_HEIGHT,
     SLANG_SURFACE_DEBUG_VIEW_LABELS,
     SLANG_SURFACE_DEBUG_VIEW_MATERIAL_INDEX,
-    SlangHexViewer,
     _ExternalMaterialReloadResult,
     _shared_buffer_cache_key,
     _SlangImmediateUi,
@@ -52,6 +52,8 @@ from omnisurg.hex.slang_viewer import (
     make_default_procedural_materials,
     prepare_cryo_texture_upload,
 )
+
+RendererUnderTest = SlangRenderer
 
 
 def test_prepare_cryo_texture_upload_transposes_xyz_volume_to_slang_depth_layout():
@@ -831,7 +833,7 @@ def test_cryo_texture_resource_requests_3d_texture_type():
             return object()
 
     device = _FakeDevice()
-    viewer = object.__new__(SlangHexViewer)
+    viewer = object.__new__(RendererUnderTest)
     viewer._spy = _FakeSpy
     viewer._device = device
     viewer._cryo_texture = None
@@ -847,7 +849,7 @@ def test_cryo_texture_resource_requests_3d_texture_type():
 
 
 def test_slang_camera_basis_is_z_up():
-    viewer = object.__new__(SlangHexViewer)
+    viewer = object.__new__(RendererUnderTest)
     viewer._camera_world_up = np.asarray([0.0, 0.0, 1.0], dtype=np.float32)
     viewer._camera_scene_radius = 0.25
 
@@ -862,7 +864,7 @@ def test_slang_camera_basis_is_z_up():
 
 
 def test_slang_orbit_camera_preserves_distance_to_target():
-    viewer = object.__new__(SlangHexViewer)
+    viewer = object.__new__(RendererUnderTest)
     viewer._camera_world_up = np.asarray([0.0, 0.0, 1.0], dtype=np.float32)
     viewer._camera_scene_radius = 0.25
     viewer._set_camera_look_at(
@@ -983,7 +985,7 @@ def test_slang_log_points_draws_instanced_spheres_with_radii_and_colors():
         def draw_indexed(self, args):
             self.draw_args = args
 
-    viewer = object.__new__(SlangHexViewer)
+    viewer = object.__new__(RendererUnderTest)
     viewer._spy = _FakeSpy()
     viewer._pass_encoder = _FakePassEncoder()
     viewer._viewport = "viewport"
@@ -1086,7 +1088,7 @@ def test_slang_shared_buffer_setup_cleans_up_when_wrap_fails(monkeypatch):
         raise RuntimeError("wrap failed")
 
     fake_cuda = _FakeCuda()
-    viewer = object.__new__(SlangHexViewer)
+    viewer = object.__new__(RendererUnderTest)
     viewer._device = _FakeDevice()
     viewer._spy = _FakeSpy
     viewer._cuda = fake_cuda
@@ -1240,7 +1242,7 @@ def _draw_test_viewer():
         def draw(self, args):
             self.draw_calls.append(args)
 
-    viewer = object.__new__(SlangHexViewer)
+    viewer = object.__new__(RendererUnderTest)
     viewer._spy = _FakeSpy
     viewer._pass_encoder = _FakePassEncoder()
     viewer._viewport = object()
@@ -1367,7 +1369,7 @@ def test_slang_end_frame_renders_ui_offscreen_before_present():
         def present(self) -> None:
             events.append(("surface_present", None))
 
-    viewer = object.__new__(SlangHexViewer)
+    viewer = object.__new__(RendererUnderTest)
     viewer._pass_encoder = _FakePassEncoder()
     viewer._command_encoder = _FakeCommandEncoder()
     viewer._surface_texture = SimpleNamespace(width=640, height=480)
@@ -1423,7 +1425,7 @@ def test_slang_begin_frame_skips_acquire_while_previous_submit_pending():
             events.append(f"finished:{submit_id}")
             return False
 
-    viewer = object.__new__(SlangHexViewer)
+    viewer = object.__new__(RendererUnderTest)
     viewer._time = 0.0
     viewer._closed = False
     viewer._window = _FakeWindow()
@@ -1465,7 +1467,7 @@ def test_set_cryo_uniforms_uses_neutral_texture_when_host_volume_missing():
         def float3(x, y, z):
             return (float(x), float(y), float(z))
 
-    viewer = object.__new__(SlangHexViewer)
+    viewer = object.__new__(RendererUnderTest)
     viewer._spy = _FakeSpy
     viewer._set_common_uniforms = lambda _shader_object: None
     viewer._neutral_cryo_texture_resource = lambda: "neutral-texture"
@@ -1520,7 +1522,7 @@ def test_slang_environment_path_setter_retires_cached_texture(tmp_path: Path):
     first.write_text("", encoding="utf-8")
     second.write_text("", encoding="utf-8")
 
-    viewer = object.__new__(SlangHexViewer)
+    viewer = object.__new__(RendererUnderTest)
     viewer._environment_path = first.resolve()
     viewer._environment_texture = _FakeTexture()
     viewer._environment_texture_key = (first.resolve(), 123)
@@ -1569,7 +1571,7 @@ def test_slang_environment_background_draws_hdr_before_geometry():
         def draw(self, args):
             self.draw_calls.append(args)
 
-    viewer = object.__new__(SlangHexViewer)
+    viewer = object.__new__(RendererUnderTest)
     viewer._spy = _FakeSpy
     viewer._pass_encoder = _FakePassEncoder()
     viewer._background_pipeline = "background-pipeline"
@@ -1606,7 +1608,7 @@ def test_slang_environment_background_skips_when_disabled():
         def bind_pipeline(self, _pipeline):
             raise AssertionError("background should not draw")
 
-    viewer = object.__new__(SlangHexViewer)
+    viewer = object.__new__(RendererUnderTest)
     viewer._pass_encoder = _FakePassEncoder()
     viewer._background_pipeline = "background-pipeline"
     viewer._environment_background_enabled = False
@@ -1642,7 +1644,7 @@ def test_procedural_param_resource_reuses_buffer_until_revision_changes():
             self.labels.append(kwargs["label"])
             return _FakeBuffer(kwargs["label"])
 
-    viewer = object.__new__(SlangHexViewer)
+    viewer = object.__new__(RendererUnderTest)
     viewer._spy = _FakeSpy
     viewer._device = _FakeDevice()
     viewer._procedural_param_buffer = None
@@ -1696,7 +1698,7 @@ def test_material_color_resource_rotates_inactive_buffer_on_revision_change():
             self.labels.append(kwargs["label"])
             return _FakeBuffer(kwargs["label"])
 
-    viewer = object.__new__(SlangHexViewer)
+    viewer = object.__new__(RendererUnderTest)
     viewer._spy = _FakeSpy
     viewer._device = _FakeDevice()
     viewer._material_color_buffer = None
@@ -1723,7 +1725,7 @@ def test_material_color_resource_rotates_inactive_buffer_on_revision_change():
 
 def test_prepare_cryo_material_resources_uploads_buffers_before_draw():
     calls: list[tuple[str, int | None, int | None]] = []
-    viewer = object.__new__(SlangHexViewer)
+    viewer = object.__new__(RendererUnderTest)
 
     def _material_colors_resource(colors, *, revision=None):
         calls.append(("colors", revision, None if colors is None else len(colors)))
@@ -1785,7 +1787,7 @@ def test_slang_captured_mouse_drag_does_not_reach_scene_handlers():
             return self.kind == "move"
 
     calls: list[tuple] = []
-    viewer = object.__new__(SlangHexViewer)
+    viewer = object.__new__(RendererUnderTest)
     viewer._ui_enabled = True
     viewer._ui_context = _FakeUiContext()
     viewer._ui_capturing = False
@@ -1837,7 +1839,7 @@ def test_external_material_reload_keeps_previous_pipeline_on_compile_failure(mon
                 raise RuntimeError("compile failed")
             return "program-ok"
 
-    viewer = object.__new__(SlangHexViewer)
+    viewer = object.__new__(RendererUnderTest)
     viewer._procedural_material_path = source
     viewer._procedural_material_hot_reload = True
     viewer._procedural_material_info = None
@@ -1874,7 +1876,7 @@ def test_external_material_reload_request_applies_async_result(tmp_path: Path):
         generated_source_path=tmp_path / "source.slang",
     )
 
-    viewer = object.__new__(SlangHexViewer)
+    viewer = object.__new__(RendererUnderTest)
     viewer._external_material_reload_executor = None
     viewer._external_material_reload_future = None
     viewer._procedural_material_reload_status = ""
@@ -1905,7 +1907,7 @@ def test_external_material_reload_request_applies_async_result(tmp_path: Path):
 
 
 def test_hex_cryo_surface_shader_declares_procedural_material_bindings():
-    shader = (Path(__file__).resolve().parents[2] / "omnisurg/hex/slang_shaders/hex_cryo_surface.slang").read_text(
+    shader = (Path(__file__).resolve().parents[2] / "omnisurg/rendering/slang_shaders/hex_cryo_surface.slang").read_text(
         encoding="utf-8"
     )
 
@@ -1978,7 +1980,7 @@ def test_hex_cryo_surface_shader_declares_procedural_material_bindings():
 
 
 def test_hex_present_shader_declares_environment_background_pass():
-    shader = (Path(__file__).resolve().parents[2] / "omnisurg/hex/slang_shaders/hex_present.slang").read_text(
+    shader = (Path(__file__).resolve().parents[2] / "omnisurg/rendering/slang_shaders/hex_present.slang").read_text(
         encoding="utf-8"
     )
 
@@ -2084,7 +2086,7 @@ def test_slang_side_panel_window_does_not_override_dragged_position():
             windows.append(self)
 
     screen = object()
-    viewer = object.__new__(SlangHexViewer)
+    viewer = object.__new__(RendererUnderTest)
     viewer._spy = _FakeSpy
     viewer._sui = SimpleNamespace(Window=_FakeWindow)
     viewer._ui_context = SimpleNamespace(screen=screen)

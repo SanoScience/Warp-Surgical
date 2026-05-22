@@ -249,6 +249,44 @@ class GPUBuffers:
 class RenderBridge:
     """Thin backend wrapper for the supported Phase viewers."""
 
+    def __getattr__(self, name):
+        renderer = object.__getattribute__(self, "_renderer")
+        return getattr(renderer, name)
+
+    @property
+    def renderer(self):
+        return self._renderer
+
+    @property
+    def supports_mouse_interaction(self) -> bool:
+        if getattr(self, "_backend", "") == "headless":
+            return False
+        return self._backend in {"gl", "surgsim"} or bool(getattr(self._renderer, "supports_mouse_interaction", False))
+
+    @property
+    def show_particles(self) -> bool:
+        return bool(getattr(self._renderer, "show_particles", False))
+
+    @show_particles.setter
+    def show_particles(self, value: bool) -> None:
+        setattr(self._renderer, "show_particles", bool(value))
+
+    @property
+    def show_ui(self) -> bool:
+        return bool(getattr(self._renderer, "show_ui", False))
+
+    @show_ui.setter
+    def show_ui(self, value: bool) -> None:
+        setattr(self._renderer, "show_ui", bool(value))
+
+    @property
+    def _paused(self) -> bool:
+        return bool(getattr(self._renderer, "_paused", False))
+
+    @_paused.setter
+    def _paused(self, value: bool) -> None:
+        setattr(self._renderer, "_paused", bool(value))
+
     @classmethod
     def wrap_existing(cls, viewer, *, backend: str | None = None, device=None) -> "RenderBridge":
         """Wrap an already-created viewer with the RenderBridge API."""
@@ -260,9 +298,7 @@ class RenderBridge:
             device = wp.get_device()
         obj.gpu = GPUBuffers(device)
         if backend is None:
-            if viewer.__class__.__name__ == "SlangHexViewer":
-                backend = str(getattr(viewer, "_backend", "slang"))
-            elif viewer.__class__.__name__ == "_HeadlessHexViewer":
+            if viewer.__class__.__name__ == "_HeadlessHexViewer":
                 backend = "headless"
             elif viewer.__class__.__name__ == "ViewerUSD":
                 backend = "usd"
@@ -417,10 +453,49 @@ class RenderBridge:
         if hasattr(self._renderer, "close"):
             self._renderer.close()
 
+    def set_model(self, model) -> None:
+        method = getattr(self._renderer, "set_model", None)
+        if callable(method):
+            method(model)
+
+    def set_camera(self, *args, **kwargs) -> None:
+        method = getattr(self._renderer, "set_camera", None)
+        if callable(method):
+            method(*args, **kwargs)
+
+    def is_paused(self) -> bool:
+        method = getattr(self._renderer, "is_paused", None)
+        if callable(method):
+            return bool(method())
+        return bool(getattr(self._renderer, "_paused", False))
+
+    def is_key_down(self, symbol: int) -> bool:
+        for target in (self._renderer, self._viewer_renderer()):
+            if target is None:
+                continue
+            method = getattr(target, "is_key_down", None)
+            if callable(method):
+                try:
+                    return bool(method(int(symbol)))
+                except Exception:
+                    return False
+            key_handler = getattr(target, "_key_handler", None)
+            if key_handler is not None:
+                try:
+                    return bool(key_handler[int(symbol)])
+                except Exception:
+                    return False
+        return False
+
     def log_scalar(self, name: str, value: float) -> None:
         log_fn = getattr(self._renderer, "log_scalar", None)
         if callable(log_fn):
             log_fn(name, float(value))
+
+    def log_state(self, state) -> None:
+        log_fn = getattr(self._renderer, "log_state", None)
+        if callable(log_fn):
+            log_fn(state)
 
     def set_tissue_material_params(self, **params) -> None:
         if self._backend not in SLANG_RENDER_BACKENDS:
@@ -445,7 +520,18 @@ class RenderBridge:
         uvs: wp.array | None = None,
         texture: str | None = None,
         vertex_colors: wp.array | None = None,
+        hidden: bool = False,
     ):
+        if hidden or particle_q is None or surface_indices is None:
+            self.log_mesh(name=name, points=None, indices=None, uvs=None, texture=None, hidden=True)
+            return
+        try:
+            if len(particle_q) == 0 or len(surface_indices) == 0:
+                self.log_mesh(name=name, points=None, indices=None, uvs=None, texture=None, hidden=True)
+                return
+        except Exception:
+            pass
+
         if self._backend == "headless":
             return
 
@@ -458,6 +544,7 @@ class RenderBridge:
                 uvs=uvs,
                 texture=texture,
                 vertex_colors=vertex_colors,
+                hidden=hidden,
             )
             self._mesh_created.add(name)
             return
@@ -509,19 +596,76 @@ class RenderBridge:
     def draw_points(
         self,
         name: str,
-        points: wp.array,
-        radii: wp.array | float,
-        colors: wp.array | tuple[float, float, float] | list[float],
+        points: wp.array | None,
+        radii: wp.array | float | None = None,
+        colors: wp.array | tuple[float, float, float] | list[float] | None = None,
+        hidden: bool = False,
     ):
+        if hidden or points is None:
+            self.log_points(name=name, points=None, hidden=True)
+            return
+        try:
+            if len(points) == 0:
+                self.log_points(name=name, points=None, hidden=True)
+                return
+        except Exception:
+            pass
+
         if self._backend == "headless":
             return
 
+        if radii is None:
+            radii = 0.01
+        if colors is None:
+            colors = (0.85, 0.18, 0.12)
+
         if self._backend in SLANG_RENDER_BACKENDS:
-            self._renderer.draw_points(name, points, radii, colors)
+            self._renderer.draw_points(name, points, radii, colors, hidden=hidden)
             return
 
         radii, colors = self._normalize_point_inputs(name, points, radii, colors)
         self._renderer.log_points(name, points, radii, colors)
+
+    def draw_lines(
+        self,
+        name: str,
+        starts=None,
+        ends=None,
+        colors=None,
+        width: float = 1.0,
+        hidden: bool = False,
+    ):
+        if self._backend == "headless":
+            return
+        if hidden or starts is None or ends is None:
+            self.log_lines(name=name, starts=None, ends=None, colors=colors, width=width, hidden=True)
+            return
+        method = getattr(self._renderer, "draw_lines", None)
+        if callable(method):
+            method(name=name, starts=starts, ends=ends, colors=colors, width=width, hidden=hidden)
+            return
+        self.log_lines(name=name, starts=starts, ends=ends, colors=colors, width=width, hidden=hidden)
+
+    def log_mesh(self, *args, **kwargs) -> None:
+        if self._backend == "headless":
+            return
+        method = getattr(self._renderer, "log_mesh", None)
+        if callable(method):
+            method(*args, **kwargs)
+
+    def log_points(self, *args, **kwargs) -> None:
+        if self._backend == "headless":
+            return
+        method = getattr(self._renderer, "log_points", None)
+        if callable(method):
+            method(*args, **kwargs)
+
+    def log_lines(self, *args, **kwargs) -> None:
+        if self._backend == "headless":
+            return
+        method = getattr(self._renderer, "log_lines", None)
+        if callable(method):
+            method(*args, **kwargs)
 
     def draw_haptic_sphere(self, position: wp.array, radius: float | None = None):
         if self._backend == "headless":
@@ -609,6 +753,24 @@ class RenderBridge:
                     direction /= direction_norm
                 return origin, direction
         raise RuntimeError(f"{self._backend} renderer does not expose screen_to_world_ray")
+
+    def is_ui_capturing(self) -> bool:
+        method = getattr(self._renderer, "is_ui_capturing", None)
+        if callable(method):
+            try:
+                return bool(method())
+            except Exception:
+                return False
+        ui = getattr(self._renderer, "ui", None)
+        if ui is None:
+            return False
+        method = getattr(ui, "is_capturing", None)
+        if callable(method):
+            try:
+                return bool(method())
+            except Exception:
+                return False
+        return False
 
     def draw_cryo_surface(self, *args, **kwargs):
         method = getattr(self._renderer, "draw_cryo_surface", None)

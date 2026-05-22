@@ -79,6 +79,15 @@ class ViewerConfig:
     shadows_enabled: bool = False
     msaa_samples: int = 0
     direct_render_enabled: bool = True
+    slang_world_up: tuple = (0.0, 1.0, 0.0)
+    slang_procedural_material_path: str | None = None
+    slang_procedural_material_scale: float = 1.0
+    slang_procedural_material_hot_reload: bool = True
+    slang_environment_path: str | None = None
+    slang_environment_intensity: float = 1.0
+    slang_environment_background: bool = False
+    slang_environment_rotation_degrees: float = 0.0
+    slang_environment_pitch_degrees: float = 0.0
 
 
 @dataclass

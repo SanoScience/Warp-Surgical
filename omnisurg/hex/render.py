@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import newton
 import numpy as np
@@ -1983,7 +1984,7 @@ class SurfaceRenderer:
 
     def update_cryo_surface_frame(
         self,
-        viewer: newton.viewer.ViewerBase,
+        viewer: Any,
         aux: GridAuxState,
         particle_q: wp.array,
         particle_flags: wp.array,
@@ -2137,7 +2138,7 @@ class SurfaceRenderer:
 
     def update(
         self,
-        viewer: newton.viewer.ViewerBase,
+        viewer: Any,
         aux: GridAuxState,
         particle_q: wp.array,
         particle_flags: wp.array,
@@ -2709,7 +2710,7 @@ class SurfaceRenderer:
                 )
             return count
 
-    def log_hidden(self, viewer: newton.viewer.ViewerBase) -> None:
+    def log_hidden(self, viewer: Any) -> None:
         """Mark the surface mesh hidden without running the MC pipeline.
 
         No-op when no asset has been logged yet (the viewer has nothing to
@@ -3106,7 +3107,7 @@ class ColoredParticleOverlay:
 
     def update(
         self,
-        viewer: newton.viewer.ViewerBase,
+        viewer: Any,
         particle_q: wp.array,
         particle_flags: wp.array,
         particle_material: wp.array,
@@ -3122,7 +3123,7 @@ class ColoredParticleOverlay:
         and the overlay is marked hidden in the viewer directly.
         """
         if hidden:
-            viewer.log_points(name=self.name, points=None, hidden=True)
+            viewer.draw_points(name=self.name, points=None, hidden=True)
             return 0
         self._counter.zero_()
         wp.launch(
@@ -3142,7 +3143,7 @@ class ColoredParticleOverlay:
 
     def update_stress(
         self,
-        viewer: newton.viewer.ViewerBase,
+        viewer: Any,
         particle_q: wp.array,
         particle_flags: wp.array,
         cell_stretch: wp.array,
@@ -3153,7 +3154,7 @@ class ColoredParticleOverlay:
     ) -> int:
         """Gather active cell-centre particles with cold-to-warm stretch colours."""
         if hidden:
-            viewer.log_points(name=self.name, points=None, hidden=True)
+            viewer.draw_points(name=self.name, points=None, hidden=True)
             return 0
         self._counter.zero_()
         wp.launch(
@@ -3173,7 +3174,7 @@ class ColoredParticleOverlay:
 
     def update_cryo(
         self,
-        viewer: newton.viewer.ViewerBase,
+        viewer: Any,
         particle_q: wp.array,
         particle_flags: wp.array,
         particle_grid_xyz: wp.array,
@@ -3204,7 +3205,7 @@ class ColoredParticleOverlay:
         calibrated interactively.
         """
         if hidden:
-            viewer.log_points(name=self.name, points=None, hidden=True)
+            viewer.draw_points(name=self.name, points=None, hidden=True)
             return 0
         gx, gy, gz = grid_shape
         inv_nx = 1.0 / max(gx - 1, 1)
@@ -3239,7 +3240,7 @@ class ColoredParticleOverlay:
     def _log(self, viewer, radius: float, hidden: bool) -> int:
         count = int(self._counter.numpy()[0])
         if count == 0:
-            viewer.log_points(name=self.name, points=None, hidden=True)
+            viewer.draw_points(name=self.name, points=None, hidden=True)
             return 0
         # ViewerGL.log_points expects ``radii`` as a wp.array despite the
         # docstring permitting a bare float; fill the scratch buffer once per
@@ -3247,7 +3248,7 @@ class ColoredParticleOverlay:
         if self._last_radius != radius:
             self._out_radii.fill_(float(radius))
             self._last_radius = float(radius)
-        viewer.log_points(
+        viewer.draw_points(
             name=self.name,
             points=self._out_points[:count],
             radii=self._out_radii[:count],
@@ -3282,7 +3283,7 @@ class CryoMeshVertexOverlay:
 
     def update_cryo(
         self,
-        viewer: newton.viewer.ViewerBase,
+        viewer: Any,
         tri_indices: wp.array,
         vertex_pos: wp.array,
         vertex_uv3: wp.array,
@@ -3302,7 +3303,7 @@ class CryoMeshVertexOverlay:
     ) -> int:
         """Render MC triangle corners as cryo-coloured points."""
         if num_triangles <= 0:
-            viewer.log_points(name=self.name, points=None, hidden=True)
+            viewer.draw_points(name=self.name, points=None, hidden=True)
             return 0
 
         point_count = int(num_triangles) * 3
@@ -3331,7 +3332,7 @@ class CryoMeshVertexOverlay:
         if self._last_radius != radius:
             self._radii.fill_(float(radius))
             self._last_radius = float(radius)
-        viewer.log_points(
+        viewer.draw_points(
             name=self.name,
             points=self._points[:point_count],
             radii=self._radii[:point_count],
@@ -3358,7 +3359,7 @@ class GrabConstraintOverlay:
 
     def update(
         self,
-        viewer: newton.viewer.ViewerBase,
+        viewer: Any,
         *,
         grab_indices: wp.array,
         particle_q: wp.array,
@@ -3371,8 +3372,8 @@ class GrabConstraintOverlay:
     ) -> None:
         count = max(0, min(int(grab_count), self.capacity))
         if hidden or count <= 0 or pull_target is None:
-            viewer.log_lines(name=self.name, starts=None, ends=None, colors=None, hidden=True)
-            viewer.log_points(name=self.points_name, points=None, hidden=True)
+            viewer.draw_lines(name=self.name, starts=None, ends=None, colors=None, hidden=True)
+            viewer.draw_points(name=self.points_name, points=None, hidden=True)
             return
 
         target = np.asarray(pull_target, dtype=np.float32).reshape(3)
@@ -3387,7 +3388,7 @@ class GrabConstraintOverlay:
             outputs=[self._starts, self._ends],
             device=self.device,
         )
-        viewer.log_lines(
+        viewer.draw_lines(
             name=self.name,
             starts=self._starts[:count],
             ends=self._ends[:count],
@@ -3405,7 +3406,7 @@ class GrabConstraintOverlay:
             if self._last_color != point_color:
                 self._colors.fill_(wp.vec3(*point_color))
                 self._last_color = point_color
-            viewer.log_points(
+            viewer.draw_points(
                 name=self.points_name,
                 points=self._ends[:count],
                 radii=self._radii[:count],
@@ -3413,7 +3414,7 @@ class GrabConstraintOverlay:
                 hidden=False,
             )
         else:
-            viewer.log_points(name=self.points_name, points=None, hidden=True)
+            viewer.draw_points(name=self.points_name, points=None, hidden=True)
 
 
 class ShapeMatchingClusterOverlay:
@@ -3437,7 +3438,7 @@ class ShapeMatchingClusterOverlay:
 
     def update(
         self,
-        viewer: newton.viewer.ViewerBase,
+        viewer: Any,
         *,
         indices_by_slot: wp.array | None,
         cluster_active: wp.array | None,
@@ -3449,7 +3450,7 @@ class ShapeMatchingClusterOverlay:
         width: float = 0.0005,
     ) -> None:
         if hidden or indices_by_slot is None or cluster_active is None or num_clusters <= 0:
-            viewer.log_lines(name=self.name, starts=None, ends=None, colors=None, hidden=True)
+            viewer.draw_lines(name=self.name, starts=None, ends=None, colors=None, hidden=True)
             return
 
         line_count = int(num_clusters) * self.EDGES_PER_CLUSTER
@@ -3469,7 +3470,7 @@ class ShapeMatchingClusterOverlay:
             outputs=[self._starts, self._ends],
             device=self.device,
         )
-        viewer.log_lines(
+        viewer.draw_lines(
             name=self.name,
             starts=self._starts[:line_count],
             ends=self._ends[:line_count],
@@ -3480,7 +3481,7 @@ class ShapeMatchingClusterOverlay:
 
 
 def log_tool_overlay(
-    viewer: newton.viewer.ViewerBase,
+    viewer: Any,
     name: str,
     tool: Tool,
     width_scale: float = 2.0,
@@ -3498,7 +3499,7 @@ def log_tool_overlay(
     # Grab the first segment's radius for line width; a mixed-radius tool
     # would need per-segment widths which log_lines does not support.
     radius = float(tool._radius[0])
-    viewer.log_lines(
+    viewer.draw_lines(
         name=name,
         starts=tool.segments.p0,
         ends=tool.segments.p1,

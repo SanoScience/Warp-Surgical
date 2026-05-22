@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Warp kernels for corner-grid shape matching."""
+"""Warp kernels for hex-grid shape matching."""
 
 from __future__ import annotations
 
