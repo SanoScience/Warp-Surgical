@@ -125,7 +125,8 @@ def test_hex_help_does_not_advertise_runtime_driver_selector():
     assert "hex-runtime-driver" not in result.stderr
 
 
-def test_python_module_hex_synthetic_headless_exit_after_init():
+@pytest.mark.parametrize("runtime_driver_args", [(), ("--hex-runtime-driver", "session")])
+def test_python_module_hex_synthetic_headless_exit_after_init(runtime_driver_args):
     result = subprocess.run(
         [
             sys.executable,
@@ -142,6 +143,7 @@ def test_python_module_hex_synthetic_headless_exit_after_init():
             "headless",
             "--input-backend",
             "off",
+            *runtime_driver_args,
             "--exit-after-init",
         ],
         check=False,
@@ -152,6 +154,7 @@ def test_python_module_hex_synthetic_headless_exit_after_init():
 
     assert result.returncode == 0, result.stderr + result.stdout
     assert "[startup]" in result.stdout
+    assert "wall:" not in result.stdout
 
 
 def test_python_hex_module_synthetic_headless_exit_after_init():
@@ -180,6 +183,74 @@ def test_python_hex_module_synthetic_headless_exit_after_init():
 
     assert result.returncode == 0, result.stderr + result.stdout
     assert "[startup]" in result.stdout
+    assert "wall:" not in result.stdout
+
+
+@pytest.mark.parametrize("runtime_driver_args", [(), ("--hex-runtime-driver", "session")])
+def test_python_module_hex_synthetic_headless_frames_zero_renders_no_frame(runtime_driver_args):
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "omnisurg",
+            "hex",
+            "--dataset",
+            "synthetic",
+            "--size",
+            "2",
+            "--texture",
+            "off",
+            "--viewer",
+            "headless",
+            "--input-backend",
+            "off",
+            "--cryo-renderer",
+            "off",
+            *runtime_driver_args,
+            "--frames",
+            "0",
+        ],
+        check=False,
+        text=True,
+        capture_output=True,
+        timeout=60,
+    )
+
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert "[startup]" in result.stdout
+    assert "  frame" not in result.stdout
+
+
+def test_python_module_hex_synthetic_headless_app_frames_one_reports_one_frame():
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "omnisurg",
+            "hex",
+            "--dataset",
+            "synthetic",
+            "--size",
+            "2",
+            "--texture",
+            "off",
+            "--viewer",
+            "headless",
+            "--input-backend",
+            "off",
+            "--cryo-renderer",
+            "off",
+            "--frames",
+            "1",
+        ],
+        check=False,
+        text=True,
+        capture_output=True,
+        timeout=60,
+    )
+
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert "  frame    0:" in result.stdout
 
 
 def test_hex_runtime_headless_lifecycle_does_not_launch_app_loop(monkeypatch):
@@ -217,9 +288,50 @@ def test_hex_runtime_headless_lifecycle_does_not_launch_app_loop(monkeypatch):
     runtime.step()
     runtime.render()
     runtime.pace()
+    assert runtime._session is not None
+    assert runtime._session._frame_loop is not None
+    assert runtime._session._frame_loop.completed_frames == 1
     runtime.close()
 
     assert not runtime.is_running()
+    assert runtime.return_code == 0
+
+
+def test_hex_runtime_headless_frames_zero_does_not_render(monkeypatch):
+    volume = PreparedVolume(
+        labels=np.ones((2, 2, 2), dtype=np.uint8),
+        voxel_size_m=0.005,
+        materials=MaterialTable(DEFAULT_MATERIALS),
+        class_map={0: "background", 1: "synthetic_block"},
+    )
+    launcher = HexAppLauncher(
+        volume,
+        (
+            "--viewer",
+            "headless",
+            "--input-backend",
+            "off",
+            "--frames",
+            "0",
+            "--cryo-renderer",
+            "off",
+            "--no-gl-interop",
+        ),
+    )
+
+    def fail_run(argv=None):
+        raise AssertionError("HexRuntime.init() should not launch the full app loop")
+
+    monkeypatch.setattr(launcher, "run", fail_run)
+
+    runtime = HexRuntime(launcher)
+    runtime.init()
+    assert not runtime.is_running()
+    assert runtime._session is not None
+    assert runtime._session._frame_loop is not None
+    assert runtime._session._frame_loop.completed_frames == 0
+    runtime.close()
+
     assert runtime.return_code == 0
 
 
@@ -231,6 +343,7 @@ def test_hex_runtime_backend_lifecycles_do_not_launch_app_loop(monkeypatch, tmp_
         class_map={0: "background", 1: "synthetic_block"},
     )
     created_backends: list[str] = []
+    created_usd_num_frames: list[int | None] = []
 
     class FakeBridge:
         def __init__(self, viewer_config, model, device):
@@ -270,6 +383,7 @@ def test_hex_runtime_backend_lifecycles_do_not_launch_app_loop(monkeypatch, tmp_
         def __init__(self, path, num_frames=None):
             self.path = path
             self.num_frames = num_frames
+            created_usd_num_frames.append(num_frames)
 
         def set_model(self, model):
             self.model = model
@@ -314,6 +428,7 @@ def test_hex_runtime_backend_lifecycles_do_not_launch_app_loop(monkeypatch, tmp_
 
         assert runtime.return_code == 0
         assert expected_backend in created_backends
+    assert created_usd_num_frames == [1]
 
 
 def test_removed_spring_flags_are_rejected():

@@ -21,6 +21,7 @@ from .haptic import FallbackInput, HapticUnavailable, InputPose, open_haptic_inp
 from .kernels.cell_render import update_cell_render_state
 from .kernels.marching_cubes import allocate_mc_buffers, bake_vertex_uv3, upload_mc_tables
 from .render import SurfaceRenderer
+from .runtime_lifecycle import HexFrameLoopState, build_hex_frame_loop_config
 from .runtime_config import INSTRUMENT_COUNT as _INSTRUMENT_COUNT
 from .runtime_config import add_hex_runtime_arguments, normalize_hex_runtime_args
 from .setup import (
@@ -96,9 +97,7 @@ class HexRuntimeSession:
         self.return_code: int | None = None
         self._closed = False
         self._running = False
-        self._frame = 0
-        self._max_frames: int | None = None
-        self._frame_dt = 1.0 / max(1, int(args.fps))
+        self._frame_loop: HexFrameLoopState | None = None
         self._state = None
         self._next_state = None
         self._solver: HexShapeMatchingSolver | None = None
@@ -114,23 +113,16 @@ class HexRuntimeSession:
         self._mc_factor = 0.0
         self._surface: SurfaceRenderer | None = None
         self._input_devices: list = []
-        self._start_wall = 0.0
-        self._completed_frames = 0
         self._tri_count = 0
 
     def init(self) -> None:
         if self._model is not None:
             return
         normalize_hex_runtime_args(self.args)
+        frame_loop_config = build_hex_frame_loop_config(self.args)
 
         phases: list[tuple[str, float]] = []
         startup_t0 = time.perf_counter()
-        self._start_wall = time.time()
-
-        if self.args.frames is None:
-            self._max_frames = 1 if str(self.args.viewer) == "headless" else None
-        else:
-            self._max_frames = max(0, int(self.args.frames))
 
         core_setup = build_hex_core_setup(self.args, prepared_volume=self.volume, startup_phases=phases)
         atlas = core_setup.atlas_setup.atlas
@@ -182,7 +174,7 @@ class HexRuntimeSession:
             if self.args.usd is not None:
                 import newton
 
-                viewer = newton.viewer.ViewerUSD(str(self.args.usd), num_frames=self._max_frames)
+                viewer = newton.viewer.ViewerUSD(str(self.args.usd), num_frames=frame_loop_config.max_frames)
                 viewer.set_model(model)
                 render_bridge = RenderBridge.wrap_existing(viewer, backend="usd", device=device)
             else:
@@ -226,16 +218,19 @@ class HexRuntimeSession:
         self._surface = surface
         self._viewer = viewer
         self._render_bridge = render_bridge
-        self._running = bool(not self.exit_after_init and (self._max_frames is None or self._max_frames > 0))
+        self._frame_loop = HexFrameLoopState(frame_loop_config)
+        self.exit_after_init = bool(frame_loop_config.exit_after_init)
+        self._running = self._frame_loop.should_run_frame()
         if self.exit_after_init:
             self.return_code = 0
         _print_startup_report(phases, time.perf_counter() - startup_t0)
 
     def _register_runtime_ui(self, render_bridge: RenderBridge) -> None:
         def _runtime_panel(ui) -> None:
+            frame_loop = self._frame_loop
             ui.text("OmniSurg Hex")
             ui.separator()
-            ui.text(f"frame: {self._frame}")
+            ui.text(f"frame: {0 if frame_loop is None else frame_loop.frame}")
             ui.text(f"triangles: {self._tri_count}")
             if self._delete_state is not None:
                 active_cells = 0
@@ -261,8 +256,10 @@ class HexRuntimeSession:
     def step(self) -> None:
         if not self._running or self._solver is None or self._state is None or self._next_state is None:
             return
+        if self._frame_loop is None:
+            return
         substeps = max(1, int(self.args.substeps))
-        sub_dt = self._frame_dt / float(substeps)
+        sub_dt = self._frame_loop.frame_dt / float(substeps)
         for _ in range(substeps):
             self._solver.step(self._state, self._next_state, None, None, sub_dt)
             self._state, self._next_state = self._next_state, self._state
@@ -271,18 +268,15 @@ class HexRuntimeSession:
     def render(self) -> None:
         if not self._running or self._render_bridge is None or self._viewer is None or self._state is None:
             return
-        self._render_bridge.begin_frame(self._frame * self._frame_dt)
+        if self._frame_loop is None:
+            return
+        self._render_bridge.begin_frame(self._frame_loop.frame_time)
         if bool(self.args.viewer_log_state):
             self._render_bridge.log_state(self._state)
         self._draw_surface()
         self._render_bridge.end_frame()
-        self._frame += 1
-        self._completed_frames = self._frame
-        if self._max_frames is not None and self._frame >= self._max_frames:
-            self._running = False
-            self.return_code = 0
-        elif not self._render_bridge.is_running():
-            self._running = False
+        self._running = self._frame_loop.complete_frame(render_running=self._render_bridge.is_running())
+        if not self._running:
             self.return_code = 0
 
     def _draw_surface(self) -> None:
@@ -341,10 +335,10 @@ class HexRuntimeSession:
             self._render_bridge.close()
         if self.return_code is None:
             self.return_code = 0
-        elapsed = time.time() - self._start_wall if self._start_wall else 0.0
-        if elapsed > 0.0:
-            fps = float(self._completed_frames) / elapsed
-            print(f"wall: {elapsed:.1f} s  ({fps:.1f} fps)")
+        if self._frame_loop is not None and not self._frame_loop.config.exit_after_init:
+            elapsed = self._frame_loop.elapsed
+            if elapsed > 0.0:
+                print(f"wall: {elapsed:.1f} s  ({self._frame_loop.average_fps:.1f} fps)")
 
 
 @dataclass

@@ -136,6 +136,10 @@ from omnisurg.hex.runtime_config import (  # noqa: E402
     normalize_hex_runtime_args,
     normalize_instrument_tool_mode as _normalize_instrument_tool_mode,
 )
+from omnisurg.hex.runtime_lifecycle import (  # noqa: E402
+    HexFrameLoopState,
+    build_hex_frame_loop_config,
+)
 from omnisurg.hex.setup import (  # noqa: E402
     StartupPhase as _StartupPhase,
     build_hex_core_setup,
@@ -183,6 +187,7 @@ class _HeadlessHexViewer:
         self.show_particles = False
         self.show_ui = False
         self._paused = False
+        self._running = True
         self._key_handler = {}
         self.ui = SimpleNamespace(
             is_available=False,
@@ -218,9 +223,10 @@ class _HeadlessHexViewer:
         return bool(self._paused)
 
     def is_running(self) -> bool:
-        return False
+        return bool(self._running)
 
     def close(self) -> None:
+        self._running = False
         return None
 
 
@@ -693,6 +699,7 @@ def _run_app(argv: Sequence[str] | None = None, *, prepared_volume: PreparedVolu
     parser = _build_app_runtime_parser()
     args = parser.parse_args(None if argv is None else list(argv))
     slang_viewer_requested = normalize_hex_runtime_args(args, parser=parser)
+    frame_loop_config = build_hex_frame_loop_config(args)
     environment_map_folder = (
         Path(args.slang_environment_map).expanduser().parent if args.slang_environment_map else Path("environments")
     )
@@ -1837,7 +1844,7 @@ def _run_app(argv: Sequence[str] | None = None, *, prepared_volume: PreparedVolu
     render_bridge = None
     with _StartupPhase("viewer_create", startup_phases):
         if args.usd is not None:
-            viewer = newton.viewer.ViewerUSD(args.usd, num_frames=args.frames)
+            viewer = newton.viewer.ViewerUSD(args.usd, num_frames=frame_loop_config.max_frames)
         elif slang_viewer_requested:
             camera_pos = (0.12, -0.18, 0.12) if args.size > 0 else (0.32, 0.04, 0.08)
             try:
@@ -3000,7 +3007,7 @@ def _run_app(argv: Sequence[str] | None = None, *, prepared_volume: PreparedVolu
         f"gravity {'ON' if ui.gravity_enabled else 'OFF'}"
     )
 
-    frame_dt = 1.0 / args.fps
+    frame_dt = frame_loop_config.frame_dt
     particle_pick_radius = max(float(atlas.voxel_size) * 0.4, float(model.particle_radius.numpy().max()) * 4.0)
 
     _print_startup_report(startup_phases, time.perf_counter() - startup_t0)
@@ -3011,9 +3018,7 @@ def _run_app(argv: Sequence[str] | None = None, *, prepared_volume: PreparedVolu
             input_device.close()
         return 0
 
-    t_start = time.time()
-    completed_frames = 0
-    frame = 0
+    frame_loop = HexFrameLoopState(frame_loop_config)
     last_cut_material_visibility_revision = -1
 
     last_async_delete_result: DeviceDeletionResult | None = None
@@ -3190,8 +3195,8 @@ def _run_app(argv: Sequence[str] | None = None, *, prepared_volume: PreparedVolu
                 _commit_cell_deletion_async(result, sync_for_ui=False)
 
     def _reset_simulation() -> None:
-        nonlocal completed_frames, frame, last_async_delete_result, last_cut_material_visibility_revision
-        nonlocal last_timer_report_time, locked_count, picker_aabbs_valid, reported_frame_count, t_start
+        nonlocal last_async_delete_result, last_cut_material_visibility_revision
+        nonlocal last_timer_report_time, locked_count, picker_aabbs_valid, reported_frame_count
         nonlocal instrument_mc_collision_topology_revision, instrument_mc_collision_triangle_count
 
         if ui.material_dirty:
@@ -3259,16 +3264,15 @@ def _run_app(argv: Sequence[str] | None = None, *, prepared_volume: PreparedVolu
         instrument_mc_collision_topology_revision = -1
         instrument_mc_collision_triangle_count = 0
         picker_aabbs_valid = False
-        completed_frames = 0
+        frame_loop.reset()
         reported_frame_count = 0
-        frame = 0
-        t_start = time.time()
         last_timer_report_time = time.perf_counter()
         _invalidate_graph_capture("simulation-reset")
         print("[reset] simulation reset; current UI params kept")
 
-    while args.frames is None or frame < args.frames:
+    while frame_loop.should_run_frame():
         with _scoped_timer("frame"):
+            frame = frame_loop.frame
             picker_aabbs_wanted_after_physics = False
             physics_advanced = False
             active_cut_surface_fast = False
@@ -3277,6 +3281,7 @@ def _run_app(argv: Sequence[str] | None = None, *, prepared_volume: PreparedVolu
 
             if ui.pending_reset_simulation:
                 _reset_simulation()
+                frame = frame_loop.frame
 
             _poll_instrument_positions()
             _print_instrument_tool_positions()
@@ -3743,7 +3748,7 @@ def _run_app(argv: Sequence[str] | None = None, *, prepared_volume: PreparedVolu
                     )
                     if physics_advanced:
                         picker_aabbs_valid = False
-            render_bridge.begin_frame(frame * frame_dt)
+            render_bridge.begin_frame(frame_loop.frame_time)
             with _scoped_timer("log_state"):
                 if ui.viewer_log_state:
                     viewer.log_state(state_0)
@@ -4078,9 +4083,12 @@ def _run_app(argv: Sequence[str] | None = None, *, prepared_volume: PreparedVolu
                 delete_state.sync_host_mirrors({"stats"})
             ui.active_cells = n_cells - int(delete_state.deleted_total)
             ui.deleted_total = int(delete_state.deleted_total)
-            completed_frames = frame + 1
+            frame_loop.complete_frame(render_running=render_bridge.is_running())
+            completed_frames = frame_loop.completed_frames
 
-            if frame % 60 == 0 or (args.frames is not None and frame == args.frames - 1):
+            if frame % 60 == 0 or (
+                frame_loop_config.max_frames is not None and frame == frame_loop_config.max_frames - 1
+            ):
                 print(
                     f"  frame {frame:4d}: active={ui.active_cells:6d} deleted={ui.deleted_total:5d} "
                     f"tris={ui.tri_count:6d} pick={ui.last_pick_cell:6d} "
@@ -4089,19 +4097,17 @@ def _run_app(argv: Sequence[str] | None = None, *, prepared_volume: PreparedVolu
                 )
 
             _flush_timer_report(completed_frames)
-            if not render_bridge.is_running():
+            if not frame_loop.should_run_frame():
                 break
 
-        frame += 1
-    _flush_timer_report(completed_frames, force=True)
+    _flush_timer_report(frame_loop.completed_frames, force=True)
     set_scoped_timer_dict(None)
     _commit_pending_material_shader_edits(force=True)
     for input_device in reversed(input_devices):
         input_device.close()
     render_bridge.close()
-    elapsed = time.time() - t_start
-    avg_fps = (completed_frames / elapsed) if elapsed > 0.0 else 0.0
-    print(f"wall: {elapsed:.1f} s  ({avg_fps:.1f} fps)")
+    elapsed = frame_loop.elapsed
+    print(f"wall: {elapsed:.1f} s  ({frame_loop.average_fps:.1f} fps)")
     return 0
 
 
