@@ -7,6 +7,7 @@ import numpy as np
 import pytest
 
 from omnisurg.hex import app_runtime
+from omnisurg.hex import runtime_resources
 from omnisurg.hex.app import OmniSurgHexApp
 from omnisurg.hex.cli import build_parser
 from omnisurg.hex.data.types import PreparedVolume
@@ -23,6 +24,26 @@ def _make_volume() -> PreparedVolume:
         class_map={0: "background", 1: "synthetic_block"},
         texture_rgb=np.zeros((2, 2, 2, 3), dtype=np.uint8),
     )
+
+
+class _FakeCloseable:
+    def __init__(self, name: str, close_order: list[str]) -> None:
+        self.name = name
+        self.close_order = close_order
+
+    def poll(self):
+        return type("Pose", (), {"valid": False})()
+
+    def close(self) -> None:
+        self.close_order.append(self.name)
+
+
+def _patch_fallback_inputs(monkeypatch, close_order: list[str]) -> None:
+    def fake_fallback_inputs(count: int):
+        assert count == 2
+        return [_FakeCloseable("input0", close_order), _FakeCloseable("input1", close_order)]
+
+    monkeypatch.setattr(runtime_resources, "_fallback_instrument_inputs", fake_fallback_inputs)
 
 
 def test_unified_hex_parser_prog():
@@ -184,6 +205,172 @@ def test_python_hex_module_synthetic_headless_exit_after_init():
     assert result.returncode == 0, result.stderr + result.stdout
     assert "[startup]" in result.stdout
     assert "wall:" not in result.stdout
+
+
+def test_app_exit_after_init_closes_input_devices_before_render_bridge(monkeypatch, capsys):
+    close_order: list[str] = []
+    _patch_fallback_inputs(monkeypatch, close_order)
+    original_close = app_runtime._HeadlessHexViewer.close
+
+    def record_headless_close(self):
+        close_order.append("render")
+        return original_close(self)
+
+    monkeypatch.setattr(app_runtime._HeadlessHexViewer, "close", record_headless_close)
+
+    result = app_runtime.run_prepared_volume(
+        _make_volume(),
+        (
+            "--viewer",
+            "headless",
+            "--input-backend",
+            "fallback",
+            "--cryo-renderer",
+            "off",
+            "--no-gl-interop",
+            "--exit-after-init",
+        ),
+    )
+
+    captured = capsys.readouterr()
+    assert result == 0
+    assert close_order == ["input1", "input0", "render"]
+    assert "[startup]" in captured.out
+    assert "wall:" not in captured.out
+
+
+def test_session_exit_after_init_closes_input_devices_before_render_bridge(monkeypatch, capsys):
+    close_order: list[str] = []
+    _patch_fallback_inputs(monkeypatch, close_order)
+
+    class FakeBridge:
+        def __init__(self, viewer_config, model, device):
+            del viewer_config, model, device
+            self.show_ui = False
+
+        def set_camera(self, *args, **kwargs):
+            pass
+
+        def register_ui_callback(self, *args, **kwargs):
+            pass
+
+        def close(self):
+            close_order.append("render")
+
+    monkeypatch.setattr(hex_runtime, "RenderBridge", FakeBridge)
+
+    result = HexAppLauncher(
+        _make_volume(),
+        (
+            "--viewer",
+            "headless",
+            "--input-backend",
+            "fallback",
+            "--cryo-renderer",
+            "off",
+            "--no-gl-interop",
+            "--exit-after-init",
+        ),
+    ).run()
+
+    captured = capsys.readouterr()
+    assert result == 0
+    assert close_order == ["input1", "input0", "render"]
+    assert "[startup]" in captured.out
+    assert "wall:" not in captured.out
+
+
+@pytest.mark.parametrize("runtime_driver_args", [(), ("--hex-runtime-driver", "session")])
+def test_runtime_drivers_close_opened_inputs_on_count_mismatch(monkeypatch, runtime_driver_args):
+    close_order: list[str] = []
+
+    def fake_haptic_inputs(device_names):
+        assert tuple(device_names) == ("Default Device", "Left Device")
+        return [_FakeCloseable("input0", close_order)]
+
+    monkeypatch.setattr(runtime_resources, "open_haptic_inputs", fake_haptic_inputs)
+
+    result = OmniSurgHexApp(_make_volume()).run(
+        (
+            "--viewer",
+            "headless",
+            "--input-backend",
+            "openhaptics",
+            "--cryo-renderer",
+            "off",
+            "--no-gl-interop",
+            *runtime_driver_args,
+            "--exit-after-init",
+        )
+    )
+
+    assert result == 2
+    assert close_order == ["input0"]
+
+
+def test_app_slang_viewer_creation_failure_closes_opened_inputs(monkeypatch, capsys):
+    close_order: list[str] = []
+    _patch_fallback_inputs(monkeypatch, close_order)
+
+    class FailingBridge:
+        def __init__(self, viewer_config, model, device):
+            del viewer_config, model, device
+            raise RuntimeError("no slang backend")
+
+    monkeypatch.setattr(app_runtime, "RenderBridge", FailingBridge)
+
+    result = app_runtime.run_prepared_volume(
+        _make_volume(),
+        (
+            "--viewer",
+            "slang",
+            "--input-backend",
+            "fallback",
+            "--cryo-renderer",
+            "off",
+            "--no-gl-interop",
+            "--exit-after-init",
+        ),
+    )
+
+    captured = capsys.readouterr()
+    assert result == 1
+    assert close_order == ["input1", "input0"]
+    assert "Slang viewer unavailable: no slang backend" in captured.err
+    assert "wall:" not in captured.out
+
+
+def test_session_render_bridge_creation_failure_closes_opened_inputs(monkeypatch):
+    close_order: list[str] = []
+    _patch_fallback_inputs(monkeypatch, close_order)
+
+    class FailingBridge:
+        def __init__(self, viewer_config, model, device):
+            del viewer_config, model, device
+            raise RuntimeError("bridge failed")
+
+    monkeypatch.setattr(hex_runtime, "RenderBridge", FailingBridge)
+    parser = hex_runtime._build_lifecycle_parser()
+    session = hex_runtime.HexRuntimeSession(
+        _make_volume(),
+        parser.parse_args(
+            [
+                "--viewer",
+                "headless",
+                "--input-backend",
+                "fallback",
+                "--cryo-renderer",
+                "off",
+                "--no-gl-interop",
+                "--exit-after-init",
+            ]
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="bridge failed"):
+        session.init()
+
+    assert close_order == ["input1", "input0"]
 
 
 @pytest.mark.parametrize("runtime_driver_args", [(), ("--hex-runtime-driver", "session")])

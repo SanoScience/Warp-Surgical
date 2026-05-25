@@ -17,13 +17,14 @@ from omnisurg.config import ViewerConfig
 from omnisurg.rendering.bridge import RenderBridge
 
 from .data.types import PreparedVolume
-from .haptic import FallbackInput, HapticUnavailable, InputPose, open_haptic_inputs, open_minimou_inputs
+from .haptic import HapticUnavailable
 from .kernels.cell_render import update_cell_render_state
 from .kernels.marching_cubes import allocate_mc_buffers, bake_vertex_uv3, upload_mc_tables
 from .render import SurfaceRenderer
 from .runtime_lifecycle import HexFrameLoopState, build_hex_frame_loop_config
 from .runtime_config import INSTRUMENT_COUNT as _INSTRUMENT_COUNT
 from .runtime_config import add_hex_runtime_arguments, normalize_hex_runtime_args
+from .runtime_resources import HexRuntimeResourceOwner, build_hex_usd_viewer, open_hex_instrument_inputs
 from .setup import (
     StartupPhase as _StartupPhase,
     build_hex_core_setup,
@@ -34,25 +35,6 @@ from .shape_matching_solver import HexShapeMatchingSolver
 
 def _apply_gravity(model, enabled: bool, gravity_on: np.ndarray, gravity_off: np.ndarray) -> None:
     model.gravity.assign(gravity_on if enabled else gravity_off)
-
-
-def _fallback_instrument_inputs() -> list[FallbackInput]:
-    return [
-        FallbackInput(InputPose(position=(0.0, 0.0, 0.0), valid=True)),
-        FallbackInput(InputPose(position=(0.0, 0.0, 0.0), valid=True)),
-    ]
-
-
-def _open_instrument_inputs(backend: str, device_name: str, left_device_name: str) -> list:
-    if backend == "off":
-        return []
-    if backend == "fallback":
-        return _fallback_instrument_inputs()
-    if backend == "minimou":
-        return open_minimou_inputs(count=_INSTRUMENT_COUNT)
-    if backend == "openhaptics":
-        return open_haptic_inputs([device_name, left_device_name])
-    raise ValueError(f"unknown input backend {backend!r}")
 
 
 def _build_lifecycle_parser() -> argparse.ArgumentParser:
@@ -104,6 +86,7 @@ class HexRuntimeSession:
         self._model = None
         self._viewer = None
         self._render_bridge: RenderBridge | None = None
+        self._resource_owner = HexRuntimeResourceOwner()
         self._delete_state = None
         self._heat_state = None
         self._particle_grid = None
@@ -153,56 +136,58 @@ class HexRuntimeSession:
 
         with _StartupPhase("input_devices", phases):
             try:
-                self._input_devices = _open_instrument_inputs(
-                    str(self.args.input_backend),
-                    str(self.args.device_name),
-                    str(self.args.left_device_name),
-                )
+                self._input_devices = open_hex_instrument_inputs(self.args, expected_count=_INSTRUMENT_COUNT)
+                self._resource_owner.input_devices = self._input_devices
             except HapticUnavailable as exc:
                 print(f"Instrument input unavailable: {exc}")
                 self.return_code = 2
                 self._running = False
                 return
 
-        with _StartupPhase("state_and_viewer", phases, sync_device=device):
-            state = pg.state
-            next_state = model.state()
-            gravity_on = model.gravity.numpy().copy()
-            gravity_off = np.zeros_like(gravity_on)
-            _apply_gravity(model, bool(self.args.gravity_on), gravity_on, gravity_off)
+        try:
+            with _StartupPhase("state_and_viewer", phases, sync_device=device):
+                state = pg.state
+                next_state = model.state()
+                gravity_on = model.gravity.numpy().copy()
+                gravity_off = np.zeros_like(gravity_on)
+                _apply_gravity(model, bool(self.args.gravity_on), gravity_on, gravity_off)
 
-            if self.args.usd is not None:
-                import newton
-
-                viewer = newton.viewer.ViewerUSD(str(self.args.usd), num_frames=frame_loop_config.max_frames)
-                viewer.set_model(model)
-                render_bridge = RenderBridge.wrap_existing(viewer, backend="usd", device=device)
-            else:
-                camera_pos = (0.12, -0.18, 0.12) if int(self.args.size) > 0 else (0.32, 0.04, 0.08)
-                viewer_config = ViewerConfig(
-                    backend=str(self.args.viewer),
-                    camera_pos=camera_pos,
-                    vsync=True,
-                    textures_enabled=bool(str(self.args.cryo_renderer) != "off"),
-                    slang_world_up=(0.0, 0.0, 1.0),
-                    slang_procedural_material_path=str(self.args.slang_procedural_material or "") or None,
-                    slang_procedural_material_scale=max(float(self.args.slang_procedural_scale), 0.000001),
-                    slang_procedural_material_hot_reload=bool(self.args.slang_procedural_hot_reload),
-                    slang_environment_path=str(self.args.slang_environment_map or "") or None,
-                    slang_environment_intensity=max(float(self.args.slang_environment_intensity), 0.0),
-                    slang_environment_background=bool(self.args.slang_environment_background),
-                    slang_environment_rotation_degrees=float(self.args.slang_environment_rotation_deg),
-                    slang_environment_pitch_degrees=float(self.args.slang_environment_pitch_deg),
-                )
-                render_bridge = RenderBridge(viewer_config, model, device)
-                viewer = render_bridge
-                if hasattr(viewer, "set_camera"):
-                    try:
-                        viewer.set_camera(pos=wp.vec3(*camera_pos), pitch=-18.0, yaw=30.0)
-                    except TypeError:
-                        viewer.set_camera(wp.vec3(*camera_pos), -18.0, 30.0)
-                render_bridge.show_ui = True
-                self._register_runtime_ui(render_bridge)
+                if self.args.usd is not None:
+                    viewer = build_hex_usd_viewer(str(self.args.usd), frame_loop_config)
+                    viewer.set_model(model)
+                    render_bridge = RenderBridge.wrap_existing(viewer, backend="usd", device=device)
+                    self._resource_owner.render_bridge = render_bridge
+                else:
+                    camera_pos = (0.12, -0.18, 0.12) if int(self.args.size) > 0 else (0.32, 0.04, 0.08)
+                    viewer_config = ViewerConfig(
+                        backend=str(self.args.viewer),
+                        camera_pos=camera_pos,
+                        vsync=True,
+                        textures_enabled=bool(str(self.args.cryo_renderer) != "off"),
+                        slang_world_up=(0.0, 0.0, 1.0),
+                        slang_procedural_material_path=str(self.args.slang_procedural_material or "") or None,
+                        slang_procedural_material_scale=max(float(self.args.slang_procedural_scale), 0.000001),
+                        slang_procedural_material_hot_reload=bool(self.args.slang_procedural_hot_reload),
+                        slang_environment_path=str(self.args.slang_environment_map or "") or None,
+                        slang_environment_intensity=max(float(self.args.slang_environment_intensity), 0.0),
+                        slang_environment_background=bool(self.args.slang_environment_background),
+                        slang_environment_rotation_degrees=float(self.args.slang_environment_rotation_deg),
+                        slang_environment_pitch_degrees=float(self.args.slang_environment_pitch_deg),
+                    )
+                    render_bridge = RenderBridge(viewer_config, model, device)
+                    self._resource_owner.render_bridge = render_bridge
+                    viewer = render_bridge
+                    if hasattr(viewer, "set_camera"):
+                        try:
+                            viewer.set_camera(pos=wp.vec3(*camera_pos), pitch=-18.0, yaw=30.0)
+                        except TypeError:
+                            viewer.set_camera(wp.vec3(*camera_pos), -18.0, 30.0)
+                    render_bridge.show_ui = True
+                    self._register_runtime_ui(render_bridge)
+        except Exception:
+            self._resource_owner.close()
+            self._input_devices = []
+            raise
 
         self._model = model
         self._state = state
@@ -326,13 +311,9 @@ class HexRuntimeSession:
             return
         self._running = False
         self._closed = True
-        for input_device in reversed(self._input_devices):
-            close = getattr(input_device, "close", None)
-            if callable(close):
-                close()
+        self._resource_owner.close()
         self._input_devices = []
-        if self._render_bridge is not None:
-            self._render_bridge.close()
+        self._render_bridge = None
         if self.return_code is None:
             self.return_code = 0
         if self._frame_loop is not None and not self._frame_loop.config.exit_after_init:

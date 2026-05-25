@@ -117,14 +117,11 @@ from omnisurg.hex.ui import (  # noqa: E402
     hdri_map_key as _hdri_map_key,
 )
 from omnisurg.hex.haptic import (  # noqa: E402
-    FallbackInput,
     HapticFrameConfig,
     HapticUnavailable,
     InputPose,
     MINIMOU_PROFILE,
     OPENHAPTICS_PROFILE,
-    open_haptic_inputs,
-    open_minimou_inputs,
     pose_to_world,
     quat_rotate,
 )
@@ -139,6 +136,11 @@ from omnisurg.hex.runtime_config import (  # noqa: E402
 from omnisurg.hex.runtime_lifecycle import (  # noqa: E402
     HexFrameLoopState,
     build_hex_frame_loop_config,
+)
+from omnisurg.hex.runtime_resources import (  # noqa: E402
+    HexRuntimeResourceOwner,
+    build_hex_usd_viewer,
+    open_hex_instrument_inputs,
 )
 from omnisurg.hex.setup import (  # noqa: E402
     StartupPhase as _StartupPhase,
@@ -312,29 +314,6 @@ def _initial_instrument_center(particle_q: np.ndarray) -> tuple[float, float, fl
     bounds_max = points.max(axis=0)
     center = 0.5 * (bounds_min + bounds_max)
     return (float(center[0]), float(center[1]), float(center[2]))
-
-
-def _fallback_instrument_inputs() -> list[FallbackInput]:
-    return [
-        FallbackInput(InputPose(position=(0.0, 0.0, 0.0), valid=True)),
-        FallbackInput(InputPose(position=(0.0, 0.0, 0.0), valid=True)),
-    ]
-
-
-def _open_instrument_inputs(
-    backend: str,
-    device_name: str,
-    left_device_name: str,
-) -> list:
-    if backend == "off":
-        return []
-    if backend == "fallback":
-        return _fallback_instrument_inputs()
-    if backend == "minimou":
-        return open_minimou_inputs(count=_INSTRUMENT_COUNT)
-    if backend == "openhaptics":
-        return open_haptic_inputs([device_name, left_device_name])
-    raise ValueError(f"unknown input backend {backend!r}")
 
 
 def _widen_viewer_left_panel(viewer, width: float = 600.0) -> None:
@@ -989,7 +968,8 @@ def _run_app(argv: Sequence[str] | None = None, *, prepared_volume: PreparedVolu
         locked_slot_by_node: dict[int, int] = {}
         locked_count = 0
 
-    input_devices = []
+    resource_owner = HexRuntimeResourceOwner()
+    input_devices = resource_owner.input_devices
     instrument_backend = str(args.input_backend)
     instrument_q_host = np.zeros((_INSTRUMENT_COUNT, 3), dtype=np.float32)
     instrument_q_prev_host = np.zeros((_INSTRUMENT_COUNT, 3), dtype=np.float32)
@@ -1040,19 +1020,11 @@ def _run_app(argv: Sequence[str] | None = None, *, prepared_volume: PreparedVolu
 
     if instrument_backend != "off":
         try:
-            input_devices = _open_instrument_inputs(
-                instrument_backend,
-                str(args.device_name),
-                str(args.left_device_name),
-            )
+            input_devices = open_hex_instrument_inputs(args, expected_count=_INSTRUMENT_COUNT)
         except HapticUnavailable as exc:
             print(f"Instrument input unavailable: {exc}")
             return 2
-        if len(input_devices) != _INSTRUMENT_COUNT:
-            for input_device in reversed(input_devices):
-                input_device.close()
-            print(f"Instrument input unavailable: expected {_INSTRUMENT_COUNT} devices, got {len(input_devices)}")
-            return 2
+        resource_owner.input_devices = input_devices
         if instrument_backend == "fallback":
             print("instrument input: static fallback poses")
         elif instrument_backend == "minimou":
@@ -1842,57 +1814,64 @@ def _run_app(argv: Sequence[str] | None = None, *, prepared_volume: PreparedVolu
         print("[gl-interop] disabled; ViewerGL mesh buffers will use CPU staging uploads")
 
     render_bridge = None
-    with _StartupPhase("viewer_create", startup_phases):
-        if args.usd is not None:
-            viewer = newton.viewer.ViewerUSD(args.usd, num_frames=frame_loop_config.max_frames)
-        elif slang_viewer_requested:
-            camera_pos = (0.12, -0.18, 0.12) if args.size > 0 else (0.32, 0.04, 0.08)
-            try:
-                viewer_config = ViewerConfig(
-                    backend=str(args.viewer),
-                    camera_pos=camera_pos,
-                    vsync=True,
-                    slang_world_up=(0.0, 0.0, 1.0),
-                    slang_procedural_material_path=args.slang_procedural_material or None,
-                    slang_procedural_material_scale=ui.slang_procedural_material_scale,
-                    slang_procedural_material_hot_reload=bool(args.slang_procedural_hot_reload),
-                    slang_environment_path=ui.slang_environment_map or None,
-                    slang_environment_intensity=ui.slang_environment_intensity,
-                    slang_environment_background=ui.slang_environment_background,
-                    slang_environment_rotation_degrees=ui.slang_environment_rotation_degrees,
-                    slang_environment_pitch_degrees=ui.slang_environment_pitch_degrees,
-                )
-                render_bridge = RenderBridge(viewer_config, model, dev)
-                viewer = render_bridge
-            except RuntimeError as exc:
-                print(f"Slang viewer unavailable: {exc}", file=sys.stderr)
-                return 1
-        elif args.viewer == "headless":
-            viewer = _HeadlessHexViewer()
-        else:
-            viewer = newton.viewer.ViewerGL()
-            _widen_viewer_left_panel(viewer)
-
-    with _StartupPhase("viewer_set_model", startup_phases, sync_device=dev):
-        viewer.set_model(model)
-        viewer.show_particles = ui.show_cell_particles
-        viewer._log_particles = lambda _state: None  # noqa: SLF001
-        if hasattr(viewer, "set_camera"):
-            if args.size > 0:
-                viewer.set_camera(pos=wp.vec3(0.12, -0.18, 0.12), pitch=-18.0, yaw=30.0)
+    try:
+        with _StartupPhase("viewer_create", startup_phases):
+            if args.usd is not None:
+                viewer = build_hex_usd_viewer(args.usd, frame_loop_config)
+            elif slang_viewer_requested:
+                camera_pos = (0.12, -0.18, 0.12) if args.size > 0 else (0.32, 0.04, 0.08)
+                try:
+                    viewer_config = ViewerConfig(
+                        backend=str(args.viewer),
+                        camera_pos=camera_pos,
+                        vsync=True,
+                        slang_world_up=(0.0, 0.0, 1.0),
+                        slang_procedural_material_path=args.slang_procedural_material or None,
+                        slang_procedural_material_scale=ui.slang_procedural_material_scale,
+                        slang_procedural_material_hot_reload=bool(args.slang_procedural_hot_reload),
+                        slang_environment_path=ui.slang_environment_map or None,
+                        slang_environment_intensity=ui.slang_environment_intensity,
+                        slang_environment_background=ui.slang_environment_background,
+                        slang_environment_rotation_degrees=ui.slang_environment_rotation_degrees,
+                        slang_environment_pitch_degrees=ui.slang_environment_pitch_degrees,
+                    )
+                    render_bridge = RenderBridge(viewer_config, model, dev)
+                    resource_owner.render_bridge = render_bridge
+                    viewer = render_bridge
+                except RuntimeError as exc:
+                    print(f"Slang viewer unavailable: {exc}", file=sys.stderr)
+                    resource_owner.close()
+                    return 1
+            elif args.viewer == "headless":
+                viewer = _HeadlessHexViewer()
             else:
-                viewer.set_camera(pos=wp.vec3(0.32, 0.04, 0.08), pitch=-15.0, yaw=180.0)
-        if hasattr(viewer, "_cam_speed"):
-            viewer._cam_speed = viewer._cam_speed / 3.0
-        if ui.instrument_follow_camera:
-            _sync_instrument_camera_follow_reference_frame()
-            _apply_instrument_camera_follow()
-            instrument_q_prev_host[:] = instrument_q_host
-            instrument_q_prev.assign(instrument_q_prev_host)
-            instrument_q.assign(instrument_q_host)
+                viewer = newton.viewer.ViewerGL()
+                _widen_viewer_left_panel(viewer)
 
-    if render_bridge is None:
-        render_bridge = RenderBridge.wrap_existing(viewer, device=dev)
+        with _StartupPhase("viewer_set_model", startup_phases, sync_device=dev):
+            viewer.set_model(model)
+            viewer.show_particles = ui.show_cell_particles
+            viewer._log_particles = lambda _state: None  # noqa: SLF001
+            if hasattr(viewer, "set_camera"):
+                if args.size > 0:
+                    viewer.set_camera(pos=wp.vec3(0.12, -0.18, 0.12), pitch=-18.0, yaw=30.0)
+                else:
+                    viewer.set_camera(pos=wp.vec3(0.32, 0.04, 0.08), pitch=-15.0, yaw=180.0)
+            if hasattr(viewer, "_cam_speed"):
+                viewer._cam_speed = viewer._cam_speed / 3.0
+            if ui.instrument_follow_camera:
+                _sync_instrument_camera_follow_reference_frame()
+                _apply_instrument_camera_follow()
+                instrument_q_prev_host[:] = instrument_q_host
+                instrument_q_prev.assign(instrument_q_prev_host)
+                instrument_q.assign(instrument_q_host)
+
+        if render_bridge is None:
+            render_bridge = RenderBridge.wrap_existing(viewer, device=dev)
+            resource_owner.render_bridge = render_bridge
+    except Exception:
+        resource_owner.close()
+        raise
 
     mouse_state = {
         "continuous_pick_xy": None,
@@ -3013,9 +2992,7 @@ def _run_app(argv: Sequence[str] | None = None, *, prepared_volume: PreparedVolu
     _print_startup_report(startup_phases, time.perf_counter() - startup_t0)
 
     if args.exit_after_init:
-        render_bridge.close()
-        for input_device in reversed(input_devices):
-            input_device.close()
+        resource_owner.close()
         return 0
 
     frame_loop = HexFrameLoopState(frame_loop_config)
@@ -4103,9 +4080,7 @@ def _run_app(argv: Sequence[str] | None = None, *, prepared_volume: PreparedVolu
     _flush_timer_report(frame_loop.completed_frames, force=True)
     set_scoped_timer_dict(None)
     _commit_pending_material_shader_edits(force=True)
-    for input_device in reversed(input_devices):
-        input_device.close()
-    render_bridge.close()
+    resource_owner.close()
     elapsed = frame_loop.elapsed
     print(f"wall: {elapsed:.1f} s  ({frame_loop.average_fps:.1f} fps)")
     return 0
