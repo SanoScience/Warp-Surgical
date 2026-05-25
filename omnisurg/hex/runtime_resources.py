@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import sys
 from collections.abc import Sequence
 from typing import Any
 
@@ -56,6 +57,19 @@ class HexRuntimeResourceOwner:
 
         if first_error is not None:
             raise first_error.with_traceback(first_traceback)
+
+
+def _close_runtime_resources_for_exception(owner: HexRuntimeResourceOwner) -> None:
+    """Close owned runtime resources during exception unwinds without raising."""
+
+    try:
+        owner.close()
+    except BaseException as exc:  # noqa: BLE001
+        print(
+            "[hex runtime] resource cleanup failed during exception unwind: "
+            f"{type(exc).__name__}: {exc}",
+            file=sys.stderr,
+        )
 
 
 def _fallback_instrument_inputs(count: int) -> list[FallbackInput]:

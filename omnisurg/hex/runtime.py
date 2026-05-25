@@ -24,7 +24,12 @@ from .render import SurfaceRenderer
 from .runtime_lifecycle import HexFrameLoopState, build_hex_frame_loop_config
 from .runtime_config import INSTRUMENT_COUNT as _INSTRUMENT_COUNT
 from .runtime_config import add_hex_runtime_arguments, normalize_hex_runtime_args
-from .runtime_resources import HexRuntimeResourceOwner, build_hex_usd_viewer, open_hex_instrument_inputs
+from .runtime_resources import (
+    HexRuntimeResourceOwner,
+    _close_runtime_resources_for_exception,
+    build_hex_usd_viewer,
+    open_hex_instrument_inputs,
+)
 from .setup import (
     StartupPhase as _StartupPhase,
     build_hex_core_setup,
@@ -185,7 +190,7 @@ class HexRuntimeSession:
                     render_bridge.show_ui = True
                     self._register_runtime_ui(render_bridge)
         except Exception:
-            self._resource_owner.close()
+            _close_runtime_resources_for_exception(self._resource_owner)
             self._input_devices = []
             raise
 
@@ -321,6 +326,15 @@ class HexRuntimeSession:
             if elapsed > 0.0:
                 print(f"wall: {elapsed:.1f} s  ({self._frame_loop.average_fps:.1f} fps)")
 
+    def _close_for_exception(self) -> None:
+        if self._closed:
+            return
+        self._running = False
+        self._closed = True
+        _close_runtime_resources_for_exception(self._resource_owner)
+        self._input_devices = []
+        self._render_bridge = None
+
 
 @dataclass
 class HexAppLauncher:
@@ -345,8 +359,11 @@ class HexAppLauncher:
                 session.render()
                 session.pace()
             self.return_code = 0 if session.return_code is None else int(session.return_code)
-        finally:
-            session.close()
+        except BaseException:
+            session._close_for_exception()
+            self._closed = True
+            raise
+        session.close()
         self._closed = True
         return self.return_code
 

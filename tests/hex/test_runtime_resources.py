@@ -77,6 +77,35 @@ def test_resource_owner_attempts_all_closes_and_reraises_first_error():
     assert owner.render_bridge is None
 
 
+def test_exception_cleanup_attempts_all_closes_and_suppresses_errors():
+    order: list[str] = []
+    devices = [
+        FakeCloseable("input0", order),
+        FakeCloseable("input1", order, error=RuntimeError("input close failed")),
+    ]
+    render_bridge = FakeCloseable("render", order, error=RuntimeError("render close failed"))
+    owner = runtime_resources.HexRuntimeResourceOwner(input_devices=devices, render_bridge=render_bridge)
+
+    runtime_resources._close_runtime_resources_for_exception(owner)
+
+    assert order == ["input1", "input0", "render"]
+    assert owner.input_devices == []
+    assert owner.render_bridge is None
+
+
+def test_exception_cleanup_reports_cleanup_failures_to_stderr(capsys):
+    order: list[str] = []
+    owner = runtime_resources.HexRuntimeResourceOwner(
+        input_devices=[FakeCloseable("input", order, error=RuntimeError("input close failed"))],
+    )
+
+    runtime_resources._close_runtime_resources_for_exception(owner)
+
+    captured = capsys.readouterr()
+    assert "resource cleanup failed during exception unwind" in captured.err
+    assert "RuntimeError: input close failed" in captured.err
+
+
 def test_open_hex_instrument_inputs_dispatches_supported_backends(monkeypatch):
     calls = []
 

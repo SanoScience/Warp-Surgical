@@ -7,6 +7,7 @@ import numpy as np
 import pytest
 
 from omnisurg.hex import app_runtime
+from omnisurg.hex import render as hex_render
 from omnisurg.hex import runtime_resources
 from omnisurg.hex.app import OmniSurgHexApp
 from omnisurg.hex.cli import build_parser
@@ -27,21 +28,33 @@ def _make_volume() -> PreparedVolume:
 
 
 class _FakeCloseable:
-    def __init__(self, name: str, close_order: list[str]) -> None:
+    def __init__(self, name: str, close_order: list[str], *, close_error: Exception | None = None) -> None:
         self.name = name
         self.close_order = close_order
+        self.close_error = close_error
 
     def poll(self):
         return type("Pose", (), {"valid": False})()
 
     def close(self) -> None:
         self.close_order.append(self.name)
+        if self.close_error is not None:
+            raise self.close_error
 
 
-def _patch_fallback_inputs(monkeypatch, close_order: list[str]) -> None:
+def _patch_fallback_inputs(
+    monkeypatch,
+    close_order: list[str],
+    *,
+    close_errors: dict[str, Exception] | None = None,
+) -> None:
     def fake_fallback_inputs(count: int):
         assert count == 2
-        return [_FakeCloseable("input0", close_order), _FakeCloseable("input1", close_order)]
+        errors = close_errors or {}
+        return [
+            _FakeCloseable("input0", close_order, close_error=errors.get("input0")),
+            _FakeCloseable("input1", close_order, close_error=errors.get("input1")),
+        ]
 
     monkeypatch.setattr(runtime_resources, "_fallback_instrument_inputs", fake_fallback_inputs)
 
@@ -237,6 +250,8 @@ def test_app_exit_after_init_closes_input_devices_before_render_bridge(monkeypat
     assert close_order == ["input1", "input0", "render"]
     assert "[startup]" in captured.out
     assert "wall:" not in captured.out
+    assert hex_render._SCOPED_TIMER_DICT is None
+    assert hex_render._SCOPED_TIMER_GPU_DICT is None
 
 
 def test_session_exit_after_init_closes_input_devices_before_render_bridge(monkeypatch, capsys):
@@ -278,6 +293,196 @@ def test_session_exit_after_init_closes_input_devices_before_render_bridge(monke
     assert close_order == ["input1", "input0", "render"]
     assert "[startup]" in captured.out
     assert "wall:" not in captured.out
+
+
+def test_app_frame_exception_closes_inputs_before_render_and_reraises(monkeypatch, capsys):
+    close_order: list[str] = []
+    _patch_fallback_inputs(monkeypatch, close_order)
+    original_close = app_runtime._HeadlessHexViewer.close
+
+    def record_headless_close(self):
+        close_order.append("render")
+        return original_close(self)
+
+    def fail_end_frame(self):
+        del self
+        raise RuntimeError("app render failed")
+
+    monkeypatch.setattr(app_runtime._HeadlessHexViewer, "close", record_headless_close)
+    monkeypatch.setattr(app_runtime._HeadlessHexViewer, "end_frame", fail_end_frame)
+
+    with pytest.raises(RuntimeError, match="app render failed"):
+        app_runtime.run_prepared_volume(
+            _make_volume(),
+            (
+                "--viewer",
+                "headless",
+                "--input-backend",
+                "fallback",
+                "--cryo-renderer",
+                "off",
+                "--no-gl-interop",
+                "--frames",
+                "1",
+            ),
+        )
+
+    captured = capsys.readouterr()
+    assert close_order == ["input1", "input0", "render"]
+    assert "wall:" not in captured.out
+    assert hex_render._SCOPED_TIMER_DICT is None
+
+
+def test_app_exception_cleanup_failure_does_not_mask_primary_exception(monkeypatch, capsys):
+    close_order: list[str] = []
+    _patch_fallback_inputs(
+        monkeypatch,
+        close_order,
+        close_errors={"input1": RuntimeError("input cleanup failed")},
+    )
+    original_close = app_runtime._HeadlessHexViewer.close
+
+    def record_headless_close(self):
+        close_order.append("render")
+        return original_close(self)
+
+    def fail_end_frame(self):
+        del self
+        raise RuntimeError("app render failed")
+
+    monkeypatch.setattr(app_runtime._HeadlessHexViewer, "close", record_headless_close)
+    monkeypatch.setattr(app_runtime._HeadlessHexViewer, "end_frame", fail_end_frame)
+
+    with pytest.raises(RuntimeError, match="app render failed"):
+        app_runtime.run_prepared_volume(
+            _make_volume(),
+            (
+                "--viewer",
+                "headless",
+                "--input-backend",
+                "fallback",
+                "--cryo-renderer",
+                "off",
+                "--no-gl-interop",
+                "--frames",
+                "1",
+            ),
+        )
+
+    captured = capsys.readouterr()
+    assert close_order == ["input1", "input0", "render"]
+    assert "wall:" not in captured.out
+    assert "resource cleanup failed during exception unwind" in captured.err
+    assert "RuntimeError: input cleanup failed" in captured.err
+
+
+def test_session_render_exception_closes_inputs_before_render_and_reraises(monkeypatch, capsys):
+    close_order: list[str] = []
+    _patch_fallback_inputs(monkeypatch, close_order)
+
+    class FailingBridge:
+        def __init__(self, viewer_config, model, device):
+            del viewer_config, model, device
+            self.show_ui = False
+
+        def set_camera(self, *args, **kwargs):
+            pass
+
+        def register_ui_callback(self, *args, **kwargs):
+            pass
+
+        def begin_frame(self, time):
+            pass
+
+        def log_state(self, state):
+            pass
+
+        def end_frame(self):
+            raise RuntimeError("session render failed")
+
+        def is_running(self):
+            return True
+
+        def close(self):
+            close_order.append("render")
+
+    monkeypatch.setattr(hex_runtime, "RenderBridge", FailingBridge)
+
+    with pytest.raises(RuntimeError, match="session render failed"):
+        HexAppLauncher(
+            _make_volume(),
+            (
+                "--viewer",
+                "headless",
+                "--input-backend",
+                "fallback",
+                "--cryo-renderer",
+                "off",
+                "--no-gl-interop",
+                "--frames",
+                "1",
+            ),
+        ).run()
+
+    captured = capsys.readouterr()
+    assert close_order == ["input1", "input0", "render"]
+    assert "wall:" not in captured.out
+
+
+def test_session_exception_cleanup_failure_does_not_mask_primary_exception(monkeypatch, capsys):
+    close_order: list[str] = []
+    _patch_fallback_inputs(monkeypatch, close_order)
+
+    class FailingBridge:
+        def __init__(self, viewer_config, model, device):
+            del viewer_config, model, device
+            self.show_ui = False
+
+        def set_camera(self, *args, **kwargs):
+            pass
+
+        def register_ui_callback(self, *args, **kwargs):
+            pass
+
+        def begin_frame(self, time):
+            pass
+
+        def log_state(self, state):
+            pass
+
+        def end_frame(self):
+            raise RuntimeError("session render failed")
+
+        def is_running(self):
+            return True
+
+        def close(self):
+            close_order.append("render")
+            raise RuntimeError("render cleanup failed")
+
+    monkeypatch.setattr(hex_runtime, "RenderBridge", FailingBridge)
+
+    with pytest.raises(RuntimeError, match="session render failed"):
+        HexAppLauncher(
+            _make_volume(),
+            (
+                "--viewer",
+                "headless",
+                "--input-backend",
+                "fallback",
+                "--cryo-renderer",
+                "off",
+                "--no-gl-interop",
+                "--frames",
+                "1",
+            ),
+        ).run()
+
+    captured = capsys.readouterr()
+    assert close_order == ["input1", "input0", "render"]
+    assert "wall:" not in captured.out
+    assert "resource cleanup failed during exception unwind" in captured.err
+    assert "RuntimeError: render cleanup failed" in captured.err
 
 
 @pytest.mark.parametrize("runtime_driver_args", [(), ("--hex-runtime-driver", "session")])

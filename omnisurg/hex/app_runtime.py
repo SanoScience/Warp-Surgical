@@ -139,6 +139,7 @@ from omnisurg.hex.runtime_lifecycle import (  # noqa: E402
 )
 from omnisurg.hex.runtime_resources import (  # noqa: E402
     HexRuntimeResourceOwner,
+    _close_runtime_resources_for_exception,
     build_hex_usd_viewer,
     open_hex_instrument_inputs,
 )
@@ -675,6 +676,22 @@ def _build_app_runtime_parser() -> argparse.ArgumentParser:
 
 
 def _run_app(argv: Sequence[str] | None = None, *, prepared_volume: PreparedVolume | None = None) -> int:
+    resource_owner = HexRuntimeResourceOwner()
+    try:
+        return _run_app_impl(argv, prepared_volume=prepared_volume, resource_owner=resource_owner)
+    except BaseException:
+        _close_runtime_resources_for_exception(resource_owner)
+        raise
+    finally:
+        set_scoped_timer_dict(None)
+
+
+def _run_app_impl(
+    argv: Sequence[str] | None = None,
+    *,
+    prepared_volume: PreparedVolume | None = None,
+    resource_owner: HexRuntimeResourceOwner,
+) -> int:
     parser = _build_app_runtime_parser()
     args = parser.parse_args(None if argv is None else list(argv))
     slang_viewer_requested = normalize_hex_runtime_args(args, parser=parser)
@@ -968,7 +985,6 @@ def _run_app(argv: Sequence[str] | None = None, *, prepared_volume: PreparedVolu
         locked_slot_by_node: dict[int, int] = {}
         locked_count = 0
 
-    resource_owner = HexRuntimeResourceOwner()
     input_devices = resource_owner.input_devices
     instrument_backend = str(args.input_backend)
     instrument_q_host = np.zeros((_INSTRUMENT_COUNT, 3), dtype=np.float32)
