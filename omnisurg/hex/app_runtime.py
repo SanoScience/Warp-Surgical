@@ -117,6 +117,7 @@ from omnisurg.hex.ui import (  # noqa: E402
     hdri_map_key as _hdri_map_key,
 )
 from omnisurg.hex.haptic import (  # noqa: E402
+    FALLBACK_PROFILE,
     HapticFrameConfig,
     HapticUnavailable,
     InputPose,
@@ -764,7 +765,9 @@ def _run_app_impl(
         show_grab_constraints=bool(args.show_grab_constraints),
         show_instruments=bool(args.show_instruments),
         instrument_follow_camera=bool(args.instrument_follow_camera),
-        instrument_collision_enabled=str(args.input_backend) != "off",
+        instrument_collision_enabled=(
+            str(args.right_input_backend) != "off" or str(args.left_input_backend) != "off"
+        ),
         instrument_radius_scale=float(args.instrument_radius_scale),
         instrument_collision_relaxation=float(np.clip(float(args.instrument_collision_relaxation), 0.0, 1.0)),
         instrument_contact_iterations=max(1, int(args.instrument_contact_iterations)),
@@ -986,6 +989,7 @@ def _run_app_impl(
         locked_count = 0
 
     input_devices = resource_owner.input_devices
+    instrument_backends = (str(args.right_input_backend), str(args.left_input_backend))
     instrument_backend = str(args.input_backend)
     instrument_q_host = np.zeros((_INSTRUMENT_COUNT, 3), dtype=np.float32)
     instrument_q_prev_host = np.zeros((_INSTRUMENT_COUNT, 3), dtype=np.float32)
@@ -1011,10 +1015,16 @@ def _run_app_impl(
         (float(args.device_x_offsets[0]), 0.0, 0.0),
         (float(args.device_x_offsets[1]), 0.0, 0.0),
     ]
-    instrument_profile = MINIMOU_PROFILE if instrument_backend == "minimou" else OPENHAPTICS_PROFILE
+    def _profile_for_instrument_backend(backend: str):
+        if backend == "minimou":
+            return MINIMOU_PROFILE
+        if backend == "fallback":
+            return FALLBACK_PROFILE
+        return OPENHAPTICS_PROFILE
+
     instrument_frame_configs = [
         HapticFrameConfig(
-            profile=instrument_profile,
+            profile=_profile_for_instrument_backend(instrument_backends[idx]),
             position_scale=float(args.position_scale),
             center=instrument_center,
             device_offset=instrument_device_offsets[idx],
@@ -1034,7 +1044,7 @@ def _run_app_impl(
     viewer = None
     instrument_camera_follow_reference_frame: tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray] | None = None
 
-    if instrument_backend != "off":
+    if any(backend != "off" for backend in instrument_backends):
         try:
             input_devices = open_hex_instrument_inputs(args, expected_count=_INSTRUMENT_COUNT)
         except HapticUnavailable as exc:
@@ -1045,8 +1055,10 @@ def _run_app_impl(
             print("instrument input: static fallback poses")
         elif instrument_backend == "minimou":
             print("instrument input: Follou MiniMou devices connected")
+        elif instrument_backend == "mixed":
+            print(f"instrument input: mixed backends right={instrument_backends[0]} left={instrument_backends[1]}")
         else:
-            print(f'instrument input: OpenHaptics devices connected: "{args.device_name}", "{args.left_device_name}"')
+            print(f'instrument input: OpenHaptics devices connected: "{args.right_device_name}", "{args.left_device_name}"')
 
     def _sync_instrument_camera_follow_reference_frame() -> bool:
         nonlocal instrument_camera_follow_reference_frame
@@ -1111,7 +1123,7 @@ def _run_app_impl(
                 world_pose = pose_to_world(pose, instrument_frame_configs[idx])
                 instrument_device_q_host[idx] = world_pose.position
                 instrument_device_quat_host[idx] = np.asarray(world_pose.quaternion, dtype=np.float32)
-                if instrument_backend == "minimou":
+                if instrument_backends[idx] == "minimou":
                     trigger_down = (
                         bool(getattr(pose, "button1", False))
                         or bool(getattr(pose, "handle_active", False))
@@ -1142,7 +1154,7 @@ def _run_app_impl(
         if now - last_tool_pos_print_time < 0.25:
             return
         last_tool_pos_print_time = now
-        if instrument_backend == "minimou":
+        if any(backend == "minimou" for backend in instrument_backends):
             values = " ".join(
                 f"device{idx}=tool:{float(instrument_tool_pos_host[idx]):.3f}"
                 f"/handle:{float(instrument_handle_pos_host[idx]):.3f}"
@@ -1167,11 +1179,11 @@ def _run_app_impl(
     instrument_radii = wp.array(instrument_radii_host, dtype=wp.float32, device=dev)
 
     def _update_instrument_colors() -> None:
-        if instrument_backend == "minimou":
-            tool_pos = np.clip(instrument_tool_pos_host.reshape(_INSTRUMENT_COUNT, 1), 0.0, 1.0)
-            instrument_colors_host[:] = 1.0 + (instrument_base_colors_host - 1.0) * tool_pos
-        else:
-            instrument_colors_host[:] = instrument_base_colors_host
+        instrument_colors_host[:] = instrument_base_colors_host
+        for idx, backend in enumerate(instrument_backends):
+            if backend == "minimou":
+                tool_pos = float(np.clip(instrument_tool_pos_host[idx], 0.0, 1.0))
+                instrument_colors_host[idx] = 1.0 + (instrument_base_colors_host[idx] - 1.0) * tool_pos
         instrument_colors.assign(instrument_colors_host)
 
     def _instrument_radius() -> float:
@@ -2343,7 +2355,7 @@ def _run_app_impl(
             if changed:
                 ui.instrument_collision_use_mc_triangles = bool(new_mc_collision)
                 _invalidate_graph_capture("instrument-collision-mode")
-            if instrument_backend == "minimou":
+            if any(backend == "minimou" for backend in instrument_backends):
                 imgui.text(
                     "MiniMou handle: "
                     f"pos {instrument_handle_pos_host[0]:.2f}, {instrument_handle_pos_host[1]:.2f}; "
@@ -3113,7 +3125,7 @@ def _run_app_impl(
             return 0.0
         if _instrument_mode(idx) != "diathermy":
             return 0.0
-        if instrument_backend == "minimou":
+        if instrument_backends[idx] == "minimou":
             if int(instrument_pose_valid_host[idx]) == 0:
                 return 0.0
             return float(np.clip(float(instrument_grip_host[idx]), 0.0, 1.0))

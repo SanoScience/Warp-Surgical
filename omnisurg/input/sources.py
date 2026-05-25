@@ -16,30 +16,56 @@ class ControllerSample:
     tool_pos: np.ndarray | None = None
     rotation: np.ndarray | None = None
     button: bool = False
+    button2: bool = False
     grip: float = 0.0
+    tool_scalar: float = 0.0
+    handle_pos: float = 0.0
+    handle_active: bool = False
+    valid: bool = True
 
     @property
     def active(self) -> bool:
-        return self.position is not None or self.tool_pos is not None or self.rotation is not None
+        return self.valid and (
+            self.position is not None or self.tool_pos is not None or self.rotation is not None
+        )
 
     @classmethod
     def from_sample_dict(cls, sample: dict | None):
         if not sample:
-            return cls()
+            return cls(valid=False)
 
         position = _as_array(sample.get("position"), expected_size=3)
-        tool_pos = _as_array(sample.get("tool_pos", sample.get("tool_position")), expected_size=3)
+        raw_tool_pos = sample.get("tool_pos", sample.get("tool_position"))
+        tool_pos = _as_array(raw_tool_pos, expected_size=3)
         rotation = _as_array(sample.get("rotation"), expected_size=4)
-        button = bool(sample.get("button", False))
+        button = bool(sample.get("button", sample.get("button1", False)))
+        button2 = bool(sample.get("button2", False))
         grip = _as_unit_interval(sample.get("grip"))
         if grip is None:
             grip = 1.0 if button else 0.0
+        tool_scalar = _as_finite_float(sample.get("tool_scalar", sample.get("tool_value")))
+        if tool_scalar is None and raw_tool_pos is not None:
+            raw_tool_scalar = _as_scalar(raw_tool_pos)
+            if raw_tool_scalar is not None:
+                tool_scalar = raw_tool_scalar
+        if tool_scalar is None:
+            tool_scalar = 0.0
+        handle_pos = _as_finite_float(sample.get("handle_pos", sample.get("handle_position")))
+        if handle_pos is None:
+            handle_pos = 0.0
+        handle_active = bool(sample.get("handle_active", False))
+        valid = bool(sample.get("valid", True))
         return cls(
             position=position,
             tool_pos=tool_pos,
             rotation=rotation,
             button=button,
+            button2=button2,
             grip=grip,
+            tool_scalar=tool_scalar,
+            handle_pos=handle_pos,
+            handle_active=handle_active,
+            valid=valid,
         )
 
 
@@ -93,7 +119,13 @@ class MultiSourceRig(InputRig):
         frame: dict[str, ControllerSample] = {}
         for controller_id, source in self._sources.items():
             sample = ControllerSample.from_sample_dict(source.poll())
-            if sample.active or sample.button or sample.grip > 0.0:
+            if sample.valid and (
+                sample.active
+                or sample.button
+                or sample.button2
+                or sample.grip > 0.0
+                or sample.handle_active
+            ):
                 frame[controller_id] = sample
         return frame
 
@@ -102,7 +134,7 @@ class MultiSourceRig(InputRig):
         return bool(getattr(source, "exhausted", False))
 
     def close(self):
-        for source in self._sources.values():
+        for source in reversed(tuple(self._sources.values())):
             source.close()
 
     def set_force_commands(self, force_commands: dict[str, np.ndarray]):
@@ -123,11 +155,18 @@ class MultiSourceRig(InputRig):
 
 
 class LiveHapticSource(InputSource):
-    def __init__(self, scale: float = 1.0, device_name: str = "Default Device"):
+    def __init__(
+        self,
+        scale: float = 1.0,
+        device_name: str = "Default Device",
+        *,
+        force_feedback: bool = True,
+    ):
         from omnisurg.input.device import HapticController
 
         self._device_name = device_name
-        self._ctrl = HapticController(device_name=device_name, scale=scale)
+        self._force_feedback = bool(force_feedback)
+        self._ctrl = HapticController(device_name=device_name, scale=scale, force_feedback=self._force_feedback)
         self._reported_failure = False
 
     def poll(self) -> dict:
@@ -141,12 +180,16 @@ class LiveHapticSource(InputSource):
                     "position": np.array(sample["position"], dtype=np.float32),
                     "rotation": np.array(sample["rotation"], dtype=np.float32),
                     "button": bool(sample["button"]),
+                    "button2": bool(sample.get("button2", False)),
+                    "valid": bool(sample.get("valid", True)),
                 }
 
             return {
                 "position": np.array(self._ctrl.get_scaled_position(), dtype=np.float32),
                 "rotation": np.array(self._ctrl.get_rotation(), dtype=np.float32),
                 "button": bool(self._ctrl.is_button_pressed()),
+                "button2": bool(getattr(self._ctrl, "is_button2_pressed", lambda: False)()),
+                "valid": True,
             }
         except RuntimeError as exc:
             if not self._reported_failure:
@@ -161,12 +204,12 @@ class LiveHapticSource(InputSource):
             self._ctrl = None
 
     def set_force(self, force_xyz):
-        if self._ctrl is None:
+        if self._ctrl is None or not getattr(self, "_force_feedback", True):
             return
         self._ctrl.set_force(force_xyz)
 
     def supports_force_feedback(self) -> bool:
-        return self._ctrl is not None
+        return self._ctrl is not None and getattr(self, "_force_feedback", True)
 
 
 class LiveMiniMouSource(InputSource):
@@ -197,6 +240,32 @@ class LiveMiniMouSource(InputSource):
         if self._ctrl is not None:
             self._ctrl.close()
             self._ctrl = None
+
+
+class FallbackInputSource(InputSource):
+    """Fixed-pose canonical input source used when hardware is intentionally absent."""
+
+    def __init__(self, sample: ControllerSample | None = None):
+        self.sample = sample or ControllerSample(
+            position=np.zeros(3, dtype=np.float32),
+            rotation=np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32),
+            valid=True,
+        )
+
+    def poll(self) -> dict:
+        sample = self.sample
+        return {
+            "position": None if sample.position is None else np.asarray(sample.position, dtype=np.float32).copy(),
+            "tool_pos": None if sample.tool_pos is None else np.asarray(sample.tool_pos, dtype=np.float32).copy(),
+            "rotation": None if sample.rotation is None else np.asarray(sample.rotation, dtype=np.float32).copy(),
+            "button": bool(sample.button),
+            "button2": bool(sample.button2),
+            "grip": float(sample.grip),
+            "tool_scalar": float(sample.tool_scalar),
+            "handle_pos": float(sample.handle_pos),
+            "handle_active": bool(sample.handle_active),
+            "valid": bool(sample.valid),
+        }
 
 
 class ReplayInputSource(InputSource):
@@ -246,6 +315,16 @@ class ReplayInputSource(InputSource):
             result["grip"] = float(np.clip(sample[8], 0.0, 1.0))
         if sample.shape[0] >= 12:
             result["tool_pos"] = sample[9:12].astype(np.float32)
+        if sample.shape[0] >= 13:
+            result["button2"] = bool(sample[12] > 0.5)
+        if sample.shape[0] >= 14:
+            result["tool_scalar"] = float(sample[13])
+        if sample.shape[0] >= 15:
+            result["handle_pos"] = float(sample[14])
+        if sample.shape[0] >= 16:
+            result["handle_active"] = bool(sample[15] > 0.5)
+        if sample.shape[0] >= 17:
+            result["valid"] = bool(sample[16] > 0.5)
         return result
 
 
@@ -478,5 +557,34 @@ def sample_position_to_world(sample: ControllerSample, **kwargs) -> ControllerSa
         tool_pos=tool_pos,
         rotation=None if sample.rotation is None else sample.rotation.copy(),
         button=sample.button,
+        button2=sample.button2,
         grip=sample.grip,
+        tool_scalar=sample.tool_scalar,
+        handle_pos=sample.handle_pos,
+        handle_active=sample.handle_active,
+        valid=sample.valid,
     )
+
+
+def _as_scalar(value) -> float | None:
+    if value is None:
+        return None
+    array = np.asarray(value, dtype=np.float32)
+    if array.size != 1:
+        return None
+    return _as_finite_float(float(array.reshape(-1)[0]))
+
+
+def _as_finite_float(value) -> float | None:
+    if value is None:
+        return None
+
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return None
+
+    if not math.isfinite(numeric):
+        return None
+
+    return numeric

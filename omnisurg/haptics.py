@@ -1,7 +1,18 @@
+from omnisurg.input.factory import (
+    CANONICAL_INPUT_ROLES,
+    INPUT_BACKENDS,
+    InputOpenError,
+    InputOpenResult,
+    RoleInputConfig,
+    normalize_input_backend,
+    open_input_rig,
+    open_input_sources,
+)
 from omnisurg.input.sources import (
     BimanualOpenHapticsRig,
     BimanualReplayRig,
     ControllerSample,
+    FallbackInputSource,
     InputRig,
     InputSource,
     LiveHapticSource,
@@ -18,7 +29,12 @@ from omnisurg.input.sources import (
 __all__ = [
     "BimanualOpenHapticsRig",
     "BimanualReplayRig",
+    "CANONICAL_INPUT_ROLES",
     "ControllerSample",
+    "FallbackInputSource",
+    "INPUT_BACKENDS",
+    "InputOpenError",
+    "InputOpenResult",
     "InputRig",
     "InputSource",
     "LiveHapticSource",
@@ -27,7 +43,11 @@ __all__ = [
     "RecordingRig",
     "ReplayForceFeedbackRig",
     "ReplayInputSource",
+    "RoleInputConfig",
     "device_position_to_world",
+    "normalize_input_backend",
+    "open_input_rig",
+    "open_input_sources",
     "sample_position_to_world",
     "world_position_to_device",
 ]

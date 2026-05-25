@@ -9,7 +9,10 @@ from typing import Any
 
 import newton
 
-from .haptic import FallbackInput, HapticUnavailable, InputPose, open_haptic_inputs, open_minimou_inputs
+from omnisurg.input.factory import InputOpenError, RoleInputConfig, normalize_input_backend, open_input_sources
+from omnisurg.input.sources import ControllerSample, InputSource
+
+from .haptic import FallbackInput, HapticUnavailable, InputPose
 from .runtime_config import INSTRUMENT_COUNT
 
 
@@ -96,21 +99,42 @@ def _close_inputs(input_devices: Sequence[Any]) -> None:
 def open_hex_instrument_inputs(args, *, expected_count: int | None = None) -> list[Any]:
     """Open the configured instrument inputs and validate the expected count."""
 
-    backend = str(args.input_backend)
-    if backend == "off":
+    roles = ("right", "left")[: INSTRUMENT_COUNT if expected_count is None else int(expected_count)]
+    configs: list[RoleInputConfig] = []
+    for role in roles:
+        backend = normalize_input_backend(getattr(args, f"{role}_input_backend", getattr(args, "input_backend", "off")))
+        configs.append(
+            RoleInputConfig(
+                role=role,
+                backend=backend,
+                device_name=getattr(
+                    args,
+                    f"{role}_device_name",
+                    getattr(args, "device_name", None) if role == "right" else None,
+                ),
+                device_index=getattr(args, f"{role}_device_index", 0 if role == "right" else 1),
+                replay_path=getattr(args, f"{role}_replay", None),
+                force_feedback=False,
+            )
+        )
+
+    if all(config.backend == "off" for config in configs):
         return []
 
-    count = INSTRUMENT_COUNT if expected_count is None else int(expected_count)
-    if backend == "fallback":
-        input_devices: list[Any] = _fallback_instrument_inputs(count)
-    elif backend == "minimou":
-        input_devices = open_minimou_inputs(count=count)
-    elif backend == "openhaptics":
-        input_devices = open_haptic_inputs([str(args.device_name), str(args.left_device_name)])
-    else:
-        raise ValueError(f"unknown input backend {backend!r}")
+    try:
+        result = open_input_sources(configs, require_all=True)
+    except InputOpenError as exc:
+        raise HapticUnavailable(str(exc)) from exc
 
-    if expected_count is not None and len(input_devices) != int(expected_count):
+    input_devices: list[Any] = []
+    for config in configs:
+        if config.backend == "off":
+            input_devices.append(_OffInputPoseAdapter())
+        elif config.role in result.sources:
+            input_devices.append(_ControllerSampleInputPoseAdapter(config.role, result.sources[config.role]))
+
+    expected_active_count = sum(1 for config in configs if config.backend != "off")
+    if expected_count is not None and expected_active_count == int(expected_count) and len(input_devices) != int(expected_count):
         try:
             _close_inputs(input_devices)
         except Exception as exc:  # noqa: BLE001
@@ -118,6 +142,59 @@ def open_hex_instrument_inputs(args, *, expected_count: int | None = None) -> li
         raise HapticUnavailable(f"expected {expected_count} devices, got {len(input_devices)}")
 
     return input_devices
+
+
+class _ControllerSampleInputPoseAdapter:
+    """Hex compatibility layer from canonical ControllerSample sources to InputPose."""
+
+    def __init__(self, role: str, source: InputSource) -> None:
+        self.role = role
+        self._source = source
+
+    def poll(self) -> InputPose:
+        sample = ControllerSample.from_sample_dict(self._source.poll())
+        if not sample.valid:
+            return InputPose(valid=False)
+
+        position = (
+            (0.0, 0.0, 0.0)
+            if sample.position is None
+            else tuple(float(value) for value in sample.position[:3])
+        )
+        quaternion = (
+            (0.0, 0.0, 0.0, 1.0)
+            if sample.rotation is None
+            else tuple(float(value) for value in sample.rotation[:4])
+        )
+        return InputPose(
+            position=position,
+            quaternion=quaternion,
+            button1=bool(sample.button),
+            button2=bool(sample.button2),
+            tool_pos=float(sample.tool_scalar),
+            grip=float(sample.grip),
+            handle_pos=float(sample.handle_pos),
+            handle_active=bool(sample.handle_active),
+            valid=True,
+        )
+
+    def close(self) -> None:
+        self._source.close()
+
+    def angles_degrees(self):
+        ctrl = getattr(self._source, "_ctrl", None)
+        getter = getattr(ctrl, "angles_degrees", None)
+        if callable(getter):
+            return getter()
+        return None
+
+
+class _OffInputPoseAdapter:
+    def poll(self) -> InputPose:
+        return InputPose(valid=False)
+
+    def close(self) -> None:
+        pass
 
 
 def build_hex_usd_viewer(path: str, frame_loop_config):

@@ -4,8 +4,17 @@ import sys
 import numpy as np
 import warp as wp
 
+from omnisurg.input.factory import INPUT_BACKENDS, RoleInputConfig, normalize_input_backend, open_input_sources
 
-LIVE_INPUT_BACKENDS = ["openhaptics", "minimou", "none"]
+LIVE_INPUT_BACKENDS = INPUT_BACKENDS
+INPUT_BACKEND_METAVAR = "{" + ",".join(INPUT_BACKENDS) + "}"
+
+
+def _parse_input_backend(value: str) -> str:
+    try:
+        return normalize_input_backend(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from exc
 
 
 def parse_args(argv=None):
@@ -38,11 +47,13 @@ def parse_args(argv=None):
         help="Scene preset",
     )
     parser.add_argument(
-        "--replay",
+        "--right-replay",
+        dest="right_replay",
         type=str,
         default=None,
         help="Path to right-controller .npy haptic replay trace",
     )
+    parser.add_argument("--replay", dest="right_replay", type=str, default=None, help=argparse.SUPPRESS)
     parser.add_argument(
         "--left-replay",
         type=str,
@@ -80,7 +91,7 @@ def parse_args(argv=None):
         action="store_true",
         help="Drive the real haptic device to physically follow the right-controller "
         "replay trace while still dispatching sim-computed contact forces. Unattended — "
-        "do not hold the stylus. Implies --replay-force-feedback; requires --replay.",
+        "do not hold the stylus. Implies --replay-force-feedback; requires --right-replay.",
     )
     parser.add_argument("--stage3-kp", type=float, default=0.02,
                         help="Position-tracking P gain in N per native position unit "
@@ -125,17 +136,24 @@ def parse_args(argv=None):
     )
     parser.add_argument(
         "--right-input-backend",
-        type=str,
+        type=_parse_input_backend,
         default="openhaptics",
-        choices=LIVE_INPUT_BACKENDS,
+        metavar=INPUT_BACKEND_METAVAR,
         help="Live input backend for the right controller",
     )
     parser.add_argument(
         "--left-input-backend",
-        type=str,
+        type=_parse_input_backend,
         default="openhaptics",
-        choices=LIVE_INPUT_BACKENDS,
+        metavar=INPUT_BACKEND_METAVAR,
         help="Live input backend for the left controller",
+    )
+    parser.add_argument(
+        "--input-backend",
+        dest="legacy_input_backend",
+        type=_parse_input_backend,
+        default=None,
+        help=argparse.SUPPRESS,
     )
     parser.add_argument(
         "--right-device-name",
@@ -161,6 +179,7 @@ def parse_args(argv=None):
         default=1,
         help="Device index for backends that enumerate identical devices such as MiniMou",
     )
+    parser.add_argument("--device-name", dest="right_device_name", type=str, default=None, help=argparse.SUPPRESS)
     parser.add_argument(
         "--asset",
         type=str,
@@ -192,7 +211,15 @@ def parse_args(argv=None):
         choices=["quality", "balanced", "performance"],
         help="Simulation preset (overrides default substeps/fps)",
     )
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+    if args.legacy_input_backend is not None:
+        args.right_input_backend = args.legacy_input_backend
+    args.right_input_backend = normalize_input_backend(args.right_input_backend)
+    args.left_input_backend = normalize_input_backend(args.left_input_backend)
+    if args.right_device_name is None:
+        args.right_device_name = "Default Device"
+    args.replay = args.right_replay
+    return args
 
 
 def _device_name_candidates(device_name: str) -> tuple[str, ...]:
@@ -278,48 +305,35 @@ def _build_minimou_source(device_index: int):
 def _build_live_input_rig(args):
     from omnisurg.haptics import MultiSourceRig
 
-    sources = {}
-    active_names = {}
-    failures = []
+    configs = []
     for controller_id in ("right", "left"):
-        backend = getattr(args, f"{controller_id}_input_backend")
-        if backend == "none":
+        backend = normalize_input_backend(getattr(args, f"{controller_id}_input_backend"))
+        if backend in {"off", "replay"}:
             continue
+        configs.append(
+            RoleInputConfig(
+                role=controller_id,
+                backend=backend,
+                device_name=getattr(args, f"{controller_id}_device_name", None),
+                device_index=getattr(args, f"{controller_id}_device_index", None),
+                replay_path=getattr(args, f"{controller_id}_replay", None),
+                force_feedback=backend == "openhaptics",
+            )
+        )
 
-        try:
-            if backend == "openhaptics":
-                requested_name = getattr(args, f"{controller_id}_device_name")
-                source, descriptor = _build_openhaptics_source(controller_id, requested_name)
-            elif backend == "minimou":
-                device_index = getattr(args, f"{controller_id}_device_index")
-                source, descriptor = _build_minimou_source(device_index)
-            else:
-                raise RuntimeError(f"Unsupported input backend: {backend}")
-        except Exception as exc:
-            if backend == "openhaptics":
-                requested_name = getattr(args, f"{controller_id}_device_name")
-                failures.append(f"{controller_id} ({backend}:{requested_name}): {exc}")
-            elif backend == "minimou":
-                device_index = getattr(args, f"{controller_id}_device_index")
-                failures.append(f"{controller_id} ({backend}#{device_index}): {exc}")
-            else:
-                failures.append(f"{controller_id} ({backend}): {exc}")
-            continue
+    result = open_input_sources(configs, require_all=False)
 
-        sources[controller_id] = source
-        active_names[controller_id] = f"{backend}:{descriptor}"
+    if result.failures:
+        print("Unavailable live devices: " + "; ".join(result.failures))
 
-    if failures:
-        print("Unavailable live devices: " + "; ".join(failures))
-
-    if not sources:
+    if not result.sources:
         return None
 
     print(
         "Using live input devices: "
-        + ", ".join(f"{controller_id}={descriptor}" for controller_id, descriptor in active_names.items())
+        + ", ".join(f"{controller_id}={descriptor}" for controller_id, descriptor in result.descriptors.items())
     )
-    return MultiSourceRig(sources)
+    return MultiSourceRig(result.sources)
 
 
 def _dispatch_haptic_force_commands(input_rig, force_commands):
@@ -374,12 +388,12 @@ def main(argv=None):
     from omnisurg.telemetry import ContactTraceRecorder, ForceTelemetry, Stage3TelemetryRecorder
 
     if args.stage3_validate and not args.replay:
-        print("--stage3-validate requires --replay (a right-controller trace to track).")
+        print("--stage3-validate requires --right-replay (a right-controller trace to track).")
         sys.exit(2)
 
     if args.stage3_dry_run:
         if not args.replay:
-            print("--stage3-dry-run requires --replay.")
+            print("--stage3-dry-run requires --right-replay.")
             sys.exit(2)
         if args.preset:
             sim_dt = SIMULATION_PRESETS[args.preset].frame_dt

@@ -34,7 +34,7 @@ class _FakeCloseable:
         self.close_error = close_error
 
     def poll(self):
-        return type("Pose", (), {"valid": False})()
+        return {"valid": False}
 
     def close(self) -> None:
         self.close_order.append(self.name)
@@ -48,15 +48,17 @@ def _patch_fallback_inputs(
     *,
     close_errors: dict[str, Exception] | None = None,
 ) -> None:
-    def fake_fallback_inputs(count: int):
-        assert count == 2
-        errors = close_errors or {}
-        return [
-            _FakeCloseable("input0", close_order, close_error=errors.get("input0")),
-            _FakeCloseable("input1", close_order, close_error=errors.get("input1")),
-        ]
+    opened = []
+    errors = close_errors or {}
 
-    monkeypatch.setattr(runtime_resources, "_fallback_instrument_inputs", fake_fallback_inputs)
+    def fake_fallback_source():
+        idx = len(opened)
+        assert idx < 2
+        source = _FakeCloseable(f"input{idx}", close_order, close_error=errors.get(f"input{idx}"))
+        opened.append(source)
+        return source
+
+    monkeypatch.setattr("omnisurg.input.factory.FallbackInputSource", fake_fallback_source)
 
 
 def test_unified_hex_parser_prog():
@@ -489,11 +491,17 @@ def test_session_exception_cleanup_failure_does_not_mask_primary_exception(monke
 def test_runtime_drivers_close_opened_inputs_on_count_mismatch(monkeypatch, runtime_driver_args):
     close_order: list[str] = []
 
-    def fake_haptic_inputs(device_names):
-        assert tuple(device_names) == ("Default Device", "Left Device")
-        return [_FakeCloseable("input0", close_order)]
+    class FakeHapticSource(_FakeCloseable):
+        def __init__(self, *, device_name, scale=1.0, force_feedback=True):
+            del scale, force_feedback
+            if device_name != "Default Device":
+                raise RuntimeError("missing left")
+            super().__init__("input0", close_order)
 
-    monkeypatch.setattr(runtime_resources, "open_haptic_inputs", fake_haptic_inputs)
+        def poll(self):
+            return {"valid": False}
+
+    monkeypatch.setattr("omnisurg.haptics.LiveHapticSource", FakeHapticSource)
 
     result = OmniSurgHexApp(_make_volume()).run(
         (

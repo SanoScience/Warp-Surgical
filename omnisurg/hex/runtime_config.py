@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 from typing import Any
 
+from omnisurg.input.factory import INPUT_BACKENDS, normalize_input_backend
 from omnisurg.rendering.slang_cryo import SLANG_RENDER_BACKENDS, is_slang_backend
 
 from .setup import (
@@ -18,6 +19,14 @@ from .setup import (
 INSTRUMENT_COUNT = 2
 INSTRUMENT_TOOL_MODES = ("diathermy", "grasper", "scissors", "bipolar")
 INSTRUMENT_TOOL_MODE_ALIASES = {"cutting": "diathermy"}
+INPUT_BACKEND_METAVAR = "{" + ",".join(INPUT_BACKENDS) + "}"
+
+
+def _parse_input_backend(value: str) -> str:
+    try:
+        return normalize_input_backend(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from exc
 
 
 def normalize_instrument_tool_mode(mode: str) -> str:
@@ -118,13 +127,27 @@ def add_hex_runtime_arguments(parser: argparse.ArgumentParser) -> None:
         help="call Newton's viewer.log_state() each frame (default ON).",
     )
     parser.add_argument(
-        "--input-backend",
-        choices=("fallback", "openhaptics", "minimou", "off"),
-        default="fallback",
-        help="pose source for the two kinematic instrument spheres.",
+        "--right-input-backend",
+        type=_parse_input_backend,
+        default=None,
+        metavar=INPUT_BACKEND_METAVAR,
+        help="pose source for the right kinematic instrument sphere.",
     )
-    parser.add_argument("--device-name", default="Default Device", help="first OpenHaptics device name")
-    parser.add_argument("--left-device-name", default="Left Device", help="second OpenHaptics device name")
+    parser.add_argument(
+        "--left-input-backend",
+        type=_parse_input_backend,
+        default=None,
+        metavar=INPUT_BACKEND_METAVAR,
+        help="pose source for the left kinematic instrument sphere.",
+    )
+    parser.add_argument("--input-backend", dest="input_backend", type=_parse_input_backend, default=None, help=argparse.SUPPRESS)
+    parser.add_argument("--right-device-name", default=None, help="right OpenHaptics device name")
+    parser.add_argument("--left-device-name", default=None, help="left OpenHaptics device name")
+    parser.add_argument("--device-name", dest="device_name", default=None, help=argparse.SUPPRESS)
+    parser.add_argument("--right-device-index", type=int, default=0, help="right indexed-device backend index")
+    parser.add_argument("--left-device-index", type=int, default=1, help="left indexed-device backend index")
+    parser.add_argument("--right-replay", default=None, help="right-controller replay trace for replay input backend")
+    parser.add_argument("--left-replay", default=None, help="left-controller replay trace for replay input backend")
     parser.add_argument(
         "--position-scale",
         type=float,
@@ -460,17 +483,21 @@ def normalize_hex_runtime_args(args: argparse.Namespace, *, parser: argparse.Arg
     The namespace is mutated in place. The return value records whether the
     normalized viewer is a Slang backend.
     """
+    _normalize_hex_input_args(args, parser=parser)
+
     slang_procedural_material = getattr(args, "slang_procedural_material", "")
     if slang_procedural_material and str(getattr(args, "viewer", "")) == "gl":
         args.viewer = "slang"
     slang_viewer_requested = is_slang_backend(getattr(args, "viewer", ""))
 
     if getattr(args, "instrument_follow_camera", None) is None:
-        args.instrument_follow_camera = str(getattr(args, "input_backend", "")) == "fallback"
+        args.instrument_follow_camera = _all_configured_backends(args, "fallback")
 
     if getattr(args, "instrument_tool_modes", None) is None:
-        default_mode = "grasper" if str(getattr(args, "input_backend", "")) == "minimou" else "diathermy"
-        args.instrument_tool_modes = (default_mode,) * INSTRUMENT_COUNT
+        args.instrument_tool_modes = tuple(
+            "grasper" if backend == "minimou" else "diathermy"
+            for backend in (args.right_input_backend, args.left_input_backend)
+        )
     try:
         args.instrument_tool_modes = tuple(
             normalize_instrument_tool_mode(mode) for mode in getattr(args, "instrument_tool_modes")
@@ -492,3 +519,37 @@ def normalize_hex_runtime_args(args: argparse.Namespace, *, parser: argparse.Arg
         _fail(parser, "--instrument-max-correction-scale must be >= 0")
 
     return bool(slang_viewer_requested)
+
+
+def _normalize_hex_input_args(args: argparse.Namespace, *, parser: argparse.ArgumentParser | None = None) -> None:
+    legacy_backend = getattr(args, "input_backend", None)
+    try:
+        if legacy_backend is not None:
+            legacy_backend = normalize_input_backend(legacy_backend)
+        right_backend = getattr(args, "right_input_backend", None)
+        left_backend = getattr(args, "left_input_backend", None)
+        args.right_input_backend = normalize_input_backend(
+            right_backend if right_backend is not None else (legacy_backend or "fallback")
+        )
+        args.left_input_backend = normalize_input_backend(
+            left_backend if left_backend is not None else (legacy_backend or "fallback")
+        )
+    except ValueError as exc:
+        _fail(parser, str(exc))
+
+    if getattr(args, "right_device_name", None) is None:
+        args.right_device_name = getattr(args, "device_name", None) or "Default Device"
+    if getattr(args, "left_device_name", None) is None:
+        args.left_device_name = "Left Device"
+    args.device_name = args.right_device_name
+    if args.right_input_backend == args.left_input_backend:
+        args.input_backend = args.right_input_backend
+    else:
+        args.input_backend = "mixed"
+
+
+def _all_configured_backends(args: argparse.Namespace, backend: str) -> bool:
+    return (
+        str(getattr(args, "right_input_backend", "")) == backend
+        and str(getattr(args, "left_input_backend", "")) == backend
+    )

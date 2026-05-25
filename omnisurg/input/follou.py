@@ -21,6 +21,14 @@ class _ManagerEntry:
     refcount: int = 0
 
 
+@dataclass
+class _MiniMouSampleState:
+    handle_min: float | None = None
+    handle_max: float | None = None
+    tool_min: float | None = None
+    tool_max: float | None = None
+
+
 def ensure_follou_importable():
     if FOLLOU_ROOT.exists():
         repo_root = str(FOLLOU_ROOT.parent)
@@ -76,10 +84,15 @@ class MiniMouController:
         self._manager, self._mini_mou_cls = acquire_manager()
         self.device_index = int(device_index)
         self.scale = float(scale)
-        self._controller = self._manager.get_device_controller(self._mini_mou_cls, count=self.device_index)
+        try:
+            self._controller = self._manager.get_device_controller(self._mini_mou_cls, count=self.device_index)
+        except TypeError as exc:
+            if "count" not in str(exc):
+                raise
+            self._controller = self._manager.get_device_controller(self._mini_mou_cls, self.device_index)
         self._closed = False
-        self._tool_min: float | None = None
-        self._tool_max: float | None = None
+        self._sample_state = _MiniMouSampleState()
+        self._angles_degrees: tuple[float, float, float] | None = None
 
         if self._controller is None:
             available = [type(device).__name__ for device in getattr(self._manager, "devices", [])]
@@ -92,21 +105,9 @@ class MiniMouController:
         if self._closed:
             return {}
 
-        self._controller.perform_update()
-        position = np.asarray(self._controller.get_position()[:3], dtype=np.float32) * self.scale
-        # MiniMou X motion is mirrored relative to the OmniSurg scene axes.
-        position[0] *= -1.0
-        rotation = _axis_angle_to_quaternion(self._controller.get_orientation())
-        tool_pos = float(self._controller.get_tool_pos())
-        grip = self._tool_position_to_grip(tool_pos)
-        button = grip >= 0.5
-
-        return {
-            "position": position,
-            "rotation": rotation,
-            "button": button,
-            "grip": grip,
-        }
+        sample = poll_minimou_controller(self._controller, self._sample_state, scale=self.scale)
+        self._angles_degrees = sample.pop("_angles_degrees", None)
+        return sample
 
     def close(self):
         if self._closed:
@@ -114,30 +115,97 @@ class MiniMouController:
         self._closed = True
         release_manager()
 
-    def _tool_position_to_grip(self, tool_pos: float) -> float:
-        if not math.isfinite(tool_pos):
-            return 0.0
+    def angles_degrees(self) -> tuple[float, float, float] | None:
+        if self._angles_degrees is not None:
+            return self._angles_degrees
+        return _read_angles_degrees(self._controller)
 
-        if self._tool_min is None or self._tool_max is None:
-            self._tool_min = tool_pos
-            self._tool_max = tool_pos
-            return 0.0
 
-        self._tool_min = min(self._tool_min, tool_pos)
-        self._tool_max = max(self._tool_max, tool_pos)
-        span = self._tool_max - self._tool_min
-        if span < 1.0e-4:
-            return 0.0
+def poll_minimou_controller(
+    controller,
+    state: _MiniMouSampleState | None = None,
+    *,
+    scale: float = 1.0,
+) -> dict:
+    state = state or _MiniMouSampleState()
+    controller.perform_update()
+    position = np.asarray(controller.get_position()[:3], dtype=np.float32) * float(scale)
+    # MiniMou X motion is mirrored relative to the OmniSurg scene axes.
+    position[0] *= -1.0
+    orientation = controller.get_orientation()
+    rotation = _axis_angle_to_quaternion(orientation)
+    tool_pos = _read_float(getattr(controller, "get_tool_pos", lambda: 0.0), 0.0)
+    handle_pos = _read_float(getattr(controller, "get_handle_opening_value", lambda: tool_pos), tool_pos)
+    handle_active = bool(_read_float(getattr(controller, "get_handle_activity", lambda: 0.0), 0.0))
+    grip = max(
+        _closing_grip(handle_pos, state, "handle_min", "handle_max"),
+        _closing_grip(tool_pos, state, "tool_min", "tool_max"),
+    )
+    button = handle_active or grip >= 0.5
 
-        normalized = (tool_pos - self._tool_min) / span
-        normalized = min(1.0, max(0.0, normalized))
-        # MiniMou tool position behaves like an opening signal, so lower values mean more closed.
-        return 1.0 - normalized
+    return {
+        "position": position,
+        "rotation": rotation,
+        "button": button,
+        "grip": grip,
+        "tool_scalar": tool_pos,
+        "handle_pos": handle_pos,
+        "handle_active": handle_active,
+        "valid": True,
+        "_angles_degrees": _read_angles_degrees(controller),
+    }
+
+
+def _read_float(reader, default: float) -> float:
+    try:
+        value = float(reader())
+    except Exception:
+        return float(default)
+    if not math.isfinite(value):
+        return float(default)
+    return value
+
+
+def _read_angles_degrees(controller) -> tuple[float, float, float] | None:
+    try:
+        return (
+            float(controller.get_rot_angle()),
+            float(controller.get_pitch_angle()),
+            float(controller.get_yaw_angle()),
+        )
+    except Exception:
+        return None
+
+
+def _closing_grip(value: float, state: _MiniMouSampleState, min_attr: str, max_attr: str) -> float:
+    if not math.isfinite(value):
+        return 0.0
+
+    current_min = getattr(state, min_attr)
+    current_max = getattr(state, max_attr)
+    if current_min is None or current_max is None:
+        setattr(state, min_attr, float(value))
+        setattr(state, max_attr, float(value))
+        return 0.0
+
+    current_min = min(float(current_min), float(value))
+    current_max = max(float(current_max), float(value))
+    setattr(state, min_attr, current_min)
+    setattr(state, max_attr, current_max)
+    span = current_max - current_min
+    if span < 1.0e-4:
+        return 0.0
+
+    opening = (float(value) - current_min) / span
+    # MiniMou handle/tool values behave like opening signals, so lower values mean more closed.
+    return float(np.clip(1.0 - opening, 0.0, 1.0))
 
 
 def _axis_angle_to_quaternion(orientation) -> np.ndarray:
     axis_x, axis_y, axis_z, angle = [float(value) for value in orientation]
-    axis = np.array([axis_x, axis_y, axis_z], dtype=np.float32)
+    # The MiniMou adapter frame mirrors hardware X, so the axis is treated as a
+    # pseudovector and X changes sign. This matches the hex haptic frame tests.
+    axis = np.array([-axis_x, axis_y, axis_z], dtype=np.float32)
     norm = float(np.linalg.norm(axis))
     if norm < 1.0e-8 or not math.isfinite(angle):
         return np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32)

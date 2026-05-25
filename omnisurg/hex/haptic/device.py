@@ -1,21 +1,10 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Thin wrapper over pyopenhaptics that exposes 6-DOF input only.
-
-The device is polled at ~1 kHz by the OpenHaptics async scheduler; this
-module snapshots the latest pose into a thread-safe :class:`InputPose`
-record that the simulation loop reads from at frame rate. No force output
-is sent.
-"""
+"""Hex compatibility adapters for canonical OmniSurg input sources."""
 
 from __future__ import annotations
 
-import threading
 from collections.abc import Sequence
 from dataclasses import dataclass, field
-
-import numpy as np
-
-from .frames import matrix_to_quaternion, minimou_orientation_to_quaternion, minimou_position_to_adapter
 
 
 class HapticUnavailable(RuntimeError):
@@ -51,103 +40,26 @@ class InputPose:
 
 
 class HapticInput:
-    """Phantom Omni driver providing pose + button state only.
-
-    Construction loads ``HD.dll``/``libHD.so`` via ctypes and starts the
-    OpenHaptics async scheduler. ``poll()`` returns the latest snapshot
-    written by the scheduler thread. ``close()`` stops the scheduler and
-    releases the device. Use as a context manager to guarantee cleanup.
-    """
+    """Compatibility adapter over the canonical OpenHaptics source."""
 
     def __init__(self, device_name: str = "Default Device", *, start_scheduler: bool = True):
-        # The pyopenhaptics submodule loads HD.dll at import time; catch that
-        # here so the caller can fall back gracefully on machines without the
-        # OpenHaptics SDK or the device itself.
+        del start_scheduler
         try:
-            from .pyopenhaptics import hd as _hd  # noqa: PLC0415
-            from .pyopenhaptics.hd_callback import hd_callback  # noqa: PLC0415
-            from .pyopenhaptics.hd_define import HD_BAD_HANDLE  # noqa: PLC0415
-            from .pyopenhaptics.hd_device import HapticDevice  # noqa: PLC0415
-        except (OSError, ImportError) as exc:
-            raise HapticUnavailable(f"OpenHaptics SDK unavailable: {exc}") from exc
+            from omnisurg.input.sources import LiveHapticSource  # noqa: PLC0415
 
-        self._hd = _hd
-        self._pose = InputPose()
-        self._lock = threading.Lock()
+            self._source = LiveHapticSource(device_name=device_name, force_feedback=False)
+        except Exception as exc:  # noqa: BLE001
+            raise HapticUnavailable(f"device init failed: {exc}") from exc
         self._closed = False
 
-        try:
-            self._device = HapticDevice(
-                device_name=device_name,
-                scheduler_type="async",
-                auto_start_scheduler=False,
-                enable_force_output=False,
-            )
-        except Exception as exc:
-            raise HapticUnavailable(f"device init failed: {exc}") from exc
-        if getattr(self._device, "id", HD_BAD_HANDLE) == HD_BAD_HANDLE:
-            raise HapticUnavailable(f'device "{device_name}" not found')
-
-        # The async callback runs at device frequency (~1 kHz on a Phantom
-        # Omni). It only snapshots this device's state - no force is sent.
-        @hd_callback(device_id=self._device.id)
-        def _update():
-            try:
-                transform = _hd.get_transform()
-                buttons = _hd.get_buttons()
-                px = float(transform[3][0])
-                py = float(transform[3][1])
-                pz = float(transform[3][2])
-                quat = matrix_to_quaternion(
-                    (
-                        (float(transform[0][0]), float(transform[0][1]), float(transform[0][2])),
-                        (float(transform[1][0]), float(transform[1][1]), float(transform[1][2])),
-                        (float(transform[2][0]), float(transform[2][1]), float(transform[2][2])),
-                    )
-                )
-                b1 = bool(buttons & 0x01)
-                b2 = bool(buttons & 0x02)
-                with self._lock:
-                    self._pose.position = (px, py, pz)
-                    self._pose.quaternion = quat
-                    self._pose.button1 = b1
-                    self._pose.button2 = b2
-                    self._pose.tool_pos = 0.0
-                    self._pose.valid = True
-            except Exception:
-                # Swallow per-frame errors so the scheduler thread does not
-                # crash the process; the last good snapshot remains visible.
-                pass
-
-        self._callback_ref = _update  # keep ctypes callback alive
-        try:
-            self._device.scheduler(_update, "async")
-            if start_scheduler:
-                HapticDevice.start_scheduler()
-        except Exception as exc:
-            self._device.close()
-            raise HapticUnavailable(f"device scheduler failed: {exc}") from exc
-
     def poll(self) -> InputPose:
-        """Return a copy of the latest snapshot."""
-        with self._lock:
-            return InputPose(
-                position=self._pose.position,
-                quaternion=self._pose.quaternion,
-                button1=self._pose.button1,
-                button2=self._pose.button2,
-                tool_pos=self._pose.tool_pos,
-                valid=self._pose.valid,
-            )
+        return _controller_sample_dict_to_input_pose(self._source.poll())
 
     def close(self) -> None:
         if self._closed:
             return
         self._closed = True
-        try:
-            self._device.close()
-        except Exception:
-            pass
+        self._source.close()
 
     def __enter__(self) -> HapticInput:
         return self
@@ -157,16 +69,11 @@ class HapticInput:
 
 
 def open_haptic_inputs(device_names: Sequence[str]) -> list[HapticInput]:
-    """Open several OpenHaptics devices before starting the shared scheduler."""
+    """Open several pose-only OpenHaptics devices through the canonical input stack."""
     inputs: list[HapticInput] = []
     try:
         for name in device_names:
             inputs.append(HapticInput(device_name=name, start_scheduler=False))
-
-        if inputs:
-            # All devices are initialized and callbacks are scheduled; now start
-            # the global HD scheduler once, matching the dual-device C samples.
-            inputs[0]._device.start_scheduler()
         return inputs
     except Exception:
         for input_device in reversed(inputs):
@@ -175,92 +82,45 @@ def open_haptic_inputs(device_names: Sequence[str]) -> list[HapticInput]:
 
 
 class MiniMouInput:
-    """Follou MiniMou adapter exposing the same pose API as HapticInput."""
+    """Compatibility adapter exposing canonical MiniMou samples as InputPose."""
 
     def __init__(self, controller):
         self._controller = controller
+        self._sample_state = None
         self._angles_degrees: tuple[float, float, float] | None = None
-        self._handle_min: float | None = None
-        self._handle_max: float | None = None
-        self._tool_min: float | None = None
-        self._tool_max: float | None = None
         self._closed = False
-
-    def _closing_grip(self, value: float, min_attr: str, max_attr: str) -> float:
-        if not np.isfinite(value):
-            return 0.0
-        current_min = getattr(self, min_attr)
-        current_max = getattr(self, max_attr)
-        if current_min is None or current_max is None:
-            setattr(self, min_attr, float(value))
-            setattr(self, max_attr, float(value))
-            return 0.0
-        current_min = min(float(current_min), float(value))
-        current_max = max(float(current_max), float(value))
-        setattr(self, min_attr, current_min)
-        setattr(self, max_attr, current_max)
-        span = current_max - current_min
-        if span <= 1.0e-4:
-            return 0.0
-        opening = (float(value) - current_min) / span
-        return float(np.clip(1.0 - opening, 0.0, 1.0))
 
     @classmethod
     def discover(cls, count: int = 1) -> list[MiniMouInput]:
         try:
-            from omnisurg.input.follou import ensure_follou_importable  # noqa: PLC0415
-
-            DeviceManager, MiniMou = ensure_follou_importable()
+            from omnisurg.input.follou import MiniMouController  # noqa: PLC0415
         except Exception as exc:
             raise HapticUnavailable(f"Follou MiniMou support unavailable: {exc}") from exc
 
-        try:
-            manager = DeviceManager()
-        except Exception as exc:
-            raise HapticUnavailable(f"Follou device discovery failed: {exc}") from exc
-
         inputs: list[MiniMouInput] = []
-        for idx in range(count):
-            controller = manager.get_device_controller(MiniMou, idx)
-            if controller is None:
-                break
-            inputs.append(cls(controller))
-
-        if len(inputs) < count:
+        try:
+            for idx in range(count):
+                inputs.append(cls(MiniMouController(device_index=idx)))
+        except Exception as exc:
             for input_device in reversed(inputs):
                 input_device.close()
-            raise HapticUnavailable(f"found {len(inputs)} MiniMou device(s), need {count}")
+            raise HapticUnavailable(f"found {len(inputs)} MiniMou device(s), need {count}: {exc}") from exc
         return inputs
 
     def poll(self) -> InputPose:
         try:
-            self._controller.perform_update()
-            pos = self._controller.get_position()
-            angles = (
-                float(self._controller.get_rot_angle()),
-                float(self._controller.get_pitch_angle()),
-                float(self._controller.get_yaw_angle()),
-            )
-            orientation = self._controller.get_orientation()
-            tool_pos = float(getattr(self._controller, "get_tool_pos", lambda: 0.0)())
-            handle_pos = float(getattr(self._controller, "get_handle_opening_value", lambda: tool_pos)())
-            handle_active = bool(getattr(self._controller, "get_handle_activity", lambda: 0)())
-            grip = max(
-                self._closing_grip(handle_pos, "_handle_min", "_handle_max"),
-                self._closing_grip(tool_pos, "_tool_min", "_tool_max"),
-            )
+            if hasattr(self._controller, "poll"):
+                sample = dict(self._controller.poll())
+                angles = getattr(self._controller, "angles_degrees", lambda: None)()
+            else:
+                from omnisurg.input.follou import _MiniMouSampleState, poll_minimou_controller  # noqa: PLC0415
 
+                if self._sample_state is None:
+                    self._sample_state = _MiniMouSampleState()
+                sample = poll_minimou_controller(self._controller, self._sample_state)
+                angles = sample.pop("_angles_degrees", None)
             self._angles_degrees = angles
-            return InputPose(
-                position=minimou_position_to_adapter(pos),
-                quaternion=minimou_orientation_to_quaternion(orientation),
-                button1=handle_active or grip >= 0.5,
-                tool_pos=tool_pos,
-                grip=grip,
-                handle_pos=handle_pos,
-                handle_active=handle_active,
-                valid=True,
-            )
+            return _controller_sample_dict_to_input_pose(sample)
         except Exception:
             return InputPose(valid=False)
 
@@ -296,6 +156,36 @@ class MiniMouInput:
 def open_minimou_inputs(count: int = 1) -> list[MiniMouInput]:
     """Discover Follou MiniMou devices and expose them as InputPose sources."""
     return MiniMouInput.discover(count=count)
+
+
+def _controller_sample_dict_to_input_pose(sample_dict: dict | None) -> InputPose:
+    from omnisurg.input.sources import ControllerSample  # noqa: PLC0415
+
+    sample = ControllerSample.from_sample_dict(sample_dict)
+    if not sample.valid:
+        return InputPose(valid=False)
+
+    position = (
+        (0.0, 0.0, 0.0)
+        if sample.position is None
+        else tuple(float(value) for value in sample.position[:3])
+    )
+    quaternion = (
+        (0.0, 0.0, 0.0, 1.0)
+        if sample.rotation is None
+        else tuple(float(value) for value in sample.rotation[:4])
+    )
+    return InputPose(
+        position=position,
+        quaternion=quaternion,
+        button1=bool(sample.button),
+        button2=bool(sample.button2),
+        tool_pos=float(sample.tool_scalar),
+        grip=float(sample.grip),
+        handle_pos=float(sample.handle_pos),
+        handle_active=bool(sample.handle_active),
+        valid=True,
+    )
 
 
 @dataclass

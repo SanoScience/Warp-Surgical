@@ -10,6 +10,7 @@ from pyOpenHaptics.hd_define import (
     HD_CALLBACK_DONE,
     HD_DEFAULT_SCHEDULER_PRIORITY,
     HD_DEVICE_BUTTON_1,
+    HD_DEVICE_BUTTON_2,
     HD_DEVICE_MODEL_TYPE,
     HD_DEVICE_VENDOR,
     HD_FORCE_OUTPUT,
@@ -27,6 +28,7 @@ from pyOpenHaptics.hd_define import (
 @dataclass
 class DeviceState:
     button: bool = False
+    button2: bool = False
     position: list = field(default_factory=lambda: [0.0, 0.0, 0.0])
     rotation: list = field(default_factory=lambda: [0.0, 0.0, 0.0, 1.0])
     joints: list = field(default_factory=lambda: [0.0, 0.0, 0.0])
@@ -179,10 +181,12 @@ def _global_state_callback(_user_data):
                 with controller._state_lock:
                     controller.device_state.position = position
                     controller.device_state.rotation = rotation
-                    controller.device_state.button = bool(button_mask & HD_DEVICE_BUTTON_1) or bool(button_mask)
+                    controller.device_state.button = bool(button_mask & HD_DEVICE_BUTTON_1)
+                    controller.device_state.button2 = bool(button_mask & HD_DEVICE_BUTTON_2)
                     force = list(controller.device_state.force)
 
-                hd.set_force(force)
+                if controller.force_feedback:
+                    hd.set_force(force)
                 _end_frame(controller.device_id)
                 if _get_last_error_code() != HD_SUCCESS:
                     _mark_scheduler_failed(
@@ -238,10 +242,12 @@ class HapticController:
         device_name: str = "Default Device",
         scale: float = 2.5,
         scheduler_priority: float = HD_DEFAULT_SCHEDULER_PRIORITY,
+        force_feedback: bool = True,
     ):
         self.device_name = device_name
         self.scale = scale
         self.scheduler_priority = float(scheduler_priority)
+        self.force_feedback = bool(force_feedback)
         self.device_state = DeviceState()
         self.invert_x = False
         self.invert_y = False
@@ -259,8 +265,9 @@ class HapticController:
             _make_current_device(self._device_id)
             vendor = _safe_get_string(HD_DEVICE_VENDOR) or "unknown-vendor"
             model = _safe_get_string(HD_DEVICE_MODEL_TYPE) or "unknown-model"
-            _enable_force_output()
-            _enable_force_ramping()
+            if self.force_feedback:
+                _enable_force_output()
+                _enable_force_ramping()
             _register_controller(self)
             time.sleep(0.05)
             print(f"Initialized device! {vendor}/{model}")
@@ -336,9 +343,13 @@ class HapticController:
                 "position": [float(pos) * self.scale for pos in self.device_state.position],
                 "rotation": self.device_state.rotation.copy(),
                 "button": bool(self.device_state.button),
+                "button2": bool(self.device_state.button2),
+                "valid": True,
             }
 
     def set_force(self, force):
+        if not self.force_feedback:
+            return
         with self._state_lock:
             self.device_state.force = [float(value) for value in force[:3]]
 
@@ -346,6 +357,11 @@ class HapticController:
         self._raise_if_callback_failed()
         with self._state_lock:
             return bool(self.device_state.button)
+
+    def is_button2_pressed(self):
+        self._raise_if_callback_failed()
+        with self._state_lock:
+            return bool(self.device_state.button2)
 
     def close(self):
         if self._closed:

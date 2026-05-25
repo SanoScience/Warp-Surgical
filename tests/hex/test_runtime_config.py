@@ -50,7 +50,7 @@ def test_app_and_session_parsers_share_common_runtime_dests():
 
     assert APP_RUNTIME_ONLY_DESTS <= app_dests
     assert not (APP_RUNTIME_ONLY_DESTS & session_dests)
-    assert len(session_dests) == 96
+    assert len(session_dests) == 103
     assert app_dests - APP_RUNTIME_ONLY_DESTS == session_dests
 
 

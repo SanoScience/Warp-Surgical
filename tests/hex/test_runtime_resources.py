@@ -109,16 +109,28 @@ def test_exception_cleanup_reports_cleanup_failures_to_stderr(capsys):
 def test_open_hex_instrument_inputs_dispatches_supported_backends(monkeypatch):
     calls = []
 
-    def fake_minimou_inputs(*, count):
-        calls.append(("minimou", count))
-        return [object() for _ in range(count)]
+    class FakeMiniMouSource:
+        def __init__(self, *, device_index, scale=1.0):
+            calls.append(("minimou", device_index, scale))
 
-    def fake_haptic_inputs(device_names):
-        calls.append(("openhaptics", tuple(device_names)))
-        return [object(), object()]
+        def poll(self):
+            return {"position": (0.0, 0.0, 0.0), "rotation": (0.0, 0.0, 0.0, 1.0)}
 
-    monkeypatch.setattr(runtime_resources, "open_minimou_inputs", fake_minimou_inputs)
-    monkeypatch.setattr(runtime_resources, "open_haptic_inputs", fake_haptic_inputs)
+        def close(self):
+            pass
+
+    class FakeHapticSource:
+        def __init__(self, *, device_name, scale=1.0, force_feedback=True):
+            calls.append(("openhaptics", device_name, scale, force_feedback))
+
+        def poll(self):
+            return {"position": (0.0, 0.0, 0.0), "rotation": (0.0, 0.0, 0.0, 1.0)}
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr("omnisurg.haptics.LiveMiniMouSource", FakeMiniMouSource)
+    monkeypatch.setattr("omnisurg.haptics.LiveHapticSource", FakeHapticSource)
 
     fallback_inputs = runtime_resources.open_hex_instrument_inputs(_args("fallback"), expected_count=2)
     minimou_inputs = runtime_resources.open_hex_instrument_inputs(_args("minimou"), expected_count=2)
@@ -128,8 +140,10 @@ def test_open_hex_instrument_inputs_dispatches_supported_backends(monkeypatch):
     assert len(minimou_inputs) == 2
     assert len(haptic_inputs) == 2
     assert calls == [
-        ("minimou", 2),
-        ("openhaptics", ("Right Device", "Left Device")),
+        ("minimou", 0, 1.0),
+        ("minimou", 1, 1.0),
+        ("openhaptics", "Right Device", 1.0, False),
+        ("openhaptics", "Left Device", 1.0, False),
     ]
 
 
@@ -139,18 +153,23 @@ def test_open_hex_instrument_inputs_off_returns_no_devices():
 
 def test_open_hex_instrument_inputs_count_mismatch_closes_devices_and_raises(monkeypatch):
     order: list[str] = []
-    opened = [FakeCloseable("only", order)]
 
-    def fake_haptic_inputs(device_names):
-        del device_names
-        return opened
+    class FakeHapticSource(FakeCloseable):
+        def __init__(self, *, device_name, scale=1.0, force_feedback=True):
+            del scale, force_feedback
+            if device_name != "Right Device":
+                raise RuntimeError("missing left")
+            super().__init__("right", order)
 
-    monkeypatch.setattr(runtime_resources, "open_haptic_inputs", fake_haptic_inputs)
+        def poll(self):
+            return {"position": (0.0, 0.0, 0.0), "rotation": (0.0, 0.0, 0.0, 1.0)}
 
-    with pytest.raises(HapticUnavailable, match="expected 2 devices, got 1"):
+    monkeypatch.setattr("omnisurg.haptics.LiveHapticSource", FakeHapticSource)
+
+    with pytest.raises(HapticUnavailable, match="left .*missing left"):
         runtime_resources.open_hex_instrument_inputs(_args("openhaptics"), expected_count=2)
 
-    assert order == ["only"]
+    assert order == ["right"]
 
 
 def test_build_hex_usd_viewer_passes_resolved_num_frames(monkeypatch):
