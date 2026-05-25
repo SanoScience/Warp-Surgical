@@ -192,7 +192,7 @@ def add_hex_runtime_arguments(parser: argparse.ArgumentParser) -> None:
         "--show-instruments",
         action=argparse.BooleanOptionalAction,
         default=True,
-        help="render the two kinematic instrument spheres.",
+        help="render the configured instruments.",
     )
     parser.add_argument(
         "--instrument-follow-camera",

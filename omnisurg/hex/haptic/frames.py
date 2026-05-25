@@ -262,14 +262,10 @@ def minimou_reflect_x_handedness(q: Sequence[float]) -> Quaternion:
 
 
 def minimou_orientation_to_quaternion(orientation: Sequence[float]) -> Quaternion:
-    """Convert a MiniMou axis-angle orientation into the shared adapter frame."""
+    """Normalize the MiniMou orientation quaternion returned by the Follou SDK."""
     if len(orientation) < 4:
         return (0.0, 0.0, 0.0, 1.0)
-    ax = -float(orientation[0])
-    ay = float(orientation[1])
-    az = float(orientation[2])
-    angle = float(orientation[3])
-    return axis_radians_to_quaternion(ax, ay, az, angle)
+    return quat_normalize(orientation[:4])
 
 
 def minimou_angles_to_quaternion(rot_degrees: float, pitch_degrees: float, yaw_degrees: float) -> Quaternion:

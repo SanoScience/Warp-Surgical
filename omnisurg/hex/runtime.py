@@ -17,7 +17,6 @@ from omnisurg.config import ViewerConfig
 from omnisurg.rendering.bridge import RenderBridge
 
 from .data.types import PreparedVolume
-from .haptic import HapticUnavailable
 from .kernels.cell_render import update_cell_render_state
 from .kernels.marching_cubes import allocate_mc_buffers, bake_vertex_uv3, upload_mc_tables
 from .render import SurfaceRenderer
@@ -25,6 +24,7 @@ from .runtime_lifecycle import HexFrameLoopState, build_hex_frame_loop_config
 from .runtime_config import INSTRUMENT_COUNT as _INSTRUMENT_COUNT
 from .runtime_config import add_hex_runtime_arguments, normalize_hex_runtime_args
 from .runtime_resources import (
+    HapticUnavailable,
     HexRuntimeResourceOwner,
     _close_runtime_resources_for_exception,
     build_hex_usd_viewer,

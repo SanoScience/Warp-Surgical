@@ -5,7 +5,6 @@ from types import SimpleNamespace
 import pytest
 
 from omnisurg.hex import runtime_resources
-from omnisurg.hex.haptic import HapticUnavailable
 
 
 class FakeCloseable:
@@ -109,28 +108,36 @@ def test_exception_cleanup_reports_cleanup_failures_to_stderr(capsys):
 def test_open_hex_instrument_inputs_dispatches_supported_backends(monkeypatch):
     calls = []
 
-    class FakeMiniMouSource:
-        def __init__(self, *, device_index, scale=1.0):
-            calls.append(("minimou", device_index, scale))
-
+    class FakeInputSource:
         def poll(self):
-            return {"position": (0.0, 0.0, 0.0), "rotation": (0.0, 0.0, 0.0, 1.0)}
+            return {
+                "position": (1.0, 2.0, 3.0),
+                "rotation": (0.0, 0.0, 0.0, 1.0),
+                "button": True,
+                "button2": True,
+                "tool_scalar": 0.75,
+                "grip": 0.25,
+                "handle_pos": 0.5,
+                "handle_active": True,
+            }
 
         def close(self):
             pass
 
-    class FakeHapticSource:
-        def __init__(self, *, device_name, scale=1.0, force_feedback=True):
-            calls.append(("openhaptics", device_name, scale, force_feedback))
+    def fake_open_input_sources(configs, *, require_all=False):
+        assert require_all
+        config_list = list(configs)
+        calls.append(
+            [
+                (config.role, config.backend, config.device_name, config.device_index, config.force_feedback)
+                for config in config_list
+            ]
+        )
+        return runtime_resources.input_factory.InputOpenResult(
+            sources={config.role: FakeInputSource() for config in config_list if config.backend != "off"}
+        )
 
-        def poll(self):
-            return {"position": (0.0, 0.0, 0.0), "rotation": (0.0, 0.0, 0.0, 1.0)}
-
-        def close(self):
-            pass
-
-    monkeypatch.setattr("omnisurg.haptics.LiveMiniMouSource", FakeMiniMouSource)
-    monkeypatch.setattr("omnisurg.haptics.LiveHapticSource", FakeHapticSource)
+    monkeypatch.setattr(runtime_resources.input_factory, "open_input_sources", fake_open_input_sources)
 
     fallback_inputs = runtime_resources.open_hex_instrument_inputs(_args("fallback"), expected_count=2)
     minimou_inputs = runtime_resources.open_hex_instrument_inputs(_args("minimou"), expected_count=2)
@@ -139,11 +146,28 @@ def test_open_hex_instrument_inputs_dispatches_supported_backends(monkeypatch):
     assert len(fallback_inputs) == 2
     assert len(minimou_inputs) == 2
     assert len(haptic_inputs) == 2
+    pose = fallback_inputs[0].poll()
+    assert pose.valid
+    assert pose.position == (1.0, 2.0, 3.0)
+    assert pose.button1
+    assert pose.button2
+    assert pose.tool_pos == 0.75
+    assert pose.grip == 0.25
+    assert pose.handle_pos == 0.5
+    assert pose.handle_active
     assert calls == [
-        ("minimou", 0, 1.0),
-        ("minimou", 1, 1.0),
-        ("openhaptics", "Right Device", 1.0, False),
-        ("openhaptics", "Left Device", 1.0, False),
+        [
+            ("right", "fallback", "Right Device", 0, False),
+            ("left", "fallback", "Left Device", 1, False),
+        ],
+        [
+            ("right", "minimou", "Right Device", 0, False),
+            ("left", "minimou", "Left Device", 1, False),
+        ],
+        [
+            ("right", "openhaptics", "Right Device", 0, False),
+            ("left", "openhaptics", "Left Device", 1, False),
+        ],
     ]
 
 
@@ -166,7 +190,7 @@ def test_open_hex_instrument_inputs_count_mismatch_closes_devices_and_raises(mon
 
     monkeypatch.setattr("omnisurg.haptics.LiveHapticSource", FakeHapticSource)
 
-    with pytest.raises(HapticUnavailable, match="left .*missing left"):
+    with pytest.raises(runtime_resources.HapticUnavailable, match="left .*missing left"):
         runtime_resources.open_hex_instrument_inputs(_args("openhaptics"), expected_count=2)
 
     assert order == ["right"]

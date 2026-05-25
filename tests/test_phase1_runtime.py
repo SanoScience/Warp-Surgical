@@ -453,6 +453,42 @@ class TestPhaseRuntime(unittest.TestCase):
             if rig is not None:
                 rig.close()
 
+    def test_live_input_rig_preserves_minimou_position_and_maps_rotation_to_tet_frame(self):
+        from omnisurg.hex.haptic import axis_degrees_to_quaternion, quat_to_matrix
+
+        class FakeSource:
+            def __init__(self, *, device_index: int, scale: float = 1.0):
+                del device_index, scale
+
+            def poll(self):
+                return {
+                    "position": np.array([1.0, 2.0, 3.0], dtype=np.float32),
+                    "rotation": np.array(axis_degrees_to_quaternion(0.0, 1.0, 0.0, 30.0), dtype=np.float32),
+                    "valid": True,
+                }
+
+            def close(self):
+                pass
+
+        args = _live_args(
+            right_input_backend="minimou",
+            left_input_backend="none",
+            right_device_index=2,
+        )
+        rig = None
+        with mock.patch("omnisurg.haptics.LiveMiniMouSource", FakeSource):
+            rig = omnisurg_main._build_live_input_rig(args)
+
+        try:
+            self.assertIsNotNone(rig)
+            sample = rig.poll()["right"]
+            np.testing.assert_allclose(sample.position, np.array([1.0, 2.0, 3.0], dtype=np.float32))
+            expected_rotation = axis_degrees_to_quaternion(0.0, 0.0, -1.0, 30.0)
+            np.testing.assert_allclose(quat_to_matrix(sample.rotation), quat_to_matrix(expected_rotation), atol=1e-6)
+        finally:
+            if rig is not None:
+                rig.close()
+
     def test_live_minimou_source_polls_controller_samples(self):
         class FakeController:
             def __init__(self, *, device_index=0, scale=1.0):
@@ -519,7 +555,7 @@ class TestPhaseRuntime(unittest.TestCase):
                 return (1.0, 2.0, 3.0, 1.0)
 
             def get_orientation(self):
-                return (0.0, 0.0, 1.0, 0.0)
+                return (0.0, 0.0, 0.0, 1.0)
 
             def get_tool_pos(self):
                 return next(self._tool_positions)

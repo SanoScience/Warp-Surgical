@@ -9,11 +9,15 @@ from typing import Any
 
 import newton
 
-from omnisurg.input.factory import InputOpenError, RoleInputConfig, normalize_input_backend, open_input_sources
+from omnisurg.input import factory as input_factory
 from omnisurg.input.sources import ControllerSample, InputSource
 
-from .haptic import FallbackInput, HapticUnavailable, InputPose
+from .haptic import InputPose
 from .runtime_config import INSTRUMENT_COUNT
+
+
+class HapticUnavailable(RuntimeError):
+    """Raised when configured hex instrument input cannot be opened."""
 
 
 class HexRuntimeResourceOwner:
@@ -75,10 +79,6 @@ def _close_runtime_resources_for_exception(owner: HexRuntimeResourceOwner) -> No
         )
 
 
-def _fallback_instrument_inputs(count: int) -> list[FallbackInput]:
-    return [FallbackInput(InputPose(position=(0.0, 0.0, 0.0), valid=True)) for _ in range(count)]
-
-
 def _close_inputs(input_devices: Sequence[Any]) -> None:
     first_error: BaseException | None = None
     first_traceback = None
@@ -100,11 +100,13 @@ def open_hex_instrument_inputs(args, *, expected_count: int | None = None) -> li
     """Open the configured instrument inputs and validate the expected count."""
 
     roles = ("right", "left")[: INSTRUMENT_COUNT if expected_count is None else int(expected_count)]
-    configs: list[RoleInputConfig] = []
+    configs: list[input_factory.RoleInputConfig] = []
     for role in roles:
-        backend = normalize_input_backend(getattr(args, f"{role}_input_backend", getattr(args, "input_backend", "off")))
+        backend = input_factory.normalize_input_backend(
+            getattr(args, f"{role}_input_backend", getattr(args, "input_backend", "off"))
+        )
         configs.append(
-            RoleInputConfig(
+            input_factory.RoleInputConfig(
                 role=role,
                 backend=backend,
                 device_name=getattr(
@@ -122,8 +124,8 @@ def open_hex_instrument_inputs(args, *, expected_count: int | None = None) -> li
         return []
 
     try:
-        result = open_input_sources(configs, require_all=True)
-    except InputOpenError as exc:
+        result = input_factory.open_input_sources(configs, require_all=True)
+    except input_factory.InputOpenError as exc:
         raise HapticUnavailable(str(exc)) from exc
 
     input_devices: list[Any] = []

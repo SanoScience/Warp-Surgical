@@ -132,8 +132,7 @@ def poll_minimou_controller(
     position = np.asarray(controller.get_position()[:3], dtype=np.float32) * float(scale)
     # MiniMou X motion is mirrored relative to the OmniSurg scene axes.
     position[0] *= -1.0
-    orientation = controller.get_orientation()
-    rotation = _axis_angle_to_quaternion(orientation)
+    rotation = _normalize_quaternion(controller.get_orientation())
     tool_pos = _read_float(getattr(controller, "get_tool_pos", lambda: 0.0), 0.0)
     handle_pos = _read_float(getattr(controller, "get_handle_opening_value", lambda: tool_pos), tool_pos)
     handle_active = bool(_read_float(getattr(controller, "get_handle_activity", lambda: 0.0), 0.0))
@@ -201,24 +200,11 @@ def _closing_grip(value: float, state: _MiniMouSampleState, min_attr: str, max_a
     return float(np.clip(1.0 - opening, 0.0, 1.0))
 
 
-def _axis_angle_to_quaternion(orientation) -> np.ndarray:
-    axis_x, axis_y, axis_z, angle = [float(value) for value in orientation]
-    # The MiniMou adapter frame mirrors hardware X, so the axis is treated as a
-    # pseudovector and X changes sign. This matches the hex haptic frame tests.
-    axis = np.array([-axis_x, axis_y, axis_z], dtype=np.float32)
-    norm = float(np.linalg.norm(axis))
-    if norm < 1.0e-8 or not math.isfinite(angle):
+def _normalize_quaternion(quaternion) -> np.ndarray:
+    values = np.asarray([float(value) for value in tuple(quaternion)[:4]], dtype=np.float32)
+    if values.shape[0] != 4:
         return np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32)
-
-    axis /= norm
-    half_angle = 0.5 * angle
-    sin_half = math.sin(half_angle)
-    return np.array(
-        [
-            axis[0] * sin_half,
-            axis[1] * sin_half,
-            axis[2] * sin_half,
-            math.cos(half_angle),
-        ],
-        dtype=np.float32,
-    )
+    norm = float(np.linalg.norm(values))
+    if norm < 1.0e-8 or not math.isfinite(norm):
+        return np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32)
+    return values / norm

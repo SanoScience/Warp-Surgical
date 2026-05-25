@@ -32,6 +32,7 @@ import warp as wp
 from newton._src.geometry.flags import ParticleFlags
 
 from omnisurg.config import ViewerConfig  # noqa: E402
+from omnisurg.grasper_runtime import load_kinematic_grasper  # noqa: E402
 from omnisurg.rendering.bridge import RenderBridge  # noqa: E402
 from omnisurg.hex.deletion import DeviceDeletionResult  # noqa: E402
 from omnisurg.hex.shape_matching_solver import (  # noqa: E402
@@ -119,7 +120,6 @@ from omnisurg.hex.ui import (  # noqa: E402
 from omnisurg.hex.haptic import (  # noqa: E402
     FALLBACK_PROFILE,
     HapticFrameConfig,
-    HapticUnavailable,
     InputPose,
     MINIMOU_PROFILE,
     OPENHAPTICS_PROFILE,
@@ -139,6 +139,7 @@ from omnisurg.hex.runtime_lifecycle import (  # noqa: E402
     build_hex_frame_loop_config,
 )
 from omnisurg.hex.runtime_resources import (  # noqa: E402
+    HapticUnavailable,
     HexRuntimeResourceOwner,
     _close_runtime_resources_for_exception,
     build_hex_usd_viewer,
@@ -156,6 +157,9 @@ ACTIVE_BIT = int(ParticleFlags.ACTIVE)
 
 _INSTRUMENT_TRIGGER_THRESHOLD = 0.1
 _MINIMOU_CUT_THRESHOLD = _INSTRUMENT_TRIGGER_THRESHOLD
+_INSTRUMENT_GRASPER_ASSET_PATH = Path(__file__).resolve().parents[2] / "meshes" / "pgrasp.usdc"
+# The grasper asset coordinates are millimetre-like; Hex runtime uses metres.
+_INSTRUMENT_GRASPER_SCALE = 0.001
 
 
 def _should_capture_instrument_grasp(
@@ -1043,6 +1047,7 @@ def _run_app_impl(
     instrument_q_prev.assign(instrument_q_prev_host)
     viewer = None
     instrument_camera_follow_reference_frame: tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray] | None = None
+    instrument_graspers = [None] * _INSTRUMENT_COUNT
 
     if any(backend != "off" for backend in instrument_backends):
         try:
@@ -1051,6 +1056,14 @@ def _run_app_impl(
             print(f"Instrument input unavailable: {exc}")
             return 2
         resource_owner.input_devices = input_devices
+        instrument_graspers = [
+            load_kinematic_grasper(
+                _INSTRUMENT_GRASPER_ASSET_PATH,
+                dev,
+                scale=_INSTRUMENT_GRASPER_SCALE,
+            )
+            for _ in range(_INSTRUMENT_COUNT)
+        ]
         if instrument_backend == "fallback":
             print("instrument input: static fallback poses")
         elif instrument_backend == "minimou":
@@ -1106,6 +1119,12 @@ def _run_app_impl(
             instrument_camera_follow_reference_frame = None
             print("[instrument] camera follow off")
 
+    def _sync_instrument_grasper_poses() -> None:
+        for idx, grasper in enumerate(instrument_graspers):
+            if grasper is None or int(instrument_pose_valid_host[idx]) == 0:
+                continue
+            grasper.set_root_pose(instrument_q_host[idx], instrument_quat_host[idx])
+
     def _poll_instrument_positions(*, initial: bool = False) -> None:
         if not input_devices:
             return
@@ -1139,6 +1158,7 @@ def _run_app_impl(
             instrument_q_prev_host[:] = instrument_q_host
         instrument_q_prev.assign(instrument_q_prev_host)
         instrument_q.assign(instrument_q_host)
+        _sync_instrument_grasper_poses()
 
     _poll_instrument_positions(initial=True)
     # Grasper capture is edge-triggered. Keep the first live frame eligible so
@@ -1214,6 +1234,44 @@ def _run_app_impl(
 
     def _instrument_is_grasper(idx: int) -> bool:
         return _instrument_mode(idx) == "grasper"
+
+    def _instrument_grip_command(idx: int) -> float:
+        grip = float(np.clip(float(instrument_grip_host[idx]), 0.0, 1.0))
+        if instrument_backends[idx] != "minimou" and bool(instrument_trigger_down_host[idx]):
+            return max(grip, 1.0)
+        return grip
+
+    def _hide_instrument_grasper(idx: int, grasper) -> None:
+        prefix = f"/instruments/grasper_{idx + 1}"
+        for piece in grasper.pieces:
+            render_bridge.draw_mesh(
+                f"{prefix}_{piece.name}",
+                piece.world_points,
+                piece.indices,
+                hidden=True,
+            )
+
+    def _render_instrument_graspers() -> None:
+        for idx, grasper in enumerate(instrument_graspers):
+            if grasper is None:
+                continue
+            visible = bool(
+                input_devices
+                and ui.show_instruments
+                and _instrument_is_grasper(idx)
+                and int(instrument_pose_valid_host[idx]) != 0
+            )
+            if not visible:
+                _hide_instrument_grasper(idx, grasper)
+                continue
+            grasper.update_substep_pose(1.0)
+            grasper.advance(frame_loop_config.frame_dt, _instrument_grip_command(idx))
+            grasper.update_render_geometry()
+            grasper.render(
+                render_bridge,
+                prefix=f"/instruments/grasper_{idx + 1}",
+                draw_collision_spheres=False,
+            )
 
     def _clear_instrument_grasp(idx: int) -> None:
         if not (0 <= idx < _INSTRUMENT_COUNT):
@@ -2337,7 +2395,7 @@ def _run_app_impl(
 
             imgui.separator()
             imgui.text("Instruments")
-            _, ui.show_instruments = imgui.checkbox("Show instrument spheres", ui.show_instruments)
+            _, ui.show_instruments = imgui.checkbox("Show instruments", ui.show_instruments)
             changed, new_follow_camera = imgui.checkbox(
                 "Move instruments with camera",
                 ui.instrument_follow_camera,
@@ -3765,9 +3823,12 @@ def _run_app_impl(
                 backface_culling=False,
             )
             instrument_radius = _instrument_radius()
-            instrument_radii_host.fill(max(instrument_radius, 1.0e-8))
+            for idx in range(_INSTRUMENT_COUNT):
+                render_as_grasper = instrument_graspers[idx] is not None and _instrument_is_grasper(idx)
+                instrument_radii_host[idx] = 1.0e-8 if render_as_grasper else max(instrument_radius, 1.0e-8)
             instrument_radii.assign(instrument_radii_host)
             _update_instrument_colors()
+            _render_instrument_graspers()
             viewer.log_points(
                 name="/instruments/spheres",
                 points=instrument_q,

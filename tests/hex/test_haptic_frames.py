@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import math
-
 import numpy as np
 
 from omnisurg.hex.haptic import (
@@ -12,7 +10,6 @@ from omnisurg.hex.haptic import (
     OPENHAPTICS_PROFILE,
     HapticFrameConfig,
     InputPose,
-    MiniMouInput,
     axis_degrees_to_quaternion,
     minimou_angles_to_quaternion,
     minimou_orientation_to_quaternion,
@@ -111,7 +108,7 @@ class _FakeMiniMouController:
         return 30.0
 
     def get_orientation(self):
-        return (0.0, 0.0, 1.0, math.radians(30.0))
+        return axis_degrees_to_quaternion(0.0, 0.0, 1.0, 30.0)
 
     def close(self) -> None:
         self.closed = True
@@ -133,39 +130,43 @@ class _FakeMiniMouHandleController(_FakeMiniMouController):
         return self.handle_activity
 
 
-def test_minimou_poll_uses_adapter_position_and_axis_angle_orientation():
+def test_minimou_poll_uses_adapter_position_and_quaternion_orientation():
+    from omnisurg.input.follou import _MiniMouSampleState, poll_minimou_controller
+
     controller = _FakeMiniMouController()
-    device = MiniMouInput(controller)
 
-    pose = device.poll()
+    sample = poll_minimou_controller(controller, _MiniMouSampleState())
 
-    assert pose.valid
-    assert pose.position == (-1.0, 2.0, 3.0)
-    assert device.angles_degrees() == (10.0, 20.0, 30.0)
-    _assert_matrix_close(pose.quaternion, minimou_orientation_to_quaternion(controller.get_orientation()))
+    assert sample["valid"]
+    np.testing.assert_allclose(sample["position"], np.asarray((-1.0, 2.0, 3.0), dtype=np.float32))
+    assert sample["_angles_degrees"] == (10.0, 20.0, 30.0)
+    _assert_matrix_close(sample["rotation"], minimou_orientation_to_quaternion(controller.get_orientation()))
 
 
 def test_minimou_poll_uses_physical_handle_for_grip_trigger():
-    controller = _FakeMiniMouHandleController()
-    device = MiniMouInput(controller)
+    from omnisurg.input.follou import _MiniMouSampleState, poll_minimou_controller
 
-    open_pose = device.poll()
+    controller = _FakeMiniMouHandleController()
+    state = _MiniMouSampleState()
+
+    open_sample = poll_minimou_controller(controller, state)
     controller.handle_opening = 0.0
     controller.handle_activity = 1
-    squeezed_pose = device.poll()
+    squeezed_sample = poll_minimou_controller(controller, state)
 
-    assert open_pose.valid
-    assert not open_pose.button1
-    assert open_pose.handle_pos == 1.0
-    assert open_pose.grip == 0.0
-    assert squeezed_pose.button1
-    assert squeezed_pose.handle_active
-    assert squeezed_pose.handle_pos == 0.0
-    assert squeezed_pose.grip == 1.0
+    assert open_sample["valid"]
+    assert not open_sample["button"]
+    assert open_sample["handle_pos"] == 1.0
+    assert open_sample["grip"] == 0.0
+    assert squeezed_sample["button"]
+    assert squeezed_sample["handle_active"]
+    assert squeezed_sample["handle_pos"] == 0.0
+    assert squeezed_sample["grip"] == 1.0
 
 
-def test_minimou_discover_uses_repo_local_follou_import_helper(monkeypatch):
+def test_minimou_controller_uses_repo_local_follou_import_helper(monkeypatch):
     from omnisurg.input import follou as follou_module
+    from omnisurg.input.follou import MiniMouController
 
     calls = []
 
@@ -173,17 +174,20 @@ def test_minimou_discover_uses_repo_local_follou_import_helper(monkeypatch):
         pass
 
     class FakeManager:
+        def __init__(self):
+            self.devices = [_FakeMiniMouController()]
+
         def get_device_controller(self, device_cls, idx):
             calls.append((device_cls, idx))
-            return _FakeMiniMouController()
+            return self.devices[idx]
 
+    monkeypatch.setattr(follou_module, "_manager_entry", None)
     monkeypatch.setattr(follou_module, "ensure_follou_importable", lambda: (FakeManager, FakeMiniMou))
 
-    devices = MiniMouInput.discover(count=1)
+    controller = MiniMouController(device_index=0)
 
-    assert len(devices) == 1
     assert calls == [(FakeMiniMou, 0)]
-    devices[0].close()
+    controller.close()
 
 
 def test_minimou_adapter_position_preserves_current_mapping():
@@ -201,26 +205,19 @@ def test_minimou_reflect_x_handedness_is_named_and_tested():
     _assert_matrix_close(reflected, axis_degrees_to_quaternion(0.0, 1.0, 0.0, -30.0))
 
 
-def test_minimou_orientation_axis_angle_converts_to_right_handed_adapter():
+def test_minimou_orientation_quaternion_is_normalized():
     _assert_matrix_close(
-        minimou_orientation_to_quaternion((0.0, 0.0, 0.0, math.radians(30.0))),
+        minimou_orientation_to_quaternion((0.0, 0.0, 0.0, -1.0)),
         (0.0, 0.0, 0.0, 1.0),
     )
-    # The firmware-to-adapter basis change is a reflection (det = -1), so the
-    # axis is a pseudovector: under the X-reflection, the (Y, Z) components of
-    # the axis flip sign. Equivalently, a rotation around firmware X reads as
-    # the opposite-signed rotation around adapter X, while rotations around
-    # firmware Y/Z keep their signed angle in the adapter Y/Z components.
     cases = [
-        ((1.0, 0.0, 0.0, math.radians(30.0)), (1.0, 0.0, 0.0, -30.0)),
-        ((0.0, 1.0, 0.0, math.radians(30.0)), (0.0, 1.0, 0.0, 30.0)),
-        ((0.0, 0.0, 1.0, math.radians(30.0)), (0.0, 0.0, 1.0, 30.0)),
+        axis_degrees_to_quaternion(1.0, 0.0, 0.0, 30.0),
+        axis_degrees_to_quaternion(0.0, 1.0, 0.0, 30.0),
+        axis_degrees_to_quaternion(0.0, 0.0, 1.0, 30.0),
     ]
-    for orientation, expected_axis_angle in cases:
-        _assert_matrix_close(
-            minimou_orientation_to_quaternion(orientation),
-            axis_degrees_to_quaternion(*expected_axis_angle),
-        )
+    for expected_q in cases:
+        scaled_q = tuple(2.0 * component for component in expected_q)
+        _assert_matrix_close(minimou_orientation_to_quaternion(scaled_q), expected_q)
 
 
 def test_minimou_z_up_pure_joint_angles_match_world_axes():

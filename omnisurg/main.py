@@ -282,34 +282,60 @@ class _SampleTransformSource:
         self._source.close()
 
 
-def _reflect_minimou_quaternion_x(rotation: np.ndarray) -> np.ndarray:
-    corrected = np.asarray(rotation, dtype=np.float32).copy()
-    if corrected.shape[0] >= 1:
-        corrected[0] *= -1.0
-    return corrected
+def _normalize_quaternion_xyzw(rotation: np.ndarray) -> np.ndarray:
+    q = np.asarray(rotation, dtype=np.float32).copy()
+    if q.shape[0] < 4:
+        return np.asarray((0.0, 0.0, 0.0, 1.0), dtype=np.float32)
+    q = q[:4]
+    norm = float(np.linalg.norm(q))
+    if norm <= 1.0e-8:
+        return np.asarray((0.0, 0.0, 0.0, 1.0), dtype=np.float32)
+    return q / norm
 
 
-def _build_minimou_source(device_index: int):
-    from omnisurg.haptics import LiveMiniMouSource
+def _quat_mul_xyzw(lhs: np.ndarray, rhs: np.ndarray) -> np.ndarray:
+    ax, ay, az, aw = _normalize_quaternion_xyzw(lhs)
+    bx, by, bz, bw = _normalize_quaternion_xyzw(rhs)
+    return _normalize_quaternion_xyzw(
+        np.asarray(
+            (
+                aw * bx + ax * bw + ay * bz - az * by,
+                aw * by - ax * bz + ay * bw + az * bx,
+                aw * bz + ax * by - ay * bx + az * bw,
+                aw * bw - ax * bx - ay * by - az * bz,
+            ),
+            dtype=np.float32,
+        )
+    )
 
-    source = LiveMiniMouSource(device_index=device_index)
-    source = _SampleTransformSource(source, rotation_transform=_reflect_minimou_quaternion_x)
-    descriptor = f"MiniMou[{device_index}]"
-    controller = getattr(getattr(source, "_ctrl", None), "_controller", None)
-    device_id = getattr(controller, "device_id", None)
-    if device_id is not None:
-        descriptor = f"{descriptor}/id={device_id}"
-    return source, descriptor
+
+def _map_minimou_quaternion_to_tet_frame(rotation: np.ndarray) -> np.ndarray:
+    # Hex maps MiniMou position into its Z-up scene as (x, y, z) -> (x, -z, y).
+    # Tet keeps the original MiniMou position frame, so rotate the quaternion
+    # basis back without changing the already-correct Tet position.
+    half_sqrt2 = np.float32(np.sqrt(0.5))
+    tet_to_hex = np.asarray((half_sqrt2, 0.0, 0.0, half_sqrt2), dtype=np.float32)
+    hex_to_tet = np.asarray((-half_sqrt2, 0.0, 0.0, half_sqrt2), dtype=np.float32)
+    return _quat_mul_xyzw(_quat_mul_xyzw(hex_to_tet, rotation), tet_to_hex)
+
+
+def _wrap_tet_live_source(controller_id: str, backend: str, source):
+    del controller_id
+    if backend == "minimou":
+        return _SampleTransformSource(source, rotation_transform=_map_minimou_quaternion_to_tet_frame)
+    return source
 
 
 def _build_live_input_rig(args):
     from omnisurg.haptics import MultiSourceRig
 
     configs = []
+    backends_by_role = {}
     for controller_id in ("right", "left"):
         backend = normalize_input_backend(getattr(args, f"{controller_id}_input_backend"))
         if backend in {"off", "replay"}:
             continue
+        backends_by_role[controller_id] = backend
         configs.append(
             RoleInputConfig(
                 role=controller_id,
@@ -328,6 +354,15 @@ def _build_live_input_rig(args):
 
     if not result.sources:
         return None
+
+    result.sources = {
+        controller_id: _wrap_tet_live_source(
+            controller_id,
+            backends_by_role.get(controller_id, ""),
+            source,
+        )
+        for controller_id, source in result.sources.items()
+    }
 
     print(
         "Using live input devices: "
